@@ -354,8 +354,9 @@ export class Bridge {
         } catch (err) {
             await this.#acp.stop();
             if (err.message?.includes("Authentication required")) {
+                // Run device login — sends code to Telegram, waits for user
                 await this.#runDeviceLogin();
-                // Retry after successful login
+                // After login completes, retry session creation
                 await this.#acp.start();
                 await this.#acp.newSession({
                     cwd: this.#config.workingDirectory || "/config",
@@ -394,18 +395,28 @@ export class Bridge {
             let stdout = "";
             let codeSent = false;
             let resolved = false;
+
+            // copilot login polls GitHub for ~5 min then exits 1 if not authorized.
+            // Give the user 10 minutes.
             const timeout = setTimeout(() => {
                 if (!resolved) {
                     resolved = true;
                     proc.kill();
-                    reject(new Error("Login timed out after 5 minutes"));
+                    for (const chatId of this.#allowedChatIds) {
+                        this.#telegram.enqueue(() =>
+                            this.#telegram.sendMessage(
+                                chatId,
+                                "⏰ Login timed out. Send any message to get a fresh code."
+                            )
+                        );
+                    }
+                    reject(new Error("Login timed out"));
                 }
-            }, 5 * 60 * 1000);
+            }, 10 * 60 * 1000);
 
             proc.stdout.on("data", (chunk) => {
                 const text = chunk.toString();
                 stdout += text;
-                // Parse device code (only send once)
                 if (!codeSent) {
                     const match = stdout.match(/enter code ([A-Z0-9]{4}-[A-Z0-9]{4})/);
                     if (match && this.#allowedChatIds.length > 0) {
@@ -416,10 +427,11 @@ export class Bridge {
                             this.#telegram.enqueue(() =>
                                 this.#telegram.sendMessage(
                                     chatId,
-                                    `🔐 Copilot needs authentication!\n\n` +
+                                    `🔐 Copilot needs GitHub authentication!\n\n` +
                                     `1️⃣ Visit: https://github.com/login/device\n` +
                                     `2️⃣ Enter code: ${code}\n\n` +
-                                    `⏳ Waiting for you to authorize...`
+                                    `⏳ Waiting for you to authorize...\n` +
+                                    `(This is a one-time setup)`
                                 )
                             );
                         }
@@ -429,21 +441,32 @@ export class Bridge {
 
             proc.stderr.on("data", () => {});
 
-            proc.on("close", (code) => {
+            proc.on("close", (exitCode) => {
                 clearTimeout(timeout);
                 this.#loginPromise = null;
                 if (resolved) return;
                 resolved = true;
-                if (code === 0) {
+                if (exitCode === 0) {
                     this.#log("Login successful!");
                     for (const chatId of this.#allowedChatIds) {
                         this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(chatId, "✅ Copilot authenticated successfully!")
+                            this.#telegram.sendMessage(chatId, "✅ GitHub authentication successful!")
                         );
                     }
                     resolve();
                 } else {
-                    reject(new Error(`copilot login exited with code ${code}`));
+                    // copilot login exited non-zero — tell user to retry
+                    this.#log(`copilot login exited with code ${exitCode}`);
+                    for (const chatId of this.#allowedChatIds) {
+                        this.#telegram.enqueue(() =>
+                            this.#telegram.sendMessage(
+                                chatId,
+                                "❌ Authentication not completed.\n" +
+                                "Send any message to get a fresh code."
+                            )
+                        );
+                    }
+                    reject(new Error("Authentication not completed. Send a message to retry."));
                 }
             });
 
