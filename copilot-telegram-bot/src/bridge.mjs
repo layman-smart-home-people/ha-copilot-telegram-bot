@@ -54,6 +54,9 @@ export class Bridge {
     // Ask-user state
     #awaitingInput = null;
 
+    // Login lock — prevents multiple concurrent login flows
+    #loginPromise = null;
+
     // Temp dir
     #tmpDir;
 
@@ -358,17 +361,23 @@ export class Bridge {
     }
 
     async #runDeviceLogin() {
-        this.#log("Authentication required — starting device login flow...");
+        // If login is already in progress, wait for that one
+        if (this.#loginPromise) {
+            this.#log("Login already in progress, waiting...");
+            return this.#loginPromise;
+        }
 
+        this.#log("Authentication required — starting device login flow...");
         const binary = this.#config.copilotBinary || "/share/copilot-tools/copilot";
 
-        return new Promise((resolve, reject) => {
+        this.#loginPromise = new Promise((resolve, reject) => {
             const proc = spawn(binary, ["login"], {
                 stdio: ["pipe", "pipe", "pipe"],
                 env: { ...process.env },
             });
 
             let stdout = "";
+            let codeSent = false;
             let resolved = false;
             const timeout = setTimeout(() => {
                 if (!resolved) {
@@ -381,22 +390,24 @@ export class Bridge {
             proc.stdout.on("data", (chunk) => {
                 const text = chunk.toString();
                 stdout += text;
-                // Parse device code from output like:
-                // "To authenticate, visit https://github.com/login/device and enter code AB62-D28F."
-                const match = stdout.match(/enter code ([A-Z0-9]{4}-[A-Z0-9]{4})/);
-                if (match && this.#allowedChatIds.length > 0) {
-                    const code = match[1];
-                    this.#log(`Device code: ${code}`);
-                    for (const chatId of this.#allowedChatIds) {
-                        this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(
-                                chatId,
-                                `🔐 Copilot needs authentication!\n\n` +
-                                `1️⃣ Visit: https://github.com/login/device\n` +
-                                `2️⃣ Enter code: ${code}\n\n` +
-                                `⏳ Waiting for authorization...`
-                            )
-                        );
+                // Parse device code (only send once)
+                if (!codeSent) {
+                    const match = stdout.match(/enter code ([A-Z0-9]{4}-[A-Z0-9]{4})/);
+                    if (match && this.#allowedChatIds.length > 0) {
+                        codeSent = true;
+                        const code = match[1];
+                        this.#log(`Device code: ${code}`);
+                        for (const chatId of this.#allowedChatIds) {
+                            this.#telegram.enqueue(() =>
+                                this.#telegram.sendMessage(
+                                    chatId,
+                                    `🔐 Copilot needs authentication!\n\n` +
+                                    `1️⃣ Visit: https://github.com/login/device\n` +
+                                    `2️⃣ Enter code: ${code}\n\n` +
+                                    `⏳ Waiting for you to authorize...`
+                                )
+                            );
+                        }
                     }
                 }
             });
@@ -405,6 +416,7 @@ export class Bridge {
 
             proc.on("close", (code) => {
                 clearTimeout(timeout);
+                this.#loginPromise = null;
                 if (resolved) return;
                 resolved = true;
                 if (code === 0) {
@@ -422,6 +434,7 @@ export class Bridge {
 
             proc.on("error", (err) => {
                 clearTimeout(timeout);
+                this.#loginPromise = null;
                 if (!resolved) {
                     resolved = true;
                     reject(err);
