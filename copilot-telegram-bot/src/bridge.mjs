@@ -9,6 +9,7 @@ import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
 import { basename } from "node:path";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 
 const TYPING_INTERVAL_MS = 4000;
 const TYPING_DEBOUNCE_MS = 60000;
@@ -327,9 +328,24 @@ export class Bridge {
         await this.#acp.start();
         // Don't pass stdio-based MCP servers in session/new params —
         // copilot reads them from ~/.copilot/mcp.json automatically
-        await this.#acp.newSession({
-            cwd: this.#config.workingDirectory || "/config",
-        });
+        try {
+            await this.#acp.newSession({
+                cwd: this.#config.workingDirectory || "/config",
+            });
+        } catch (err) {
+            await this.#acp.stop();
+            // If auth required, run device login flow
+            if (err.message?.includes("Authentication required")) {
+                await this.#runDeviceLogin();
+                // Retry after login
+                await this.#acp.start();
+                await this.#acp.newSession({
+                    cwd: this.#config.workingDirectory || "/config",
+                });
+            } else {
+                throw err;
+            }
+        }
 
         this.#preambleSent = false;
         this.#log(`Copilot started, session: ${this.#acp.sessionId}`);
@@ -339,6 +355,79 @@ export class Bridge {
                 this.#telegram.sendMessage(chatId, "🟢 Copilot session started.")
             );
         }
+    }
+
+    async #runDeviceLogin() {
+        this.#log("Authentication required — starting device login flow...");
+
+        const binary = this.#config.copilotBinary || "/share/copilot-tools/copilot";
+
+        return new Promise((resolve, reject) => {
+            const proc = spawn(binary, ["login"], {
+                stdio: ["pipe", "pipe", "pipe"],
+                env: { ...process.env },
+            });
+
+            let stdout = "";
+            let resolved = false;
+            const timeout = setTimeout(() => {
+                if (!resolved) {
+                    resolved = true;
+                    proc.kill();
+                    reject(new Error("Login timed out after 5 minutes"));
+                }
+            }, 5 * 60 * 1000);
+
+            proc.stdout.on("data", (chunk) => {
+                const text = chunk.toString();
+                stdout += text;
+                // Parse device code from output like:
+                // "To authenticate, visit https://github.com/login/device and enter code AB62-D28F."
+                const match = stdout.match(/enter code ([A-Z0-9]{4}-[A-Z0-9]{4})/);
+                if (match && this.#allowedChatIds.length > 0) {
+                    const code = match[1];
+                    this.#log(`Device code: ${code}`);
+                    for (const chatId of this.#allowedChatIds) {
+                        this.#telegram.enqueue(() =>
+                            this.#telegram.sendMessage(
+                                chatId,
+                                `🔐 Copilot needs authentication!\n\n` +
+                                `1️⃣ Visit: https://github.com/login/device\n` +
+                                `2️⃣ Enter code: ${code}\n\n` +
+                                `⏳ Waiting for authorization...`
+                            )
+                        );
+                    }
+                }
+            });
+
+            proc.stderr.on("data", () => {});
+
+            proc.on("close", (code) => {
+                clearTimeout(timeout);
+                if (resolved) return;
+                resolved = true;
+                if (code === 0) {
+                    this.#log("Login successful!");
+                    for (const chatId of this.#allowedChatIds) {
+                        this.#telegram.enqueue(() =>
+                            this.#telegram.sendMessage(chatId, "✅ Copilot authenticated successfully!")
+                        );
+                    }
+                    resolve();
+                } else {
+                    reject(new Error(`copilot login exited with code ${code}`));
+                }
+            });
+
+            proc.on("error", (err) => {
+                clearTimeout(timeout);
+                if (!resolved) {
+                    resolved = true;
+                    reject(err);
+                }
+            });
+        });
     }
 
     async stopCopilot() {
