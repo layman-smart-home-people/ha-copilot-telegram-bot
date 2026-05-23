@@ -40,8 +40,10 @@ function loadConfig() {
         mcpServers: [],
     };
 
-    // Try to load MCP config
+    // Try to load MCP config (copilot uses mcp-config.json)
     const mcpPaths = [
+        "/data/.copilot/mcp-config.json",
+        `${config.copilotConfigDir}/mcp-config.json`,
         "/data/.copilot/mcp.json",
         `${config.copilotConfigDir}/mcp.json`,
     ];

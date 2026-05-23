@@ -37,8 +37,6 @@ export class ACPClient extends EventEmitter {
         this.#initialized = false;
 
         const args = ["--acp", "--stdio", "--allow-all"];
-        // Debug logging to /share for diagnosis from host
-        args.push("--log-level", "debug", "--log-dir", "/share/copilot-debug");
         if (this.#config.model) args.push("--model", this.#config.model);
         if (this.#config.extraArgs) {
             const extra = this.#config.extraArgs.trim().split(/\s+/);
@@ -56,8 +54,7 @@ export class ACPClient extends EventEmitter {
         if (copilotHome) {
             spawnEnv.COPILOT_HOME = copilotHome;
         }
-        this.emit("log", `ACP spawn: ${this.#config.binary} ${args.join(" ")}`);
-        this.emit("log", `ACP env: HOME=${spawnEnv.HOME} COPILOT_HOME=${spawnEnv.COPILOT_HOME || "unset"} COPILOT_GITHUB_TOKEN=${spawnEnv.COPILOT_GITHUB_TOKEN ? "set(" + spawnEnv.COPILOT_GITHUB_TOKEN.substring(0, 8) + "...)" : "unset"}`);
+        this.emit("log", `ACP spawn: COPILOT_HOME=${spawnEnv.COPILOT_HOME || "unset"}`);
         await new Promise((resolve, reject) => {
             this.#process = spawn(this.#config.binary, args, {
                 stdio: ["pipe", "pipe", "pipe"],
@@ -268,7 +265,6 @@ export class ACPClient extends EventEmitter {
                 return;
             }
 
-            this.emit("log", `ACP SEND: ${method} id=${id}`);
             this.#process.stdin.write(msg, (err) => {
                 if (err) {
                     this.#pending.delete(id);
@@ -305,11 +301,9 @@ export class ACPClient extends EventEmitter {
             clearTimeout(timeout);
 
             if (msg.error) {
-                this.emit("log", `ACP RECV ERROR id=${msg.id}: ${msg.error.code} ${msg.error.message}`);
+                this.emit("log", `ACP error id=${msg.id}: ${msg.error.code} ${msg.error.message}`);
                 reject(new Error(`ACP error ${msg.error.code}: ${msg.error.message}`));
             } else {
-                const keys = msg.result ? Object.keys(msg.result).join(",") : "empty";
-                this.emit("log", `ACP RECV OK id=${msg.id}: keys=[${keys}]`);
                 resolve(msg.result);
             }
             return;
