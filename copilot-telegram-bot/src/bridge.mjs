@@ -192,9 +192,11 @@ export class Bridge {
         });
 
         acp.on("permission_request", async (req) => {
-            const { requestId, toolName, description } = req;
-            const tool = toolName || req.tool || "unknown_tool";
-            const desc = description || req.input?.service || "";
+            this.#log(`Permission request params: ${JSON.stringify(req)}`);
+            const { requestId } = req;
+            // ACP may use various field names for tool identification
+            const tool = req.toolName || req.tool || req.name || req.method || "unknown_tool";
+            const desc = req.description || req.input?.service || req.reason || "";
 
             // Policy: auto-approve read-only HA tools + standard copilot tools
             const readOnlyTools = new Set([
@@ -653,11 +655,14 @@ export class Bridge {
                 this.#telegram.setMessageReaction(ref.chatId, messageId, null).catch(() => {});
             }
 
-            this.#promptActive = false;
-            this.#activeRef = null;
+            // Flush remaining buffer BEFORE clearing activeRef
+            // so output goes to the correct conversation
             this.#flushMessageBuffer();
             this.#stopTyping();
             this.#dismissBubble();
+
+            this.#promptActive = false;
+            this.#activeRef = null;
 
             // Process queued prompts
             if (this.#promptQueue.length > 0) {
