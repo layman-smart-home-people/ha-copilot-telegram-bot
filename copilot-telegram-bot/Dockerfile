@@ -1,8 +1,11 @@
-ARG BUILD_FROM=ghcr.io/hassio-addons/base:17.2.4
+ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base-debian:bookworm
 FROM ${BUILD_FROM}
 
-# Install Node.js and glibc compatibility (needed for Copilot binary)
-RUN apk add --no-cache nodejs npm gcompat libstdc++
+# Install Node.js and jq
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm jq \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
 WORKDIR /app

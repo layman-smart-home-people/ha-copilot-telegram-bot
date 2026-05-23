@@ -1,3 +1,2 @@
-#!/command/with-contenv bashio
-# shellcheck shell=bash
-bashio::log.info "Telegram bot service stopped"
+#!/usr/bin/env bash
+echo "[$(date -Iseconds)] INFO: Telegram bot service stopped"
