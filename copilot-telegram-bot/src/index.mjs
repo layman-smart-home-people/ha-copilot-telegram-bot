@@ -83,9 +83,10 @@ async function validate(config) {
 
     // Validate copilot binary
     if (!existsSync(config.copilotBinary)) {
-        log(`ERROR: Copilot binary not found at ${config.copilotBinary}`);
-        log("Make sure the Copilot CLI add-on is installed and the path is correct.");
-        process.exit(1);
+        log(`WARNING: Copilot binary not found at ${config.copilotBinary}`);
+        log("The bot will start but Copilot won't work until the binary is available.");
+        log("Make sure the Copilot CLI is installed at the configured path.");
+        return; // Don't exit — let the bot start anyway
     }
 
     // Quick ACP handshake test

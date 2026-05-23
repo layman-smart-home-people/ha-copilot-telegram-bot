@@ -41,32 +41,38 @@ export class ACPClient extends EventEmitter {
             args.push(...extra);
         }
 
-        this.#process = spawn(this.#config.binary, args, {
-            stdio: ["pipe", "pipe", "pipe"],
-            cwd: this.#config.cwd || "/config",
-            env: {
-                ...process.env,
-                HOME: process.env.HOME || "/root",
-                PATH: `${this.#config.binary.replace(/\/[^/]+$/, "")}:${process.env.PATH}`,
-            },
-        });
+        // Wrap spawn in a promise so ENOENT is caught properly
+        await new Promise((resolve, reject) => {
+            this.#process = spawn(this.#config.binary, args, {
+                stdio: ["pipe", "pipe", "pipe"],
+                cwd: this.#config.cwd || "/config",
+                env: {
+                    ...process.env,
+                    HOME: process.env.HOME || "/root",
+                    PATH: `${this.#config.binary.replace(/\/[^/]+$/, "")}:${process.env.PATH}`,
+                },
+            });
 
-        this.#process.stdout.on("data", (chunk) => this.#onData(chunk));
-        this.#process.stderr.on("data", (chunk) => {
-            const text = chunk.toString().trim();
-            if (text) this.emit("log", text);
-        });
+            this.#process.stdout.on("data", (chunk) => this.#onData(chunk));
+            this.#process.stderr.on("data", (chunk) => {
+                const text = chunk.toString().trim();
+                if (text) this.emit("log", text);
+            });
 
-        this.#process.on("exit", (code, signal) => {
-            this.#dead = true;
-            this.#rejectAll(new Error(`Copilot process exited: code=${code} signal=${signal}`));
-            this.emit("exit", { code, signal });
-        });
+            this.#process.on("exit", (code, signal) => {
+                this.#dead = true;
+                this.#rejectAll(new Error(`Copilot process exited: code=${code} signal=${signal}`));
+                this.emit("exit", { code, signal });
+            });
 
-        this.#process.on("error", (err) => {
-            this.#dead = true;
-            this.#rejectAll(err);
-            this.emit("error", err);
+            this.#process.on("error", (err) => {
+                this.#dead = true;
+                this.#rejectAll(err);
+                reject(err);
+            });
+
+            // If spawn succeeds, the process will have a pid
+            this.#process.on("spawn", () => resolve());
         });
 
         // Initialize ACP
