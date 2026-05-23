@@ -58,9 +58,17 @@ function loadConfig() {
                     }));
                 }
                 log(`Loaded MCP config from ${p} (${config.mcpServers.length} servers)`);
+                for (const s of config.mcpServers) {
+                    log(`  MCP: ${s.name} → ${s.url ? s.url : s.command || "unknown"}`);
+                }
                 break;
-            } catch {}
+            } catch (err) {
+                log(`WARNING: Failed to parse MCP config ${p}: ${err.message}`);
+            }
         }
+    }
+    if (config.mcpServers.length === 0) {
+        log("No MCP servers configured — ha-mcp will not be available");
     }
 
     return config;
@@ -108,7 +116,8 @@ async function validate(config) {
 
     try {
         const result = await testAcp.start();
-        log(`Copilot ACP OK: ${result.agentInfo?.name} v${result.agentInfo?.version}`);
+        const authMethods = result.authMethods?.map(m => m.id).join(", ") || "none";
+        log(`Copilot ACP OK: ${result.agentInfo?.name} v${result.agentInfo?.version} (auth methods: ${authMethods})`);
         await testAcp.stop();
     } catch (err) {
         log(`WARNING: Copilot ACP test failed: ${err.message}`);

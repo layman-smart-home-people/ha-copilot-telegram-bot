@@ -382,56 +382,72 @@ export class Bridge {
     }
 
     async #doStartCopilot() {
-        await this.#acp.start();
+        this.#log("Starting ACP process...");
+        try {
+            await this.#acp.start();
+        } catch (err) {
+            throw new Error(`Failed to start copilot binary: ${err.message}. Check copilot_binary path in config.`);
+        }
 
         // Authenticate — required by ACP protocol before session/new
         try {
             await this.#acp.authenticate();
             this.#log("ACP authentication successful");
         } catch (err) {
-            if (err.message?.includes("Authentication required") || err.message?.includes("-32000")) {
-                // If a PAT was set but failed, clear it and retry with stored tokens
-                if (process.env.COPILOT_GITHUB_TOKEN) {
-                    this.#log("Configured token rejected — clearing and retrying with stored tokens");
-                    delete process.env.COPILOT_GITHUB_TOKEN;
-                    await this.#acp.stop();
-                    await this.#acp.start();
-                    try {
-                        await this.#acp.authenticate();
-                        this.#log("ACP authentication successful with stored tokens");
-                    } catch (retryErr) {
-                        if (retryErr.message?.includes("Authentication required") || retryErr.message?.includes("-32000")) {
-                            this.#log("No stored tokens either — starting device login");
-                            await this.#acp.stop();
-                            await this.#runDeviceLogin();
-                            await this.#acp.start();
-                            await this.#acp.authenticate();
-                            this.#log("ACP authentication successful after login");
-                        } else {
-                            await this.#acp.stop();
-                            throw retryErr;
-                        }
-                    }
-                } else {
-                    this.#log("No valid token — starting device login flow");
-                    await this.#acp.stop();
-                    await this.#runDeviceLogin();
-                    await this.#acp.start();
-                    await this.#acp.authenticate();
-                    this.#log("ACP authentication successful after login");
-                }
-            } else {
+            const isAuthRequired = err.message?.includes("Authentication required") || err.message?.includes("-32000");
+            if (!isAuthRequired) {
+                this.#log(`Authentication failed (unexpected): ${err.message}`);
                 await this.#acp.stop();
                 throw err;
+            }
+
+            if (process.env.COPILOT_GITHUB_TOKEN) {
+                this.#log("Configured token rejected — clearing and retrying with stored tokens");
+                delete process.env.COPILOT_GITHUB_TOKEN;
+                await this.#acp.stop();
+                await this.#acp.start();
+                try {
+                    await this.#acp.authenticate();
+                    this.#log("ACP authentication successful with stored tokens");
+                } catch (retryErr) {
+                    if (retryErr.message?.includes("Authentication required") || retryErr.message?.includes("-32000")) {
+                        this.#log("No stored tokens either — starting device login");
+                        await this.#acp.stop();
+                        await this.#runDeviceLogin();
+                        await this.#acp.start();
+                        await this.#acp.authenticate();
+                        this.#log("ACP authentication successful after login");
+                    } else {
+                        this.#log(`Authentication retry failed: ${retryErr.message}`);
+                        await this.#acp.stop();
+                        throw retryErr;
+                    }
+                }
+            } else {
+                this.#log("No valid token found — starting device login flow");
+                await this.#acp.stop();
+                await this.#runDeviceLogin();
+                await this.#acp.start();
+                await this.#acp.authenticate();
+                this.#log("ACP authentication successful after login");
             }
         }
 
         // Create session (small delay to let auth propagate in the ACP process)
         await new Promise(r => setTimeout(r, 500));
-        this.#log("Creating new ACP session...");
-        await this.#acp.newSession({
-            cwd: this.#config.workingDirectory || "/config",
-        });
+        const mcpCount = (this.#config.mcpServers || []).filter(s => s.url).length;
+        this.#log(`Creating new ACP session... (${mcpCount} HTTP MCP servers)`);
+        try {
+            await this.#acp.newSession({
+                cwd: this.#config.workingDirectory || "/config",
+                mcpServers: this.#config.mcpServers || [],
+            });
+        } catch (err) {
+            if (err.message?.includes("-32000")) {
+                throw new Error(`Session creation failed: ${err.message}. This usually means the copilot token is expired or COPILOT_HOME is misconfigured.`);
+            }
+            throw new Error(`Session creation failed: ${err.message}`);
+        }
 
         this.#preambleSent = false;
         this.#log(`Copilot started, session: ${this.#acp.sessionId}`);
