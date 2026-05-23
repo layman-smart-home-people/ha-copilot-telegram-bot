@@ -7,6 +7,7 @@
 import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "./formatter.mjs";
 import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
 import { ButtonManager } from "./buttons.mjs";
+import { formatError } from "./errors.mjs";
 import { basename } from "node:path";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -390,7 +391,7 @@ export class Bridge {
                 this.#stopTyping();
                 this.#dismissBubble();
                 this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(chatId, `❌ Failed to start Copilot: ${err.message}`)
+                    this.#telegram.sendMessage(chatId, formatError(err))
                 );
                 return;
             }
@@ -415,7 +416,7 @@ export class Bridge {
                 }
             } catch (err) {
                 this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(chatId, `Failed to process attachment: ${err.message}`)
+                    this.#telegram.sendMessage(chatId, formatError(err))
                 );
                 return;
             }
@@ -444,9 +445,10 @@ export class Bridge {
             await this.#acp.prompt(text, opts);
         } catch (err) {
             this.#log(`Prompt error: ${err.message}`);
+            const userMsg = formatError(err);
             for (const chatId of this.#allowedChatIds) {
                 this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(chatId, `❌ Error: ${err.message}`)
+                    this.#telegram.sendMessage(chatId, userMsg)
                 );
             }
         } finally {
