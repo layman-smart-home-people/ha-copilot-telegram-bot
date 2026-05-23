@@ -181,7 +181,43 @@ export class Bridge {
 
     // --- Inbound message processing ---
 
+    async #handleCallbackQuery(query) {
+        const chatId = query.message?.chat?.id;
+        const userId = query.from?.id;
+        if (!chatId || !this.#allowedChatIds.includes(userId)) return;
+
+        // Acknowledge the button press
+        try {
+            await this.#telegram.call("answerCallbackQuery", { callback_query_id: query.id });
+        } catch {}
+
+        const data = query.data;
+        if (!data) return;
+
+        // Route callback data as slash commands
+        const parts = data.split(" ");
+        const command = parts[0].replace("/", "");
+        const args = parts.slice(1).join(" ");
+
+        await handleSlashCommand({
+            acp: this.#acp,
+            telegram: this.#telegram,
+            chatId,
+            chatIds: this.#allowedChatIds,
+            log: this.#log,
+            startCopilot: () => this.startCopilot(),
+            stopCopilot: () => this.stopCopilot(),
+            restartCopilot: () => this.restartCopilot(),
+        }, command, args);
+    }
+
     async #processUpdate(update) {
+        // Handle callback queries (inline keyboard buttons)
+        if (update.callback_query) {
+            await this.#handleCallbackQuery(update.callback_query);
+            return;
+        }
+
         const message = update.message;
         if (!message) return;
 
@@ -377,6 +413,12 @@ export class Bridge {
     }
 
     async #runDeviceLogin() {
+        // If PAT token is configured, no login needed
+        if (process.env.COPILOT_GITHUB_TOKEN) {
+            this.#log("GitHub token configured — skipping device login");
+            return;
+        }
+
         // If login is already in progress, wait for that one
         if (this.#loginPromise) {
             this.#log("Login already in progress, waiting...");
@@ -387,20 +429,21 @@ export class Bridge {
         const binary = this.#config.copilotBinary || "/share/copilot-tools/copilot";
 
         this.#loginPromise = new Promise((resolve, reject) => {
+            this.#log(`[login] Spawning: ${binary} login`);
             const proc = spawn(binary, ["login"], {
                 stdio: ["ignore", "pipe", "pipe"],
                 env: { ...process.env },
             });
 
             let stdout = "";
+            let stderr = "";
             let codeSent = false;
             let resolved = false;
 
-            // copilot login polls GitHub for ~5 min then exits 1 if not authorized.
-            // Give the user 10 minutes.
             const timeout = setTimeout(() => {
                 if (!resolved) {
                     resolved = true;
+                    this.#log("[login] Timed out after 10 minutes");
                     proc.kill();
                     for (const chatId of this.#allowedChatIds) {
                         this.#telegram.enqueue(() =>
@@ -417,21 +460,28 @@ export class Bridge {
             proc.stdout.on("data", (chunk) => {
                 const text = chunk.toString();
                 stdout += text;
+                this.#log(`[login] stdout: ${text.trim()}`);
                 if (!codeSent) {
                     const match = stdout.match(/enter code ([A-Z0-9]{4}-[A-Z0-9]{4})/);
                     if (match && this.#allowedChatIds.length > 0) {
                         codeSent = true;
                         const code = match[1];
-                        this.#log(`Device code: ${code}`);
+                        this.#log(`[login] Device code: ${code}`);
                         for (const chatId of this.#allowedChatIds) {
                             this.#telegram.enqueue(() =>
                                 this.#telegram.sendMessage(
                                     chatId,
-                                    `🔐 Copilot needs GitHub authentication!\n\n` +
+                                    `🔐 GitHub authentication required\n\n` +
                                     `1️⃣ Visit: https://github.com/login/device\n` +
                                     `2️⃣ Enter code: ${code}\n\n` +
                                     `⏳ Waiting for you to authorize...\n` +
-                                    `(This is a one-time setup)`
+                                    `(One-time setup — takes 30 seconds)`,
+                                    undefined,
+                                    {
+                                        inline_keyboard: [[
+                                            { text: "🔗 Open GitHub", url: "https://github.com/login/device" }
+                                        ]]
+                                    }
                                 )
                             );
                         }
@@ -439,15 +489,34 @@ export class Bridge {
                 }
             });
 
-            proc.stderr.on("data", () => {});
+            proc.stderr.on("data", (chunk) => {
+                const text = chunk.toString().trim();
+                if (text) {
+                    stderr += text + "\n";
+                    this.#log(`[login] stderr: ${text}`);
+                }
+            });
 
             proc.on("close", (exitCode) => {
                 clearTimeout(timeout);
                 this.#loginPromise = null;
                 if (resolved) return;
                 resolved = true;
-                if (exitCode === 0) {
-                    this.#log("Login successful!");
+                this.#log(`[login] Process exited with code ${exitCode}`);
+                this.#log(`[login] Full stdout: ${stdout.trim()}`);
+                if (stderr) this.#log(`[login] Full stderr: ${stderr.trim()}`);
+
+                // copilot login may exit non-zero even after successful auth
+                // (e.g. "failed to open browser" warnings). Check if auth
+                // actually succeeded by looking for success indicators in output.
+                const authSuccess = stdout.includes("Authenticated") ||
+                    stdout.includes("authenticated") ||
+                    stdout.includes("logged in") ||
+                    stdout.includes("success") ||
+                    exitCode === 0;
+
+                if (authSuccess) {
+                    this.#log("[login] Authentication appears successful");
                     for (const chatId of this.#allowedChatIds) {
                         this.#telegram.enqueue(() =>
                             this.#telegram.sendMessage(chatId, "✅ GitHub authentication successful!")
@@ -455,18 +524,10 @@ export class Bridge {
                     }
                     resolve();
                 } else {
-                    // copilot login exited non-zero — tell user to retry
-                    this.#log(`copilot login exited with code ${exitCode}`);
-                    for (const chatId of this.#allowedChatIds) {
-                        this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(
-                                chatId,
-                                "❌ Authentication not completed.\n" +
-                                "Send any message to get a fresh code."
-                            )
-                        );
-                    }
-                    reject(new Error("Authentication not completed. Send a message to retry."));
+                    // Even if exit code != 0, the auth might have worked.
+                    // Resolve anyway and let session creation verify.
+                    this.#log("[login] Exit code non-zero but auth may have succeeded — will verify via session creation");
+                    resolve();
                 }
             });
 
@@ -475,6 +536,7 @@ export class Bridge {
                 this.#loginPromise = null;
                 if (!resolved) {
                     resolved = true;
+                    this.#log(`[login] Spawn error: ${err.message}`);
                     reject(err);
                 }
             });

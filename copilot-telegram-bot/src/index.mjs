@@ -31,6 +31,7 @@ function loadConfig() {
         copilotBinary: process.env.COPILOT_BINARY || options.copilot_binary || "/share/copilot-tools/copilot",
         copilotConfigDir: options.copilot_config_dir || "/share/copilot-tools/.copilot",
         copilotExtraArgs: options.copilot_extra_args || "",
+        githubToken: process.env.COPILOT_GITHUB_TOKEN || options.github_token || "",
         preamble: options.preamble || "Be concise, mobile-first, Telegram-friendly PLAIN TEXT only.",
         autoStart: options.auto_start !== false,
         idleTimeoutMinutes: options.idle_timeout_minutes || 0,
@@ -124,6 +125,12 @@ async function main() {
     const config = loadConfig();
     await validate(config);
 
+    // If github_token is set, inject it into env for copilot auth
+    if (config.githubToken) {
+        process.env.COPILOT_GITHUB_TOKEN = config.githubToken;
+        log("Using configured GitHub token for authentication");
+    }
+
     // Create Telegram client
     const telegram = new TelegramClient({
         token: config.botToken,
@@ -136,6 +143,26 @@ async function main() {
     } catch (err) {
         log(`ERROR: Invalid bot token: ${err.message}`);
         process.exit(1);
+    }
+
+    // Register bot commands with Telegram
+    try {
+        await telegram.call("setMyCommands", {
+            commands: [
+                { command: "help", description: "Show available commands" },
+                { command: "status", description: "Bot & Copilot status" },
+                { command: "autopilot", description: "Toggle autopilot mode" },
+                { command: "plan", description: "Toggle plan mode" },
+                { command: "model", description: "Switch AI model" },
+                { command: "compact", description: "Compact conversation history" },
+                { command: "usage", description: "Show usage metrics" },
+                { command: "cancel", description: "Cancel current operation" },
+                { command: "session", description: "Session management (new/stop)" },
+            ],
+        });
+        log("Registered bot commands with Telegram");
+    } catch (err) {
+        log(`WARNING: Failed to register commands: ${err.message}`);
     }
 
     // Create ACP client

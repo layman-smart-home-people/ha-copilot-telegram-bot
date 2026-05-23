@@ -81,9 +81,10 @@ export class TelegramClient extends EventEmitter {
         return this.#botInfo;
     }
 
-    sendMessage(chatId, text, parseMode) {
+    sendMessage(chatId, text, parseMode, replyMarkup) {
         const params = { chat_id: chatId, text };
         if (parseMode) params.parse_mode = parseMode;
+        if (replyMarkup) params.reply_markup = replyMarkup;
         return this.call("sendMessage", params);
     }
 
@@ -191,7 +192,7 @@ export class TelegramClient extends EventEmitter {
                 const updates = await this.call("getUpdates", {
                     offset: this.#offset,
                     timeout: this.#pollTimeout,
-                    allowed_updates: ["message"],
+                    allowed_updates: ["message", "callback_query"],
                 });
                 errorDelay = 5000;
 

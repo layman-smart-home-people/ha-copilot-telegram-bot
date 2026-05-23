@@ -94,7 +94,21 @@ export async function handleSlashCommand(ctx, command, args) {
                 lines.push(`  📱 Telegram: connected`);
                 lines.push(`  👥 Allowed chats: ${chatIds.length}`);
                 if (acp?.sessionId) lines.push(`  🔗 Session: ${acp.sessionId.slice(0, 8)}...`);
-                reply(lines.join("\n"));
+                const statusButtons = {
+                    inline_keyboard: acp?.alive ? [
+                        [
+                            { text: "📊 Usage", callback_data: "/usage" },
+                            { text: "🗜️ Compact", callback_data: "/compact" },
+                        ],
+                        [
+                            { text: "🔄 Restart", callback_data: "/session new" },
+                            { text: "⏹️ Stop", callback_data: "/session stop" },
+                        ],
+                    ] : [
+                        [{ text: "🚀 Start Copilot", callback_data: "/session new" }],
+                    ],
+                };
+                telegram.enqueue(() => telegram.sendMessage(chatId, lines.join("\n"), undefined, statusButtons));
                 return true;
             }
             case "start":
@@ -137,19 +151,41 @@ export async function handleSlashCommand(ctx, command, args) {
                 return true;
             }
             case "help": {
-                reply(
+                const helpButtons = {
+                    inline_keyboard: [
+                        [
+                            { text: "📡 Status", callback_data: "/status" },
+                            { text: "📊 Usage", callback_data: "/usage" },
+                        ],
+                        [
+                            { text: "🤖 Autopilot", callback_data: "/autopilot on" },
+                            { text: "📋 Plan", callback_data: "/plan on" },
+                        ],
+                        [
+                            { text: "🗜️ Compact", callback_data: "/compact" },
+                            { text: "🛑 Cancel", callback_data: "/cancel" },
+                        ],
+                        [
+                            { text: "🔄 Restart Session", callback_data: "/session new" },
+                        ],
+                    ],
+                };
+                telegram.enqueue(() => telegram.sendMessage(
+                    chatId,
                     "📋 Available commands:\n" +
                     "  /autopilot [on|off]\n" +
                     "  /plan [on|off]\n" +
-                    "  /mode\n" +
                     "  /model [name]\n" +
                     "  /compact\n" +
                     "  /cancel\n" +
                     "  /usage\n" +
                     "  /status\n" +
                     "  /session [new|stop]\n" +
-                    "  /help"
-                );
+                    "  /help\n\n" +
+                    "Or tap a button below:",
+                    undefined,
+                    helpButtons
+                ));
                 return true;
             }
             default:
