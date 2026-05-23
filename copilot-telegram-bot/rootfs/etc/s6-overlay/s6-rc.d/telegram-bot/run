@@ -1,0 +1,26 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Start the Copilot Telegram Bot
+# ==============================================================================
+
+bashio::log.info "Starting Copilot Telegram Bot..."
+
+# Set up copilot config symlink
+COPILOT_CONFIG_DIR="$(bashio::config 'copilot_config_dir')"
+if [ -d "${COPILOT_CONFIG_DIR}" ]; then
+    ln -sfn "${COPILOT_CONFIG_DIR}" "${HOME}/.copilot"
+    bashio::log.info "Copilot config linked from ${COPILOT_CONFIG_DIR}"
+fi
+
+# Validate copilot binary
+COPILOT_BINARY="$(bashio::config 'copilot_binary')"
+if [ ! -x "${COPILOT_BINARY}" ]; then
+    bashio::log.fatal "Copilot binary not found or not executable: ${COPILOT_BINARY}"
+    exit 1
+fi
+
+# Quick version check
+${COPILOT_BINARY} version 2>/dev/null || bashio::log.warning "Could not verify copilot version"
+
+exec node /app/src/index.mjs
