@@ -7,6 +7,7 @@
 import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "./formatter.mjs";
 import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
 import { ButtonManager } from "./buttons.mjs";
+import { ChatHistory } from "./history.mjs";
 import { formatError } from "./errors.mjs";
 import { basename } from "node:path";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
@@ -68,6 +69,9 @@ export class Bridge {
     // Button manager for inline keyboards
     #buttons;
 
+    // Chat history ring buffer
+    #history;
+
     // Session state
     #models = [];
     #modes = [];
@@ -81,6 +85,7 @@ export class Bridge {
         this.#allowedChatIds = (config.allowedChatIds || []).map(Number);
         this.#tmpDir = join("/tmp", `copilot-tg-${process.pid}`);
         this.#buttons = new ButtonManager(telegram);
+        this.#history = new ChatHistory(50);
     }
 
     get allowedChatIds() { return this.#allowedChatIds; }
@@ -317,6 +322,7 @@ export class Bridge {
             buttons: this.#buttons,
             models: this.#models,
             modes: this.#modes,
+            history: this.#history,
         }, command, args);
     }
 
@@ -341,6 +347,9 @@ export class Bridge {
             this.#log(`Ignoring message from unauthorized user: ${userId}`);
             return;
         }
+
+        // Track incoming user message in history
+        this.#history.push({ role: "user", text, messageId: message.message_id });
 
         // Handle ask_user response
         if (this.#awaitingInput) {
@@ -372,6 +381,7 @@ export class Bridge {
                     buttons: this.#buttons,
                     models: this.#models,
                     modes: this.#modes,
+                    history: this.#history,
                 }, parsed.command, parsed.args);
                 if (handled) return;
             }
@@ -399,7 +409,8 @@ export class Bridge {
 
         // Build prompt
         const prefix = this.#getPrefix();
-        let promptText = prefix + (text || "");
+        const replyContext = this.#extractReplyContext(message);
+        let promptText = prefix + (replyContext ? replyContext + "\n" : "") + (text || "");
 
         // Handle file attachments
         if (message.photo || message.document) {
@@ -698,6 +709,50 @@ export class Bridge {
         await this.startCopilot();
     }
 
+    // --- Reply-to context extraction ---
+
+    #extractReplyContext(message) {
+        const reply = message.reply_to_message;
+        if (!reply) return "";
+
+        const isBotReply = reply.from?.is_bot;
+        const MAX_QUOTE = 500;
+
+        // Determine the quoted content
+        let quotedText = reply.text || reply.caption || "";
+
+        if (!quotedText) {
+            // Non-text messages — describe the content type
+            if (reply.photo) quotedText = "<photo>";
+            else if (reply.sticker) quotedText = `<sticker: ${reply.sticker.emoji || "🎴"}>`;
+            else if (reply.voice) quotedText = "<voice message>";
+            else if (reply.video) quotedText = "<video>";
+            else if (reply.video_note) quotedText = "<video note>";
+            else if (reply.audio) quotedText = `<audio: ${reply.audio.title || "audio"}>`;
+            else if (reply.document) quotedText = `<file: ${reply.document.file_name || "document"}>`;
+            else if (reply.animation) quotedText = "<GIF>";
+            else if (reply.location) quotedText = `<location: ${reply.location.latitude}, ${reply.location.longitude}>`;
+            else if (reply.poll) quotedText = `<poll: ${reply.poll.question}>`;
+            else if (reply.contact) quotedText = `<contact: ${reply.contact.first_name}>`;
+            else quotedText = "<message>";
+        }
+
+        // Truncate long quotes
+        if (quotedText.length > MAX_QUOTE) {
+            quotedText = quotedText.substring(0, MAX_QUOTE) + "…";
+        }
+
+        // Also check our history for the original message (may have richer context)
+        const historyEntry = this.#history.findByMessageId(reply.message_id);
+        if (historyEntry && historyEntry.text.length > quotedText.length) {
+            quotedText = historyEntry.text.substring(0, MAX_QUOTE);
+            if (historyEntry.text.length > MAX_QUOTE) quotedText += "…";
+        }
+
+        const source = isBotReply ? "Replying to bot" : "Replying to";
+        return `[${source}: "${quotedText}"]`;
+    }
+
     // --- File handling ---
 
     async #handleFileAttachment(message) {
@@ -730,6 +785,9 @@ export class Bridge {
 
         const content = this.#messageBuffer;
         this.#messageBuffer = "";
+
+        // Track bot response in history
+        this.#history.push({ role: "bot", text: content });
 
         const chunks = chunkMessage(content);
         for (const chatId of this.#allowedChatIds) {

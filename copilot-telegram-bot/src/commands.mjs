@@ -13,7 +13,7 @@ export function parseSlashCommand(text, botUsername) {
 }
 
 export async function handleSlashCommand(ctx, command, args) {
-    const { acp, telegram, chatId, chatIds, log, buttons, models, modes } = ctx;
+    const { acp, telegram, chatId, chatIds, log, buttons, models, modes, history } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {
         for (const cid of chatIds) {
@@ -180,6 +180,13 @@ export async function handleSlashCommand(ctx, command, args) {
                 }
                 return true;
             }
+            case "history": {
+                if (!history) { reply("📜 No history available"); return true; }
+                const n = parseInt(args) || 10;
+                const formatted = history.format(Math.min(n, 30));
+                reply(`📜 Recent messages (${Math.min(n, 30)}):\n\n${formatted}`);
+                return true;
+            }
             case "help": {
                 const helpButtons = {
                     inline_keyboard: [
@@ -206,12 +213,15 @@ export async function handleSlashCommand(ctx, command, args) {
                     "  /autopilot [on|off]\n" +
                     "  /plan [on|off]\n" +
                     "  /model [name]\n" +
+                    "  /mode\n" +
                     "  /compact\n" +
                     "  /cancel\n" +
                     "  /usage\n" +
                     "  /status\n" +
+                    "  /history [n]\n" +
                     "  /session [new|stop]\n" +
                     "  /help\n\n" +
+                    "💡 Reply to any message to give Copilot context.\n\n" +
                     "Or tap a button below:",
                     undefined,
                     helpButtons
