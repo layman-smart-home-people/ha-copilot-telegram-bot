@@ -13,7 +13,7 @@ export function parseSlashCommand(text, botUsername) {
 }
 
 export async function handleSlashCommand(ctx, command, args) {
-    const { acp, telegram, chatId, chatIds, log, buttons, models, modes, history } = ctx;
+    const { acp, telegram, chatId, chatIds, log, buttons, models, modes, history, currentModel, currentMode } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {
         for (const cid of chatIds) {
@@ -119,13 +119,33 @@ export async function handleSlashCommand(ctx, command, args) {
                 return true;
             }
             case "status": {
-                const lines = ["📡 Copilot Telegram Bot Status:"];
-                lines.push(`  🤖 Copilot: ${acp?.alive ? "running" : "stopped"}`);
-                lines.push(`  📱 Telegram: connected`);
-                lines.push(`  👥 Allowed chats: ${chatIds.length}`);
-                if (acp?.sessionId) lines.push(`  🔗 Session: ${acp.sessionId.slice(0, 8)}...`);
+                const alive = acp?.alive;
+                const hasSession = !!acp?.sessionId;
+                const ready = alive && hasSession;
+
+                const lines = [];
+                lines.push(ready ? "✅ Copilot Ready" : alive ? "⏳ Copilot Starting..." : "⏹️ Copilot Stopped");
+                lines.push("");
+
+                if (ready) {
+                    const modelName = models?.find(m => m.modelId === currentModel)?.name || currentModel || "unknown";
+                    const modeName = modes?.find(m => m.id === currentMode)?.name || currentMode || "unknown";
+                    lines.push(`🤖 Model: ${modelName}`);
+                    lines.push(`📋 Mode: ${modeName}`);
+                    lines.push(`🔗 Session: ${acp.sessionId.slice(0, 8)}…`);
+                    lines.push(`📊 Models available: ${models?.length || 0}`);
+                }
+
+                lines.push(`📱 Telegram: connected`);
+                lines.push(`👥 Allowed chats: ${chatIds.length}`);
+                if (history) lines.push(`📜 History: ${history.length} messages`);
+
                 const statusButtons = {
-                    inline_keyboard: acp?.alive ? [
+                    inline_keyboard: ready ? [
+                        [
+                            { text: "🤖 Model", callback_data: "/model" },
+                            { text: "📋 Mode", callback_data: "/mode" },
+                        ],
                         [
                             { text: "📊 Usage", callback_data: "/usage" },
                             { text: "🗜️ Compact", callback_data: "/compact" },

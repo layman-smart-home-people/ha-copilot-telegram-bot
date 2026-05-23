@@ -75,6 +75,8 @@ export class Bridge {
     // Session state
     #models = [];
     #modes = [];
+    #currentModel = "";
+    #currentMode = "";
     #sessionGrantedTools = new Set();
 
     constructor({ telegram, acp, config, log }) {
@@ -240,8 +242,14 @@ export class Bridge {
                 this.#models = result.models.availableModels;
                 this.#log(`Models available: ${this.#models.length}`);
             }
+            if (result.models?.currentModelId) {
+                this.#currentModel = result.models.currentModelId;
+            }
             if (result.modes?.availableModes) {
                 this.#modes = result.modes.availableModes;
+            }
+            if (result.modes?.currentModeId) {
+                this.#currentMode = result.modes.currentModeId;
             }
         });
 
@@ -255,6 +263,9 @@ export class Bridge {
                     description: o.description,
                 }));
             }
+            if (modelOpt?.currentValue) {
+                this.#currentModel = modelOpt.currentValue;
+            }
             const modeOpt = options?.find(o => o.id === "mode");
             if (modeOpt?.options) {
                 this.#modes = modeOpt.options.map(o => ({
@@ -262,6 +273,9 @@ export class Bridge {
                     name: o.name,
                     description: o.description,
                 }));
+            }
+            if (modeOpt?.currentValue) {
+                this.#currentMode = modeOpt.currentValue;
             }
         });
     }
@@ -323,6 +337,8 @@ export class Bridge {
             models: this.#models,
             modes: this.#modes,
             history: this.#history,
+            currentModel: this.#currentModel,
+            currentMode: this.#currentMode,
         }, command, args);
     }
 
@@ -382,6 +398,8 @@ export class Bridge {
                     models: this.#models,
                     modes: this.#modes,
                     history: this.#history,
+                    currentModel: this.#currentModel,
+                    currentMode: this.#currentMode,
                 }, parsed.command, parsed.args);
                 if (handled) return;
             }
