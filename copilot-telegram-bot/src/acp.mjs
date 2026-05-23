@@ -115,8 +115,12 @@ export class ACPClient extends EventEmitter {
     async newSession(opts = {}) {
         const params = {
             cwd: opts.cwd || this.#config.cwd || "/config",
-            mcpServers: opts.mcpServers || [],
         };
+        // Only pass mcpServers if they're HTTP/SSE type (have a url field)
+        if (opts.mcpServers?.length) {
+            const httpServers = opts.mcpServers.filter(s => s.url);
+            if (httpServers.length) params.mcpServers = httpServers;
+        }
         const result = await this.#send("session/new", params);
         this.#sessionId = result.sessionId;
         this.emit("session", result);

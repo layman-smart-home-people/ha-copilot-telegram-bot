@@ -324,11 +324,11 @@ export class Bridge {
     async startCopilot() {
         if (this.#acp.alive) return;
 
-        const mcpServers = this.#config.mcpServers || [];
         await this.#acp.start();
+        // Don't pass stdio-based MCP servers in session/new params —
+        // copilot reads them from ~/.copilot/mcp.json automatically
         await this.#acp.newSession({
             cwd: this.#config.workingDirectory || "/config",
-            mcpServers,
         });
 
         this.#preambleSent = false;
