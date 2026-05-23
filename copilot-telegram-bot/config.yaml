@@ -31,8 +31,7 @@ options:
   working_directory: /config
 schema:
   bot_token: str
-  allowed_chat_ids:
-    - int
+  allowed_chat_ids: list(int)
   copilot_binary: str
   copilot_config_dir: str
   copilot_extra_args: str
