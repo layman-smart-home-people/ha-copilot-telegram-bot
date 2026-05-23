@@ -376,9 +376,9 @@ export class Bridge {
             return;
         }
 
-        // Ack reaction
+        // Ack reaction — ⏳ means queued/waiting
         this.#telegram.enqueue(() =>
-            this.#telegram.setMessageReaction(chatId, message.message_id, "👀").catch(() => {})
+            this.#telegram.setMessageReaction(chatId, message.message_id, "⏳").catch(() => {})
         );
 
         // Handle slash commands BEFORE typing
@@ -440,7 +440,7 @@ export class Bridge {
                             data: attachment.buffer.toString("base64"),
                             mimeType: attachment.mimeType || "image/png",
                         }] : undefined,
-                    });
+                    }, chatId, message.message_id);
                     return;
                 }
             } catch (err) {
@@ -452,7 +452,7 @@ export class Bridge {
         }
 
         if (promptText.trim()) {
-            await this.#queuePrompt(promptText);
+            await this.#queuePrompt(promptText, {}, chatId, message.message_id);
             return;
         }
 
@@ -463,24 +463,34 @@ export class Bridge {
 
     // --- Prompt queue (one at a time) ---
 
-    async #queuePrompt(text, opts = {}) {
+    async #queuePrompt(text, opts = {}, chatId = null, messageId = null) {
         if (this.#promptActive) {
-            this.#promptQueue.push({ text, opts });
+            this.#promptQueue.push({ text, opts, chatId, messageId });
             return;
         }
         this.#promptActive = true;
+
+        // Update reaction: ⏳ → 👀 (now being processed)
+        if (chatId && messageId) {
+            this.#telegram.setMessageReaction(chatId, messageId, "👀").catch(() => {});
+        }
 
         try {
             await this.#acp.prompt(text, opts);
         } catch (err) {
             this.#log(`Prompt error: ${err.message}`);
             const userMsg = formatError(err);
-            for (const chatId of this.#allowedChatIds) {
+            for (const cid of this.#allowedChatIds) {
                 this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(chatId, userMsg)
+                    this.#telegram.sendMessage(cid, userMsg)
                 );
             }
         } finally {
+            // Clear reaction — response delivered
+            if (chatId && messageId) {
+                this.#telegram.setMessageReaction(chatId, messageId, null).catch(() => {});
+            }
+
             this.#promptActive = false;
             this.#flushMessageBuffer();
             this.#stopTyping();
@@ -489,7 +499,7 @@ export class Bridge {
             // Process queued prompts
             if (this.#promptQueue.length > 0) {
                 const next = this.#promptQueue.shift();
-                this.#queuePrompt(next.text, next.opts);
+                this.#queuePrompt(next.text, next.opts, next.chatId, next.messageId);
             }
         }
     }

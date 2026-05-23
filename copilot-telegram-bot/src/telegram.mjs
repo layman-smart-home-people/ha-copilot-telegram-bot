@@ -105,7 +105,7 @@ export class TelegramClient extends EventEmitter {
     setMessageReaction(chatId, messageId, emoji) {
         return this.call("setMessageReaction", {
             chat_id: chatId, message_id: messageId,
-            reaction: [{ type: "emoji", emoji }],
+            reaction: emoji ? [{ type: "emoji", emoji }] : [],
         });
     }
 
