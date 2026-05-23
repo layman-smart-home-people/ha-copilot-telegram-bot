@@ -57,6 +57,9 @@ export class Bridge {
     // Login lock — prevents multiple concurrent login flows
     #loginPromise = null;
 
+    // startCopilot lock — prevents overlapping start attempts
+    #startPromise = null;
+
     // Temp dir
     #tmpDir;
 
@@ -328,19 +331,31 @@ export class Bridge {
     async startCopilot() {
         if (this.#acp.alive) return;
 
+        // If already starting, wait for that attempt
+        if (this.#startPromise) {
+            this.#log("Start already in progress, waiting...");
+            return this.#startPromise;
+        }
+
+        this.#startPromise = this.#doStartCopilot();
+        try {
+            await this.#startPromise;
+        } finally {
+            this.#startPromise = null;
+        }
+    }
+
+    async #doStartCopilot() {
         await this.#acp.start();
-        // Don't pass stdio-based MCP servers in session/new params —
-        // copilot reads them from ~/.copilot/mcp.json automatically
         try {
             await this.#acp.newSession({
                 cwd: this.#config.workingDirectory || "/config",
             });
         } catch (err) {
             await this.#acp.stop();
-            // If auth required, run device login flow
             if (err.message?.includes("Authentication required")) {
                 await this.#runDeviceLogin();
-                // Retry after login
+                // Retry after successful login
                 await this.#acp.start();
                 await this.#acp.newSession({
                     cwd: this.#config.workingDirectory || "/config",
