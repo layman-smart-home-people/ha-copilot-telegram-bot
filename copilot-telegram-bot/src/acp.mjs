@@ -246,16 +246,15 @@ export class ACPClient extends EventEmitter {
     }
 
     /**
-     * Respond to a requestPermission / session/request_permission server request.
+     * Respond to a session/request_permission server request.
      * @param {number} requestId - The JSON-RPC id from the server request
-     * @param {"approved"|"denied"} outcome
+     * @param {string} optionId - "allow_once", "allow_always", or "reject_once"
      */
-    respondPermission(requestId, outcome) {
-        // Try the expected ACP format
+    respondPermission(requestId, optionId) {
         const response = {
             jsonrpc: "2.0",
             id: requestId,
-            result: { outcome },
+            result: { optionId },
         };
         this.emit("log", `Permission response: ${JSON.stringify(response)}`);
         try {

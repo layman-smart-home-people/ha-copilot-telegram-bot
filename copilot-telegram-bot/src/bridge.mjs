@@ -192,11 +192,23 @@ export class Bridge {
         });
 
         acp.on("permission_request", async (req) => {
-            this.#log(`Permission request params: ${JSON.stringify(req)}`);
+            this.#log(`Permission request: ${JSON.stringify(req)}`);
             const { requestId } = req;
-            // ACP may use various field names for tool identification
-            const tool = req.toolName || req.tool || req.name || req.method || "unknown_tool";
-            const desc = req.description || req.input?.service || req.reason || "";
+
+            // Extract tool identification from the new session/request_permission format
+            const toolCall = req.toolCall || {};
+            const rawInput = toolCall.rawInput || {};
+            // Build a meaningful tool name from the request
+            const toolTitle = toolCall.title || "";
+            const domain = rawInput.domain || "";
+            const service = rawInput.service || "";
+            const entityId = rawInput.entity_id || "";
+            // Derive a tool-like name for policy matching
+            const tool = domain && service ? `ha_${domain}_${service}` :
+                         toolTitle.toLowerCase().includes("call service") ? "ha_call_service" :
+                         req.toolName || req.tool || req.name || "unknown_tool";
+            const desc = entityId ? `${domain}.${service} → ${entityId}` :
+                         toolTitle || "";
 
             // Policy: auto-approve read-only HA tools + standard copilot tools
             const readOnlyTools = new Set([
@@ -208,8 +220,8 @@ export class Bridge {
 
             // Session grants: user previously allowed this tool for the session
             if (isReadOnly || this.#sessionGrantedTools.has(tool)) {
-                acp.respondPermission(requestId, "approved");
-                this.#log(`Permission auto-approved: ${tool}`);
+                acp.respondPermission(requestId, "allow_once");
+                this.#log(`Permission auto-approved: ${tool} (${desc})`);
                 return;
             }
 
@@ -218,7 +230,7 @@ export class Bridge {
             const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
             if (!chatId || !this.#buttons) {
                 // No chat to ask — deny by default
-                acp.respondPermission(requestId, "denied");
+                acp.respondPermission(requestId, "reject_once");
                 this.#log(`Permission denied (no chat): ${tool}`);
                 return;
             }
@@ -226,9 +238,9 @@ export class Bridge {
             const label = desc ? `${tool}\n${desc}` : tool;
             const rows = [
                 [
-                    { text: "✅ Allow once", value: "once" },
-                    { text: "✅ Allow session", value: "session" },
-                    { text: "❌ Deny", value: "deny" },
+                    { text: "✅ Allow once", value: "allow_once" },
+                    { text: "✅ Always allow", value: "allow_always" },
+                    { text: "❌ Deny", value: "reject_once" },
                 ],
             ];
             const selected = await this.#buttons.prompt(
@@ -238,14 +250,14 @@ export class Bridge {
                 { timeoutMs: 60000, timeoutText: "🔐 Permission denied (timeout)" }
             );
 
-            if (selected === "once" || selected === "session") {
-                if (selected === "session") {
+            if (selected === "allow_once" || selected === "allow_always") {
+                if (selected === "allow_always") {
                     this.#sessionGrantedTools.add(tool);
                 }
-                acp.respondPermission(requestId, "approved");
+                acp.respondPermission(requestId, selected);
                 this.#log(`Permission granted (${selected}): ${tool}`);
             } else {
-                acp.respondPermission(requestId, "denied");
+                acp.respondPermission(requestId, "reject_once");
                 this.#log(`Permission denied: ${tool}`);
             }
         });
