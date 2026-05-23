@@ -137,7 +137,7 @@ export class ACPClient extends EventEmitter {
             const httpServers = opts.mcpServers.filter(s => s.url);
             if (httpServers.length) params.mcpServers = httpServers;
         }
-        const result = await this.#send("session/new", params);
+        const result = await this.#send("session/new", params, 60000);
         this.#sessionId = result.sessionId;
         this.emit("session", result);
         return result;

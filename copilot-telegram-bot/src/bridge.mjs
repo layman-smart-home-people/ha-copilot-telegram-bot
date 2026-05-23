@@ -426,7 +426,9 @@ export class Bridge {
             }
         }
 
-        // Create session
+        // Create session (small delay to let auth propagate in the ACP process)
+        await new Promise(r => setTimeout(r, 500));
+        this.#log("Creating new ACP session...");
         await this.#acp.newSession({
             cwd: this.#config.workingDirectory || "/config",
         });
