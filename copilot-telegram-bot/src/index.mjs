@@ -157,6 +157,11 @@ async function main() {
     bridge.setupACPHandlers();
     bridge.setupTelegramHandlers();
 
+    // Start Telegram polling FIRST so the bot can send/receive messages
+    // during login flow
+    log("Starting Telegram polling...");
+    telegram.startPolling();
+
     // Auto-start Copilot if configured
     if (config.autoStart) {
         try {
@@ -193,12 +198,6 @@ async function main() {
             telegram.sendMessage(chatId, `🟢 Copilot Telegram Bot online. ${acp.alive ? "Session ready." : "Send a message to start Copilot."}`)
         );
     }
-
-    // Start polling (this blocks)
-    log("Starting Telegram polling...");
-    await telegram.startPolling();
-
-    log("Polling stopped.");
 }
 
 // --- Shutdown ---
