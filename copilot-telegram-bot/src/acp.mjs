@@ -53,6 +53,9 @@ export class ACPClient extends EventEmitter {
                 },
             });
 
+            // Suppress EPIPE errors on stdin (process may die before we write)
+            this.#process.stdin.on("error", () => {});
+
             this.#process.stdout.on("data", (chunk) => this.#onData(chunk));
             this.#process.stderr.on("data", (chunk) => {
                 const text = chunk.toString().trim();
@@ -228,13 +231,20 @@ export class ACPClient extends EventEmitter {
 
             this.#pending.set(id, { resolve, reject, timeout });
 
-            try {
-                this.#process.stdin.write(msg);
-            } catch (err) {
+            if (!this.#process.stdin.writable) {
                 this.#pending.delete(id);
                 clearTimeout(timeout);
-                reject(err);
+                reject(new Error("ACP stdin not writable"));
+                return;
             }
+
+            this.#process.stdin.write(msg, (err) => {
+                if (err) {
+                    this.#pending.delete(id);
+                    clearTimeout(timeout);
+                    reject(err);
+                }
+            });
         });
     }
 

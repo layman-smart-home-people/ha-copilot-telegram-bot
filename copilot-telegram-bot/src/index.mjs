@@ -98,13 +98,20 @@ async function validate(config) {
         extraArgs: config.copilotExtraArgs,
     });
 
+    // Capture stderr for diagnostics
+    const stderrLines = [];
+    testAcp.on("log", (text) => stderrLines.push(text));
+
     try {
         const result = await testAcp.start();
         log(`Copilot ACP OK: ${result.agentInfo?.name} v${result.agentInfo?.version}`);
         await testAcp.stop();
     } catch (err) {
         log(`WARNING: Copilot ACP test failed: ${err.message}`);
-        log("The bot will start but Copilot may not work. Check auth with 'copilot login'.");
+        if (stderrLines.length > 0) {
+            log(`Copilot stderr: ${stderrLines.join(" | ")}`);
+        }
+        log("The bot will start but Copilot may not work until the issue is resolved.");
         try { await testAcp.stop(); } catch {}
     }
 }
