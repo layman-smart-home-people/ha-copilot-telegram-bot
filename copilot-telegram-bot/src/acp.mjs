@@ -115,8 +115,9 @@ export class ACPClient extends EventEmitter {
     async newSession(opts = {}) {
         const params = {
             cwd: opts.cwd || this.#config.cwd || "/config",
+            mcpServers: [],
         };
-        // Only pass mcpServers if they're HTTP/SSE type (have a url field)
+        // Only include HTTP/SSE MCP servers (session/new doesn't accept stdio format)
         if (opts.mcpServers?.length) {
             const httpServers = opts.mcpServers.filter(s => s.url);
             if (httpServers.length) params.mcpServers = httpServers;
