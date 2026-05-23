@@ -13,7 +13,8 @@ export function parseSlashCommand(text, botUsername) {
 }
 
 export async function handleSlashCommand(ctx, command, args) {
-    const { acp, telegram, chatId, chatIds, log, buttons, models, modes, history, currentModel, currentMode } = ctx;
+    const { acp, telegram, chatId, chatIds, log, buttons, models, modes, history,
+            currentModel, currentMode, availableCommands, knownTools } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {
         for (const cid of chatIds) {
@@ -207,6 +208,57 @@ export async function handleSlashCommand(ctx, command, args) {
                 reply(`📜 Recent messages (${Math.min(n, 30)}):\n\n${formatted}`);
                 return true;
             }
+            case "skills":
+            case "tools": {
+                const lines = ["🧰 Available Skills & Tools\n"];
+
+                // Copilot slash commands from ACP
+                if (availableCommands?.length > 0) {
+                    lines.push("⚡ Copilot Commands:");
+                    for (const cmd of availableCommands) {
+                        const name = cmd.name || cmd.command || cmd;
+                        const desc = cmd.description ? ` — ${cmd.description}` : "";
+                        lines.push(`  /${name}${desc}`);
+                    }
+                    lines.push("");
+                }
+
+                // MCP tools discovered from tool calls
+                if (knownTools?.size > 0) {
+                    // Group by prefix (ha_, github_, etc.)
+                    const groups = new Map();
+                    for (const [name] of knownTools) {
+                        const prefix = name.includes("_") ? name.split("_")[0] : "other";
+                        if (!groups.has(prefix)) groups.set(prefix, []);
+                        groups.get(prefix).push(name);
+                    }
+
+                    const labels = { ha: "🏠 Home Assistant", github: "🐙 GitHub", mcp: "🔌 MCP" };
+                    for (const [prefix, tools] of groups) {
+                        const label = labels[prefix] || `🔧 ${prefix}`;
+                        lines.push(`${label} Tools:`);
+                        for (const t of tools.sort()) {
+                            lines.push(`  • ${t}`);
+                        }
+                        lines.push("");
+                    }
+                }
+
+                // Bot commands (always available)
+                lines.push("📱 Bot Commands:");
+                lines.push("  /help /status /model /mode");
+                lines.push("  /skills /history /compact");
+                lines.push("  /autopilot /plan /cancel");
+                lines.push("  /usage /session");
+
+                if (!knownTools?.size && !availableCommands?.length) {
+                    lines.push("\n💡 MCP tools will appear here after Copilot uses them.");
+                    lines.push("Try asking Copilot to check your HA entities!");
+                }
+
+                reply(lines.join("\n"));
+                return true;
+            }
             case "help": {
                 const helpButtons = {
                     inline_keyboard: [
@@ -234,6 +286,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     "  /plan [on|off]\n" +
                     "  /model [name]\n" +
                     "  /mode\n" +
+                    "  /skills — show available tools\n" +
                     "  /compact\n" +
                     "  /cancel\n" +
                     "  /usage\n" +

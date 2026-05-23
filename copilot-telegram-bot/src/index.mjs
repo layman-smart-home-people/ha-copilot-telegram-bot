@@ -181,6 +181,7 @@ async function main() {
                 { command: "session", description: "Session management (new/stop)" },
                 { command: "mode", description: "Switch conversation mode" },
                 { command: "history", description: "Show recent chat history" },
+                { command: "skills", description: "Show available tools & skills" },
             ],
         });
         log("Registered bot commands with Telegram");

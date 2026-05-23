@@ -78,6 +78,8 @@ export class Bridge {
     #currentModel = "";
     #currentMode = "";
     #sessionGrantedTools = new Set();
+    #availableCommands = [];  // Copilot slash commands from ACP
+    #knownTools = new Map();  // MCP tool names seen → description
 
     constructor({ telegram, acp, config, log }) {
         this.#telegram = telegram;
@@ -125,6 +127,10 @@ export class Bridge {
             if (desc) {
                 this.#activeTools.set(toolCallId, { name: toolName, description: desc });
                 this.#scheduleBubbleUpdate();
+            }
+            // Track tool for /skills discovery
+            if (toolName && !this.#knownTools.has(toolName)) {
+                this.#knownTools.set(toolName, desc || toolName);
             }
         });
 
@@ -278,6 +284,14 @@ export class Bridge {
                 this.#currentMode = modeOpt.currentValue;
             }
         });
+
+        // Capture available commands (copilot slash commands)
+        acp.on("commands", (commands) => {
+            if (Array.isArray(commands)) {
+                this.#availableCommands = commands;
+                this.#log(`Copilot commands available: ${commands.length}`);
+            }
+        });
     }
 
     setupTelegramHandlers() {
@@ -339,6 +353,8 @@ export class Bridge {
             history: this.#history,
             currentModel: this.#currentModel,
             currentMode: this.#currentMode,
+            availableCommands: this.#availableCommands,
+            knownTools: this.#knownTools,
         }, command, args);
     }
 
@@ -400,6 +416,8 @@ export class Bridge {
                     history: this.#history,
                     currentModel: this.#currentModel,
                     currentMode: this.#currentMode,
+                    availableCommands: this.#availableCommands,
+                    knownTools: this.#knownTools,
                 }, parsed.command, parsed.args);
                 if (handled) return;
             }
