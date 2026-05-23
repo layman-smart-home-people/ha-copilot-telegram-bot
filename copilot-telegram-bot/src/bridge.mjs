@@ -390,13 +390,36 @@ export class Bridge {
             this.#log("ACP authentication successful");
         } catch (err) {
             if (err.message?.includes("Authentication required") || err.message?.includes("-32000")) {
-                this.#log("No valid token — starting device login flow");
-                await this.#acp.stop();
-                await this.#runDeviceLogin();
-                // Restart ACP and retry auth after login
-                await this.#acp.start();
-                await this.#acp.authenticate();
-                this.#log("ACP authentication successful after login");
+                // If a PAT was set but failed, clear it and retry with stored tokens
+                if (process.env.COPILOT_GITHUB_TOKEN) {
+                    this.#log("Configured token rejected — clearing and retrying with stored tokens");
+                    delete process.env.COPILOT_GITHUB_TOKEN;
+                    await this.#acp.stop();
+                    await this.#acp.start();
+                    try {
+                        await this.#acp.authenticate();
+                        this.#log("ACP authentication successful with stored tokens");
+                    } catch (retryErr) {
+                        if (retryErr.message?.includes("Authentication required") || retryErr.message?.includes("-32000")) {
+                            this.#log("No stored tokens either — starting device login");
+                            await this.#acp.stop();
+                            await this.#runDeviceLogin();
+                            await this.#acp.start();
+                            await this.#acp.authenticate();
+                            this.#log("ACP authentication successful after login");
+                        } else {
+                            await this.#acp.stop();
+                            throw retryErr;
+                        }
+                    }
+                } else {
+                    this.#log("No valid token — starting device login flow");
+                    await this.#acp.stop();
+                    await this.#runDeviceLogin();
+                    await this.#acp.start();
+                    await this.#acp.authenticate();
+                    this.#log("ACP authentication successful after login");
+                }
             } else {
                 await this.#acp.stop();
                 throw err;

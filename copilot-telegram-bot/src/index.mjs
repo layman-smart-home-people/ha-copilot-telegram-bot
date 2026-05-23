@@ -126,8 +126,14 @@ async function main() {
 
     // Inject github_token into env BEFORE validation so the ACP test has it
     if (config.githubToken) {
-        process.env.COPILOT_GITHUB_TOKEN = config.githubToken;
-        log("Using configured GitHub token for authentication");
+        if (config.githubToken.startsWith("ghp_")) {
+            log("WARNING: Classic PATs (ghp_) are NOT supported by Copilot CLI.");
+            log("Use a fine-grained PAT (github_pat_) with 'Copilot Requests' permission.");
+            log("Ignoring configured token — will use stored credentials or device login.");
+        } else {
+            process.env.COPILOT_GITHUB_TOKEN = config.githubToken;
+            log("Using configured GitHub token for authentication");
+        }
     }
 
     await validate(config);
