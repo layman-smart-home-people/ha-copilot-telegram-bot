@@ -429,9 +429,10 @@ export class Bridge {
         const binary = this.#config.copilotBinary || "/share/copilot-tools/copilot";
 
         this.#loginPromise = new Promise((resolve, reject) => {
-            this.#log(`[login] Spawning: ${binary} login`);
-            const proc = spawn(binary, ["login"], {
-                stdio: ["pipe", "pipe", "pipe"],
+            // Use 'yes' pipe to auto-accept all prompts (e.g. plaintext storage)
+            this.#log(`[login] Spawning: yes | ${binary} login`);
+            const proc = spawn("sh", ["-c", `yes | "${binary}" login`], {
+                stdio: ["ignore", "pipe", "pipe"],
                 env: { ...process.env },
             });
 
@@ -439,10 +440,6 @@ export class Bridge {
             let stderr = "";
             let codeSent = false;
             let resolved = false;
-            let plaintextAccepted = false;
-
-            // Prevent EPIPE crashes on stdin
-            proc.stdin.on("error", () => {});
 
             const timeout = setTimeout(() => {
                 if (!resolved) {
@@ -461,25 +458,10 @@ export class Bridge {
                 }
             }, 10 * 60 * 1000);
 
-            const handleOutput = (text) => {
-                // Auto-accept plaintext storage if prompted (on stdout or stderr)
-                if (!plaintextAccepted && (
-                    text.toLowerCase().includes("plaintext") ||
-                    text.toLowerCase().includes("plain text") ||
-                    text.includes("(y/N)") || text.includes("[y/N]") ||
-                    text.includes("(Y/n)") || text.includes("[Y/n]")
-                )) {
-                    plaintextAccepted = true;
-                    this.#log("[login] Detected plaintext storage prompt — auto-accepting");
-                    try { proc.stdin.write("yes\n"); } catch {}
-                }
-            };
-
             proc.stdout.on("data", (chunk) => {
                 const text = chunk.toString();
                 stdout += text;
                 this.#log(`[login] stdout: ${text.trim()}`);
-                handleOutput(text);
                 if (!codeSent) {
                     const match = stdout.match(/enter code ([A-Z0-9]{4}-[A-Z0-9]{4})/);
                     if (match && this.#allowedChatIds.length > 0) {
@@ -513,7 +495,6 @@ export class Bridge {
                 if (text) {
                     stderr += text + "\n";
                     this.#log(`[login] stderr: ${text}`);
-                    handleOutput(text);
                 }
             });
 
@@ -538,43 +519,7 @@ export class Bridge {
                     exitCode === 0;
 
                 if (authSuccess) {
-                    // Check if token was not saved (needs plaintext rerun)
-                    if (allOutput.includes("token was not saved")) {
-                        this.#log("[login] Token not saved — rerunning to accept plaintext storage");
-                        const retry = spawn(binary, ["login"], {
-                            stdio: ["pipe", "pipe", "pipe"],
-                            env: { ...process.env },
-                        });
-                        retry.stdin.on("error", () => {});
-                        let retryOut = "";
-                        retry.stdout.on("data", (c) => {
-                            const t = c.toString();
-                            retryOut += t;
-                            this.#log(`[login-retry] stdout: ${t.trim()}`);
-                            // Answer any yes/no prompt
-                            try { retry.stdin.write("yes\n"); } catch {}
-                        });
-                        retry.stderr.on("data", (c) => {
-                            const t = c.toString().trim();
-                            if (t) {
-                                retryOut += t;
-                                this.#log(`[login-retry] stderr: ${t}`);
-                                try { retry.stdin.write("yes\n"); } catch {}
-                            }
-                        });
-                        retry.on("close", (rc) => {
-                            this.#log(`[login-retry] Exited with code ${rc}`);
-                            for (const chatId of this.#allowedChatIds) {
-                                this.#telegram.enqueue(() =>
-                                    this.#telegram.sendMessage(chatId, "✅ GitHub authentication successful!")
-                                );
-                            }
-                            resolve();
-                        });
-                        retry.on("error", () => resolve());
-                        return;
-                    }
-                    this.#log("[login] Authentication appears successful");
+                    this.#log("[login] Authentication successful");
                     for (const chatId of this.#allowedChatIds) {
                         this.#telegram.enqueue(() =>
                             this.#telegram.sendMessage(chatId, "✅ GitHub authentication successful!")
