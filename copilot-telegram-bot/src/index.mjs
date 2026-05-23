@@ -164,7 +164,7 @@ async function main() {
         const resetIdle = () => {
             if (idleTimer) clearTimeout(idleTimer);
             idleTimer = setTimeout(async () => {
-                if (acp.alive) {
+                if (acp.alive && !bridge.promptActive) {
                     log(`Idle timeout (${config.idleTimeoutMinutes}min) — stopping Copilot`);
                     for (const chatId of bridge.allowedChatIds) {
                         telegram.enqueue(() =>

@@ -47,12 +47,7 @@ export async function handleSlashCommand(ctx, command, args) {
             }
             case "mode": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
-                try {
-                    const mode = await acp.getMode();
-                    reply(`📋 Current mode: ${mode?.mode || mode || "unknown"}`);
-                } catch {
-                    reply("📋 Mode: unknown (RPC not available)");
-                }
+                reply("📋 Mode: use /autopilot or /plan to change");
                 return true;
             }
             case "compact": {
@@ -67,12 +62,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     await acp.setModel(args);
                     broadcast(`🤖 Model → ${args}`);
                 } else {
-                    try {
-                        const current = await acp.getModel();
-                        reply(`🤖 Current model: ${current?.modelId || current || "unknown"}`);
-                    } catch {
-                        reply("🤖 Model: unknown");
-                    }
+                    reply("🤖 Use: /model <name> to switch models");
                 }
                 return true;
             }
@@ -136,6 +126,16 @@ export async function handleSlashCommand(ctx, command, args) {
                 );
                 return true;
             }
+            case "cancel": {
+                if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
+                try {
+                    await acp.cancel();
+                    broadcast("🛑 Cancelled current operation");
+                } catch (err) {
+                    reply(`⚠️ Cancel failed: ${err.message}`);
+                }
+                return true;
+            }
             case "help": {
                 reply(
                     "📋 Available commands:\n" +
@@ -144,6 +144,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     "  /mode\n" +
                     "  /model [name]\n" +
                     "  /compact\n" +
+                    "  /cancel\n" +
                     "  /usage\n" +
                     "  /status\n" +
                     "  /session [new|stop]\n" +

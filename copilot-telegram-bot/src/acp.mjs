@@ -153,33 +153,56 @@ export class ACPClient extends EventEmitter {
     }
 
     // --- RPC commands ---
-
-    async getMode() {
-        return this.#send("session/getMode", { sessionId: this.#sessionId });
-    }
+    // Note: ACP exposes commands (model, autopilot, compact, usage) rather than
+    // typed RPC methods. We use session/set_config_option where available and
+    // fall back to sending commands as prompts.
 
     async setMode(mode) {
-        return this.#send("session/setMode", { sessionId: this.#sessionId, mode });
-    }
-
-    async getModel() {
-        return this.#send("session/getModel", { sessionId: this.#sessionId });
+        try {
+            return await this.#send("session/set_config_option", {
+                sessionId: this.#sessionId, optionId: "mode", value: mode,
+            }, 10000);
+        } catch {
+            // Fallback: send as a slash command via prompt
+            return this.prompt(`/autopilot ${mode === "autopilot" ? "on" : "off"}`);
+        }
     }
 
     async setModel(modelId) {
-        return this.#send("session/setModel", { sessionId: this.#sessionId, modelId });
+        try {
+            return await this.#send("session/set_config_option", {
+                sessionId: this.#sessionId, optionId: "model", value: modelId,
+            }, 10000);
+        } catch {
+            return this.prompt(`/model ${modelId}`);
+        }
     }
 
     async compact() {
-        return this.#send("session/compact", { sessionId: this.#sessionId });
+        return this.prompt("/compact");
     }
 
     async getUsage() {
-        return this.#send("session/getUsage", { sessionId: this.#sessionId });
+        // Usage is typically delivered via config_option_update notifications
+        // There's no dedicated RPC; send /usage and let the response come through
+        return this.prompt("/usage");
+    }
+
+    async cancel() {
+        try {
+            return await this.#send("session/cancel", { sessionId: this.#sessionId }, 10000);
+        } catch {
+            // If cancel RPC doesn't exist, there's nothing we can do
+            return null;
+        }
     }
 
     async listSessions() {
-        return this.#send("session/list", {});
+        try {
+            return await this.#send("session/list", {}, 10000);
+        } catch {
+            return [];
+        }
     }
 
     // --- Internal ---

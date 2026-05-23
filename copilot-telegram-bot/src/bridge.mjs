@@ -38,9 +38,10 @@ export class Bridge {
     #lastCompletedToolDesc = null;
 
     // Message accumulator (collect chunks → send as complete message)
+    // Use a longer flush timer as a safety net — primary flush happens on message_end
     #messageBuffer = "";
     #messageFlushTimer = null;
-    #messageFlushMs = 300;
+    #messageFlushMs = 2000;
 
     // Preamble
     #preambleSent = false;
@@ -65,6 +66,7 @@ export class Bridge {
     }
 
     get allowedChatIds() { return this.#allowedChatIds; }
+    get promptActive() { return this.#promptActive; }
 
     // --- Setup event handlers ---
 
@@ -114,13 +116,28 @@ export class Bridge {
             this.#relayToolImages(result);
         });
 
-        // Process exit
+        // Process exit — handle crash recovery
         acp.on("exit", ({ code, signal }) => {
             this.#stopTyping();
             this.#dismissBubble();
             this.#flushMessageBuffer();
-            this.#promptActive = false;
-            // Don't broadcast exit if it was intentional
+
+            // Crash recovery: reject any active prompt so the queue doesn't wedge
+            if (this.#promptActive) {
+                this.#promptActive = false;
+                // Drain the queue — notify users that queued messages were lost
+                const dropped = this.#promptQueue.length;
+                this.#promptQueue = [];
+                if (dropped > 0) {
+                    for (const chatId of this.#allowedChatIds) {
+                        this.#telegram.enqueue(() =>
+                            this.#telegram.sendMessage(chatId, `⚠️ ${dropped} queued message(s) dropped due to Copilot exit.`)
+                        );
+                    }
+                }
+            }
+
+            // Don't broadcast exit if it was intentional (code 0 or null = SIGTERM)
             if (code !== 0 && code !== null) {
                 for (const chatId of this.#allowedChatIds) {
                     this.#telegram.enqueue(() =>

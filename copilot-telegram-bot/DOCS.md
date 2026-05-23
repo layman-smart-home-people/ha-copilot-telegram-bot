@@ -1,62 +1,103 @@
 # Copilot Telegram Bot
 
-An always-on Telegram bot that connects to GitHub Copilot CLI via the Agent Client Protocol (ACP).
+Talk to GitHub Copilot CLI from your phone via Telegram.
 
-## Features
+## How It Works
 
-- 🤖 **Always-on** — The Telegram bot runs continuously, even when no Copilot CLI session is active
-- ⚡ **On-demand Copilot** — Copilot CLI starts automatically when you send a message
-- 💬 **Rich messaging** — Markdown formatting, code blocks, images, file attachments
-- 🔧 **Tool status** — See what Copilot is doing in real-time (tool call bubbles)
-- 📱 **Slash commands** — `/autopilot`, `/model`, `/mode`, `/compact`, `/usage`, `/status`, `/help`
-- 🔄 **Auto-reconnect** — Automatically restarts Copilot if it crashes
-- ⏸️ **Idle timeout** — Optionally stop Copilot after inactivity to save resources
+This add-on runs a Telegram bot that connects to Copilot CLI using the Agent Client Protocol (ACP). When you send a message, Copilot wakes up, processes your request, and sends the response back to Telegram.
+
+## Setup
+
+### 1. Create a Telegram Bot
+
+1. Open Telegram → search for **@BotFather**
+2. Send `/newbot` and follow the prompts
+3. Copy the **bot token** (looks like `123456789:ABC...xyz`)
+
+### 2. Find Your Chat ID
+
+1. Open Telegram → search for **@userinfobot**
+2. Send it any message
+3. It replies with your numeric chat ID
+
+### 3. Configure This Add-on
+
+- **bot_token**: Paste your token from BotFather
+- **allowed_chat_ids**: Add your chat ID number
+
+### 4. Start the Add-on
+
+Click Start on the Info tab, then send a message to your bot!
+
+## Commands
+
+- `/autopilot on` — Let Copilot work without asking permission
+- `/autopilot off` — Ask before each action
+- `/plan on/off` — Toggle plan-first mode
+- `/model <name>` — Switch AI model (e.g., `claude-sonnet-4-5`)
+- `/compact` — Free up conversation memory
+- `/cancel` — Stop what Copilot is currently doing
+- `/usage` — See how many tokens you've used
+- `/status` — Check if everything is running
+- `/session new` — Start a fresh conversation
+- `/session stop` — Shut down Copilot (saves resources)
+- `/help` — Show all commands
+
+## Configuration Options
+
+**bot_token** *(required)*
+Your Telegram bot token from @BotFather.
+
+**allowed_chat_ids** *(required)*
+List of Telegram user IDs allowed to use the bot. Get yours from @userinfobot.
+
+**copilot_binary**
+Path to the Copilot CLI binary. Default: `/share/copilot-tools/copilot`
+
+**copilot_config_dir**
+Where Copilot's login credentials live. Default: `/share/copilot-tools/.copilot`
+
+**copilot_extra_args**
+Additional flags passed to Copilot (e.g., `--model opus`).
+
+**preamble**
+Instructions sent to Copilot at the start of each session. The default tells Copilot to be concise and Telegram-friendly.
+
+**auto_start**
+If `true`, Copilot starts when the add-on boots. If `false`, it starts when you send your first message.
+
+**idle_timeout_minutes**
+Automatically stop Copilot after this many minutes of inactivity. Set to `0` to keep it running forever.
+
+**model**
+Default AI model. Leave blank for auto-selection.
+
+**working_directory**
+The directory Copilot works in. Default: `/config` (your HA config directory).
+
+## Troubleshooting
+
+**Bot doesn't respond at all**
+→ Check the Log tab. Most likely: wrong bot token or your chat ID isn't in the allowed list.
+
+**"Copilot binary not found"**
+→ Copilot CLI isn't installed. Install it via the VS Code Server add-on or manually to `/share/copilot-tools/copilot`.
+
+**"ACP test failed"**
+→ Copilot isn't logged in. Open a terminal and run: `/share/copilot-tools/copilot login`
+
+**"Another process is polling"**
+→ Another bot instance is running with the same token. Wait 30 seconds, then restart this add-on.
+
+**Responses are slow**
+→ Complex tasks take time. Watch for typing indicators. Use `/cancel` if stuck.
 
 ## Prerequisites
 
-1. **GitHub Copilot CLI** must be installed and authenticated (e.g., via the VS Code Server add-on)
-2. The Copilot binary must be accessible at `/share/copilot-tools/copilot`
-3. A **Telegram Bot** token from [@BotFather](https://t.me/BotFather)
+- Copilot CLI must be installed and authenticated (usually via VS Code Server add-on)
+- The binary must be on a shared volume accessible to this add-on (default: `/share/copilot-tools/copilot`)
 
-## Configuration
+## More Info
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `bot_token` | Telegram bot token from BotFather | (required) |
-| `allowed_chat_ids` | List of Telegram chat IDs allowed to use the bot | `[]` |
-| `copilot_binary` | Path to the Copilot CLI binary | `/share/copilot-tools/copilot` |
-| `copilot_config_dir` | Path to Copilot config (auth, etc.) | `/share/copilot-tools/.copilot` |
-| `copilot_extra_args` | Extra CLI arguments for Copilot | `""` |
-| `preamble` | System instructions for Telegram formatting | (see default) |
-| `auto_start` | Start Copilot session on boot | `true` |
-| `idle_timeout_minutes` | Stop Copilot after N minutes idle (0 = never) | `0` |
-| `model` | Default AI model to use | `""` (auto) |
-| `working_directory` | Copilot working directory | `/config` |
-
-## Getting Your Chat ID
-
-1. Send a message to [@userinfobot](https://t.me/userinfobot) on Telegram
-2. It will reply with your chat ID
-3. Add this number to `allowed_chat_ids` in the add-on config
-
-## Slash Commands
-
-- `/autopilot [on|off]` — Toggle autopilot mode
-- `/plan [on|off]` — Toggle plan mode
-- `/mode` — Show current mode
-- `/model [name]` — Show or switch model
-- `/compact` — Compact conversation history
-- `/usage` — Show token usage metrics
-- `/status` — Show bot and Copilot status
-- `/session [new|stop]` — Manage Copilot session
-- `/help` — Show available commands
-
-## Architecture
-
-The add-on consists of:
-
-1. **Telegram Client** — Always-on long polling for incoming messages
-2. **ACP Client** — Spawns Copilot CLI as a child process using `copilot --acp --stdio`
-3. **Bridge** — Routes messages between Telegram and Copilot, handles formatting, typing indicators, tool call bubbles, and file attachments
-
-The ACP (Agent Client Protocol) is a JSON-RPC 2.0 protocol over stdio that provides programmatic access to Copilot CLI sessions.
+Full documentation and source code:
+https://github.com/layman-smart-home-people/ha-copilot-telegram-bot
