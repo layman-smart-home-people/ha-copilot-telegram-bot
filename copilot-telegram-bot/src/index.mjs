@@ -97,6 +97,7 @@ async function validate(config) {
         cwd: config.workingDirectory,
         model: config.model,
         extraArgs: config.copilotExtraArgs,
+        copilotHome: config.copilotConfigDir,
     });
 
     // Capture stderr for diagnostics
@@ -178,6 +179,7 @@ async function main() {
         cwd: config.workingDirectory,
         model: config.model,
         extraArgs: config.copilotExtraArgs,
+        copilotHome: config.copilotConfigDir,
     });
 
     // Create bridge

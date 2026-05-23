@@ -46,13 +46,18 @@ export class ACPClient extends EventEmitter {
         }
 
         // Wrap spawn in a promise so ENOENT is caught properly
+        const copilotHome = this.#config.copilotHome || process.env.COPILOT_HOME || "";
         const spawnEnv = {
             ...process.env,
             HOME: process.env.HOME || "/root",
             PATH: `${this.#config.binary.replace(/\/[^/]+$/, "")}:${process.env.PATH}`,
         };
+        // Set COPILOT_HOME to bypass symlink resolution issues in containers
+        if (copilotHome) {
+            spawnEnv.COPILOT_HOME = copilotHome;
+        }
         this.emit("log", `ACP spawn: ${this.#config.binary} ${args.join(" ")}`);
-        this.emit("log", `ACP env: HOME=${spawnEnv.HOME} COPILOT_GITHUB_TOKEN=${spawnEnv.COPILOT_GITHUB_TOKEN ? "set(" + spawnEnv.COPILOT_GITHUB_TOKEN.substring(0, 8) + "...)" : "unset"} GH_TOKEN=${spawnEnv.GH_TOKEN ? "set" : "unset"} GITHUB_TOKEN=${spawnEnv.GITHUB_TOKEN ? "set" : "unset"}`);
+        this.emit("log", `ACP env: HOME=${spawnEnv.HOME} COPILOT_HOME=${spawnEnv.COPILOT_HOME || "unset"} COPILOT_GITHUB_TOKEN=${spawnEnv.COPILOT_GITHUB_TOKEN ? "set(" + spawnEnv.COPILOT_GITHUB_TOKEN.substring(0, 8) + "...)" : "unset"}`);
         await new Promise((resolve, reject) => {
             this.#process = spawn(this.#config.binary, args, {
                 stdio: ["pipe", "pipe", "pipe"],
