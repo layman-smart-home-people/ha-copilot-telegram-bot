@@ -388,7 +388,7 @@ export class Bridge {
 
         this.#loginPromise = new Promise((resolve, reject) => {
             const proc = spawn(binary, ["login"], {
-                stdio: ["pipe", "pipe", "pipe"],
+                stdio: ["ignore", "pipe", "pipe"],
                 env: { ...process.env },
             });
 
