@@ -479,6 +479,8 @@ export class Bridge {
                 }
             });
         });
+
+        return this.#loginPromise;
     }
 
     async stopCopilot() {
