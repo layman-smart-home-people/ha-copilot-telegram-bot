@@ -9,6 +9,7 @@ import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
 import { ButtonManager } from "./buttons.mjs";
 import { ChatHistory } from "./history.mjs";
 import { formatError } from "./errors.mjs";
+import { MessageTransport, makeRef, refKey } from "./transport.mjs";
 import { basename } from "node:path";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -26,6 +27,14 @@ export class Bridge {
     #config;
     #log;
     #allowedChatIds;
+
+    // New v0.6 subsystems
+    #transport;
+    #pairing;
+    #sessionMgr;
+
+    // Active conversation ref — where ACP output is routed
+    #activeRef = null;
 
     // Typing state
     #typingInterval = null;
@@ -81,7 +90,7 @@ export class Bridge {
     #availableCommands = [];  // Copilot slash commands from ACP
     #knownTools = new Map();  // MCP tool names seen → description
 
-    constructor({ telegram, acp, config, log }) {
+    constructor({ telegram, acp, config, log, pairing, sessionMgr }) {
         this.#telegram = telegram;
         this.#acp = acp;
         this.#config = config;
@@ -90,6 +99,9 @@ export class Bridge {
         this.#tmpDir = join("/tmp", `copilot-tg-${process.pid}`);
         this.#buttons = new ButtonManager(telegram);
         this.#history = new ChatHistory(50);
+        this.#transport = new MessageTransport(telegram);
+        this.#pairing = pairing || null;
+        this.#sessionMgr = sessionMgr || null;
     }
 
     get allowedChatIds() { return this.#allowedChatIds; }
@@ -156,25 +168,18 @@ export class Bridge {
             // Crash recovery: reject any active prompt so the queue doesn't wedge
             if (this.#promptActive) {
                 this.#promptActive = false;
+                this.#activeRef = null;
                 // Drain the queue — notify users that queued messages were lost
                 const dropped = this.#promptQueue.length;
                 this.#promptQueue = [];
                 if (dropped > 0) {
-                    for (const chatId of this.#allowedChatIds) {
-                        this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(chatId, `⚠️ ${dropped} queued message(s) dropped due to Copilot exit.`)
-                        );
-                    }
+                    this.#broadcastAdmin(`⚠️ ${dropped} queued message(s) dropped due to Copilot exit.`);
                 }
             }
 
             // Don't broadcast exit if it was intentional (code 0 or null = SIGTERM)
             if (code !== 0 && code !== null) {
-                for (const chatId of this.#allowedChatIds) {
-                    this.#telegram.enqueue(() =>
-                        this.#telegram.sendMessage(chatId, `⚠️ Copilot process exited (code: ${code}). Send a message to restart.`)
-                    );
-                }
+                this.#broadcastAdmin(`⚠️ Copilot process exited (code: ${code}). Send a message to restart.`);
             }
         });
 
@@ -207,7 +212,8 @@ export class Bridge {
             }
 
             // Ask user via inline buttons
-            const chatId = this.#allowedChatIds?.[0];
+            const targetRef = this.#activeRef;
+            const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
             if (!chatId || !this.#buttons) {
                 // No chat to ask — deny by default
                 acp.respondPermission(requestId, "denied");
@@ -306,12 +312,45 @@ export class Bridge {
         });
     }
 
+    // --- Build command context ---
+
+    #buildCommandContext(ref) {
+        return {
+            acp: this.#acp,
+            telegram: this.#telegram,
+            transport: this.#transport,
+            chatId: ref.chatId,
+            chatIds: this.#allowedChatIds,
+            ref,
+            log: this.#log,
+            startCopilot: () => this.startCopilot(),
+            stopCopilot: () => this.stopCopilot(),
+            restartCopilot: () => this.restartCopilot(),
+            buttons: this.#buttons,
+            models: this.#models,
+            modes: this.#modes,
+            history: this.#history,
+            currentModel: this.#currentModel,
+            currentMode: this.#currentMode,
+            availableCommands: this.#availableCommands,
+            knownTools: this.#knownTools,
+            pairing: this.#pairing,
+            sessionMgr: this.#sessionMgr,
+        };
+    }
+
     // --- Inbound message processing ---
 
     async #handleCallbackQuery(query) {
         const chatId = query.message?.chat?.id;
         const userId = query.from?.id;
-        if (!chatId || !this.#allowedChatIds.includes(userId)) return;
+        if (!chatId) return;
+
+        // Auth check for callbacks
+        const isAuthorized = this.#pairing
+            ? this.#pairing.isPaired(userId)
+            : this.#allowedChatIds.includes(userId);
+        if (!isAuthorized) return;
 
         // Try ButtonManager first (handles btn: prefix callbacks)
         if (this.#buttons.handleCallback(query)) return;
@@ -333,29 +372,16 @@ export class Bridge {
             });
         } catch {}
 
+        // Build ref from callback context
+        const threadId = query.message?.message_thread_id || null;
+        const ref = makeRef(chatId, threadId);
+
         // Route callback data as slash commands
         const parts = data.split(" ");
         const command = parts[0].replace("/", "");
         const args = parts.slice(1).join(" ");
 
-        await handleSlashCommand({
-            acp: this.#acp,
-            telegram: this.#telegram,
-            chatId,
-            chatIds: this.#allowedChatIds,
-            log: this.#log,
-            startCopilot: () => this.startCopilot(),
-            stopCopilot: () => this.stopCopilot(),
-            restartCopilot: () => this.restartCopilot(),
-            buttons: this.#buttons,
-            models: this.#models,
-            modes: this.#modes,
-            history: this.#history,
-            currentModel: this.#currentModel,
-            currentMode: this.#currentMode,
-            availableCommands: this.#availableCommands,
-            knownTools: this.#knownTools,
-        }, command, args);
+        await handleSlashCommand(this.#buildCommandContext(ref), command, args);
     }
 
     async #processUpdate(update) {
@@ -370,14 +396,107 @@ export class Bridge {
 
         const chatId = message.chat.id;
         const userId = message.from?.id;
+        const username = message.from?.username || message.from?.first_name || null;
         if (userId == null) return;
 
+        const threadId = message.message_thread_id || null;
+        const isForum = message.chat.is_forum === true;
         const text = message.text || message.caption || "";
 
-        // Check if user is allowed
-        if (!this.#allowedChatIds.includes(userId)) {
-            this.#log(`Ignoring message from unauthorized user: ${userId}`);
-            return;
+        // --- Auth check: pairing-based or legacy allowed_chat_ids ---
+        if (this.#pairing) {
+            // Update username for known users
+            if (this.#pairing.isPaired(userId)) {
+                this.#pairing.updateUsername(userId, username);
+            } else {
+                // Check if user has a pending code — they might be entering it
+                if (this.#pairing.hasPendingCode(userId)) {
+                    const verified = this.#pairing.verifyCode(userId, text);
+                    if (verified) {
+                        this.#telegram.enqueue(() =>
+                            this.#telegram.sendMessage(chatId, "✅ Paired successfully! You can now use the bot.")
+                        );
+                    } else {
+                        this.#telegram.enqueue(() =>
+                            this.#telegram.sendMessage(chatId, "❌ Invalid or expired code. Check HA logs for a fresh code.")
+                        );
+                    }
+                    return;
+                }
+
+                // Not paired — start pairing flow
+                // In groups/supergroups: tell them to DM
+                if (message.chat.type !== "private") {
+                    this.#telegram.enqueue(() =>
+                        this.#telegram.sendMessage(chatId, "👋 DM me to get started!", undefined, undefined)
+                    );
+                    return;
+                }
+
+                // In DM: generate pairing code
+                const code = this.#pairing.generateCode(userId, username);
+                this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(
+                        chatId,
+                        `🔐 Pairing required\n\n` +
+                        `A pairing code has been generated.\n` +
+                        `Check your Home Assistant add-on logs and enter the code here.\n\n` +
+                        `⏳ Code expires in 15 minutes.`
+                    )
+                );
+                return;
+            }
+        } else {
+            // Legacy mode: check allowed_chat_ids
+            if (!this.#allowedChatIds.includes(userId)) {
+                this.#log(`Ignoring message from unauthorized user: ${userId}`);
+                return;
+            }
+        }
+
+        // Build ConversationRef
+        const ref = makeRef(chatId, threadId);
+
+        // --- Forum routing ---
+        if (isForum && this.#sessionMgr) {
+            // Auto-detect forum chat on first message
+            if (!this.#sessionMgr.isForumChat(chatId)) {
+                this.#sessionMgr.setForumChat(chatId);
+                this.#log(`Forum chat detected: ${chatId}`);
+            }
+
+            // Management topic: commands only, no ACP routing
+            if (this.#sessionMgr.isManagementTopic(ref)) {
+                this.#history.push({ role: "user", text, messageId: message.message_id });
+
+                // Ack reaction
+                this.#telegram.enqueue(() =>
+                    this.#telegram.setMessageReaction(chatId, message.message_id, "⏳").catch(() => {})
+                );
+
+                if (message.text?.startsWith("/")) {
+                    const parsed = parseSlashCommand(message.text, this.#telegram.botInfo?.username);
+                    if (parsed) {
+                        await handleSlashCommand(this.#buildCommandContext(ref), parsed.command, parsed.args);
+                        this.#telegram.setMessageReaction(chatId, message.message_id, null).catch(() => {});
+                        return;
+                    }
+                }
+
+                // Non-command in management topic
+                this.#telegram.enqueue(() =>
+                    this.#transport.send(ref, "💡 This is the management topic. Use commands like /new, /status, /sessions, /help.")
+                );
+                this.#telegram.setMessageReaction(chatId, message.message_id, null).catch(() => {});
+                return;
+            }
+
+            // Session topic: look up or create session
+            const session = this.#sessionMgr.getSession(ref);
+            if (session) {
+                ref.sessionId = session.sessionId;
+            }
+            // If no session exists for this topic, it will be created when prompt is queued
         }
 
         // Track incoming user message in history
@@ -401,31 +520,14 @@ export class Bridge {
         if (message.text?.startsWith("/")) {
             const parsed = parseSlashCommand(message.text, this.#telegram.botInfo?.username);
             if (parsed) {
-                const handled = await handleSlashCommand({
-                    acp: this.#acp,
-                    telegram: this.#telegram,
-                    chatId,
-                    chatIds: this.#allowedChatIds,
-                    log: this.#log,
-                    startCopilot: () => this.startCopilot(),
-                    stopCopilot: () => this.stopCopilot(),
-                    restartCopilot: () => this.restartCopilot(),
-                    buttons: this.#buttons,
-                    models: this.#models,
-                    modes: this.#modes,
-                    history: this.#history,
-                    currentModel: this.#currentModel,
-                    currentMode: this.#currentMode,
-                    availableCommands: this.#availableCommands,
-                    knownTools: this.#knownTools,
-                }, parsed.command, parsed.args);
+                const handled = await handleSlashCommand(this.#buildCommandContext(ref), parsed.command, parsed.args);
                 if (handled) return;
             }
             // Unknown command — fall through to prompt
         }
 
         // Start typing
-        this.#startTyping();
+        this.#startTyping(ref);
         this.#bubbleActive = true;
         this.#scheduleBubbleUpdate();
 
@@ -436,9 +538,7 @@ export class Bridge {
             } catch (err) {
                 this.#stopTyping();
                 this.#dismissBubble();
-                this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(chatId, formatError(err))
-                );
+                this.#transport.enqueueSend(ref, formatError(err));
                 return;
             }
         }
@@ -458,58 +558,103 @@ export class Bridge {
                             data: attachment.buffer.toString("base64"),
                             mimeType: attachment.mimeType || "image/png",
                         }] : undefined,
-                    }, chatId, message.message_id);
+                    }, ref, message.message_id);
                     return;
                 }
             } catch (err) {
-                this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(chatId, formatError(err))
-                );
+                this.#transport.enqueueSend(ref, formatError(err));
                 return;
             }
         }
 
         if (promptText.trim()) {
-            await this.#queuePrompt(promptText, {}, chatId, message.message_id);
+            await this.#queuePrompt(promptText, {}, ref, message.message_id);
             return;
         }
 
-        this.#telegram.enqueue(() =>
-            this.#telegram.sendMessage(chatId, "Unsupported message type.")
-        );
+        this.#transport.enqueueSend(ref, "Unsupported message type.");
     }
 
     // --- Prompt queue (one at a time) ---
 
-    async #queuePrompt(text, opts = {}, chatId = null, messageId = null) {
+    async #queuePrompt(text, opts = {}, ref = null, messageId = null) {
         if (this.#promptActive) {
-            this.#promptQueue.push({ text, opts, chatId, messageId });
+            this.#promptQueue.push({ text, opts, ref, messageId });
             return;
         }
         this.#promptActive = true;
 
+        // Set active ref for ACP output routing
+        this.#activeRef = ref;
+
         // Update reaction: ⏳ → 👀 (now being processed)
-        if (chatId && messageId) {
-            this.#telegram.setMessageReaction(chatId, messageId, "👀").catch(() => {});
+        if (ref && messageId) {
+            this.#telegram.setMessageReaction(ref.chatId, messageId, "👀").catch(() => {});
         }
 
         try {
+            // Session switching for forum topics
+            if (ref && this.#sessionMgr && this.#acp.alive) {
+                const session = this.#sessionMgr.getSession(ref);
+                if (session && session.sessionId) {
+                    // Check if we need to switch sessions
+                    if (this.#sessionMgr.needsSwitch(ref)) {
+                        try {
+                            this.#log(`Switching session to ${session.sessionId} for ${refKey(ref)}`);
+                            await this.#acp.loadSession(session.sessionId);
+                            this.#sessionMgr.setActive(ref);
+                        } catch (err) {
+                            this.#log(`Session load failed for ${session.sessionId}: ${err.message}`);
+                            this.#transport.enqueueSend(ref,
+                                `⚠️ Could not load session. Use /new to start a fresh session.\n` +
+                                `Error: ${err.message}`
+                            );
+                            this.#promptActive = false;
+                            this.#activeRef = null;
+                            return;
+                        }
+                    }
+                } else if (ref.threadId && this.#sessionMgr.isForumChat(ref.chatId)) {
+                    // No session for this topic — create one
+                    try {
+                        this.#log(`Auto-creating session for topic ${ref.threadId}`);
+                        const result = await this.#acp.newSession({
+                            cwd: this.#config.workingDirectory || "/config",
+                        });
+                        ref.sessionId = result.sessionId;
+                        this.#sessionMgr.register(ref, result.sessionId, `Topic ${ref.threadId}`, false);
+                        this.#preambleSent = false;
+                    } catch (err) {
+                        this.#log(`Auto-create session failed: ${err.message}`);
+                        this.#transport.enqueueSend(ref, `⚠️ Failed to create session: ${err.message}`);
+                        this.#promptActive = false;
+                        this.#activeRef = null;
+                        return;
+                    }
+                }
+            }
+
             await this.#acp.prompt(text, opts);
         } catch (err) {
             this.#log(`Prompt error: ${err.message}`);
             const userMsg = formatError(err);
-            for (const cid of this.#allowedChatIds) {
-                this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(cid, userMsg)
-                );
+            if (ref) {
+                this.#transport.enqueueSend(ref, userMsg);
+            } else {
+                for (const cid of this.#allowedChatIds) {
+                    this.#telegram.enqueue(() =>
+                        this.#telegram.sendMessage(cid, userMsg)
+                    );
+                }
             }
         } finally {
             // Clear reaction — response delivered
-            if (chatId && messageId) {
-                this.#telegram.setMessageReaction(chatId, messageId, null).catch(() => {});
+            if (ref && messageId) {
+                this.#telegram.setMessageReaction(ref.chatId, messageId, null).catch(() => {});
             }
 
             this.#promptActive = false;
+            this.#activeRef = null;
             this.#flushMessageBuffer();
             this.#stopTyping();
             this.#dismissBubble();
@@ -517,7 +662,7 @@ export class Bridge {
             // Process queued prompts
             if (this.#promptQueue.length > 0) {
                 const next = this.#promptQueue.shift();
-                this.#queuePrompt(next.text, next.opts, next.chatId, next.messageId);
+                this.#queuePrompt(next.text, next.opts, next.ref, next.messageId);
             }
         }
     }
@@ -620,11 +765,7 @@ export class Bridge {
         this.#preambleSent = false;
         this.#log(`Copilot started, session: ${this.#acp.sessionId}`);
 
-        for (const chatId of this.#allowedChatIds) {
-            this.#telegram.enqueue(() =>
-                this.#telegram.sendMessage(chatId, "🟢 Copilot session started.")
-            );
-        }
+        this.#broadcastAdmin("🟢 Copilot session started.");
     }
 
     async #runDeviceLogin() {
@@ -661,14 +802,7 @@ export class Bridge {
                     resolved = true;
                     this.#log("[login] Timed out after 10 minutes");
                     proc.kill();
-                    for (const chatId of this.#allowedChatIds) {
-                        this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(
-                                chatId,
-                                "⏰ Login timed out. Send any message to get a fresh code."
-                            )
-                        );
-                    }
+                    this.#broadcastAdmin("⏰ Login timed out. Send any message to get a fresh code.");
                     reject(new Error("Login timed out"));
                 }
             }, 10 * 60 * 1000);
@@ -679,28 +813,17 @@ export class Bridge {
                 this.#log(`[login] stdout: ${text.trim()}`);
                 if (!codeSent) {
                     const match = stdout.match(/enter code ([A-Z0-9]{4}-[A-Z0-9]{4})/);
-                    if (match && this.#allowedChatIds.length > 0) {
+                    if (match) {
                         codeSent = true;
                         const code = match[1];
                         this.#log(`[login] Device code: ${code}`);
-                        for (const chatId of this.#allowedChatIds) {
-                            this.#telegram.enqueue(() =>
-                                this.#telegram.sendMessage(
-                                    chatId,
-                                    `🔐 GitHub authentication required\n\n` +
-                                    `1️⃣ Visit: https://github.com/login/device\n` +
-                                    `2️⃣ Enter code: ${code}\n\n` +
-                                    `⏳ Waiting for you to authorize...\n` +
-                                    `(One-time setup — takes 30 seconds)`,
-                                    undefined,
-                                    {
-                                        inline_keyboard: [[
-                                            { text: "🔗 Open GitHub", url: "https://github.com/login/device" }
-                                        ]]
-                                    }
-                                )
-                            );
-                        }
+                        this.#broadcastAdmin(
+                            `🔐 GitHub authentication required\n\n` +
+                            `1️⃣ Visit: https://github.com/login/device\n` +
+                            `2️⃣ Enter code: ${code}\n\n` +
+                            `⏳ Waiting for you to authorize...\n` +
+                            `(One-time setup — takes 30 seconds)`
+                        );
                     }
                 }
             });
@@ -723,11 +846,7 @@ export class Bridge {
 
                 // Always resolve — the caller will verify auth via acp.authenticate()
                 // Login may exit non-zero due to browser/clipboard warnings in containers
-                for (const chatId of this.#allowedChatIds) {
-                    this.#telegram.enqueue(() =>
-                        this.#telegram.sendMessage(chatId, "✅ Login flow completed — verifying token...")
-                    );
-                }
+                this.#broadcastAdmin("✅ Login flow completed — verifying token...");
                 resolve();
             });
 
@@ -836,20 +955,31 @@ export class Bridge {
         this.#history.push({ role: "bot", text: content });
 
         const chunks = chunkMessage(content);
-        for (const chatId of this.#allowedChatIds) {
+        const ref = this.#activeRef;
+
+        if (ref) {
+            // Route to the active conversation ref
             for (const chunk of chunks) {
-                this.#telegram.enqueue(() => this.#sendFormatted(chatId, chunk));
+                this.#telegram.enqueue(() => this.#sendFormatted(ref, chunk));
+            }
+        } else {
+            // Fallback: broadcast to all allowed chat IDs
+            for (const chatId of this.#allowedChatIds) {
+                const fallbackRef = makeRef(chatId);
+                for (const chunk of chunks) {
+                    this.#telegram.enqueue(() => this.#sendFormatted(fallbackRef, chunk));
+                }
             }
         }
     }
 
-    async #sendFormatted(chatId, markdown) {
+    async #sendFormatted(ref, markdown) {
         const html = markdownToTelegramHtml(markdown);
         try {
-            return await this.#telegram.sendMessage(chatId, html, "HTML");
+            return await this.#transport.send(ref, html, "HTML");
         } catch (err) {
             if (err.message && /can.t parse|entit/i.test(err.message)) {
-                return this.#telegram.sendMessage(chatId, markdown);
+                return this.#transport.send(ref, markdown);
             }
             throw err;
         }
@@ -864,20 +994,23 @@ export class Bridge {
         for (const block of contents) {
             if (block.type === "image" && block.data && block.mimeType) {
                 const bytes = Math.ceil(block.data.length * 3 / 4);
-                for (const chatId of this.#allowedChatIds) {
+                const ref = this.#activeRef;
+                const targets = ref ? [ref] : this.#allowedChatIds.map(id => makeRef(id));
+
+                for (const targetRef of targets) {
                     if (bytes > MAX_PHOTO_BYTES) {
                         this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(chatId, "(Image too large for Telegram, >10MB)")
+                            this.#transport.send(targetRef, "(Image too large for Telegram, >10MB)")
                         );
                         continue;
                     }
                     const buf = Buffer.from(block.data, "base64");
                     if (PHOTO_MIMES.has(block.mimeType)) {
-                        this.#telegram.enqueue(() => this.#telegram.sendPhoto(chatId, buf, block.mimeType));
+                        this.#telegram.enqueue(() => this.#transport.sendPhoto(targetRef, buf, block.mimeType));
                     } else {
                         const ext = block.mimeType.split("/")[1] || "bin";
                         this.#telegram.enqueue(() =>
-                            this.#telegram.sendDocument(chatId, buf, block.mimeType, `image.${ext}`)
+                            this.#transport.sendDocument(targetRef, buf, block.mimeType, `image.${ext}`)
                         );
                     }
                 }
@@ -887,11 +1020,16 @@ export class Bridge {
 
     // --- Typing indicators ---
 
-    #startTyping() {
+    #startTyping(ref) {
         this.#stopTyping();
         const doType = () => {
-            for (const chatId of this.#allowedChatIds) {
-                this.#telegram.enqueue(() => this.#telegram.sendChatAction(chatId).catch(() => {}));
+            const targetRef = ref || this.#activeRef;
+            if (targetRef) {
+                this.#telegram.enqueue(() => this.#transport.sendChatAction(targetRef).catch(() => {}));
+            } else {
+                for (const chatId of this.#allowedChatIds) {
+                    this.#telegram.enqueue(() => this.#telegram.sendChatAction(chatId).catch(() => {}));
+                }
             }
             if (this.#bubbleActive) this.#resetTypingDebounce();
         };
@@ -940,7 +1078,10 @@ export class Bridge {
             const text = this.#composeBubbleText();
             if (!text) return;
 
-            for (const chatId of this.#allowedChatIds) {
+            const ref = this.#activeRef;
+            const targets = ref ? [ref.chatId] : [...this.#allowedChatIds];
+
+            for (const chatId of targets) {
                 const existingId = this.#bubbleMessageIds.get(chatId);
                 if (existingId) {
                     try {
@@ -955,8 +1096,10 @@ export class Bridge {
                             this.#allBubbleIds.get(chatId)?.delete(existingId);
                             if (!this.#bubbleActive) continue;
                             try {
+                                const params = { chat_id: chatId, text };
+                                if (ref?.threadId) params.message_thread_id = ref.threadId;
                                 const sent = await this.#telegram.enqueue(() =>
-                                    this.#telegram.sendMessage(chatId, text)
+                                    this.#telegram.call("sendMessage", params)
                                 );
                                 if (!this.#bubbleActive) {
                                     try { await this.#telegram.enqueue(() => this.#telegram.deleteMessage(chatId, sent.message_id)); } catch {}
@@ -969,8 +1112,10 @@ export class Bridge {
                 } else {
                     if (!this.#bubbleActive) continue;
                     try {
+                        const params = { chat_id: chatId, text };
+                        if (ref?.threadId) params.message_thread_id = ref.threadId;
                         const sent = await this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(chatId, text)
+                            this.#telegram.call("sendMessage", params)
                         );
                         if (!this.#bubbleActive) {
                             try { await this.#telegram.enqueue(() => this.#telegram.deleteMessage(chatId, sent.message_id)); } catch {}
@@ -1014,6 +1159,16 @@ export class Bridge {
         }
         this.#allBubbleIds.clear();
         this.#bubbleMessageIds.clear();
+    }
+
+    // --- Broadcast to admin chats ---
+
+    #broadcastAdmin(text) {
+        for (const chatId of this.#allowedChatIds) {
+            this.#telegram.enqueue(() =>
+                this.#telegram.sendMessage(chatId, text)
+            );
+        }
     }
 
     // --- Cleanup ---

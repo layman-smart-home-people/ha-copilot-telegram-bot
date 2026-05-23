@@ -13,8 +13,8 @@ export function parseSlashCommand(text, botUsername) {
 }
 
 export async function handleSlashCommand(ctx, command, args) {
-    const { acp, telegram, chatId, chatIds, log, buttons, models, modes, history,
-            currentModel, currentMode, availableCommands, knownTools } = ctx;
+    const { acp, telegram, transport, chatId, chatIds, ref, log, buttons, models, modes, history,
+            currentModel, currentMode, availableCommands, knownTools, pairing, sessionMgr } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {
         for (const cid of chatIds) {
@@ -139,6 +139,14 @@ export async function handleSlashCommand(ctx, command, args) {
 
                 lines.push(`📱 Telegram: connected`);
                 lines.push(`👥 Allowed chats: ${chatIds.length}`);
+                if (pairing) {
+                    const paired = pairing.getPairedUsers();
+                    lines.push(`🔐 Paired users: ${paired.length}`);
+                }
+                if (sessionMgr?.forumChatId) {
+                    const sessions = sessionMgr.listActiveSessions();
+                    lines.push(`🗂️ Active sessions: ${sessions.length}`);
+                }
                 if (history) lines.push(`📜 History: ${history.length} messages`);
 
                 const statusButtons = {
@@ -293,12 +301,137 @@ export async function handleSlashCommand(ctx, command, args) {
                     "  /status\n" +
                     "  /history [n]\n" +
                     "  /session [new|stop]\n" +
+                    "  /new [title] — new session/topic\n" +
+                    "  /close — close current topic\n" +
+                    "  /sessions — list sessions\n" +
+                    "  /pair — pairing info\n" +
                     "  /help\n\n" +
                     "💡 Reply to any message to give Copilot context.\n\n" +
                     "Or tap a button below:",
                     undefined,
                     helpButtons
                 ));
+                return true;
+            }
+            case "new": {
+                // Create new session (and optionally a forum topic)
+                if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
+                const title = args || `Session ${new Date().toLocaleString("en-SG", { timeZone: "Asia/Singapore" })}`;
+
+                if (sessionMgr?.forumChatId && ref?.chatId === sessionMgr.forumChatId) {
+                    // Forum mode: create a topic
+                    try {
+                        const topic = await transport.createForumTopic(sessionMgr.forumChatId, `💬 ${title}`);
+                        const topicRef = { chatId: sessionMgr.forumChatId, threadId: topic.message_thread_id };
+
+                        // Create ACP session
+                        const result = await acp.newSession({ cwd: "/config" });
+                        topicRef.sessionId = result.sessionId;
+                        sessionMgr.register(topicRef, result.sessionId, title, true);
+
+                        reply(`✅ Session created: ${title}\nTopic opened — start chatting there!`);
+                    } catch (err) {
+                        reply(`❌ Failed to create session: ${err.message}`);
+                    }
+                } else {
+                    // Private chat: just restart session
+                    broadcast("🔄 Creating new session...");
+                    await ctx.restartCopilot?.();
+                }
+                return true;
+            }
+            case "close": {
+                if (sessionMgr && ref?.threadId) {
+                    const session = sessionMgr.getSession(ref);
+                    if (session) {
+                        sessionMgr.closeSession(ref);
+                        try {
+                            await transport.closeForumTopic(ref.chatId, ref.threadId);
+                        } catch {}
+                        reply("🔒 Session closed.");
+                    } else {
+                        reply("⚠️ No session found for this topic.");
+                    }
+                } else {
+                    reply("💡 Use /session stop to stop Copilot in private chat.");
+                }
+                return true;
+            }
+            case "sessions": {
+                if (!sessionMgr) { reply("📋 Forum topics not configured."); return true; }
+                const sessions = sessionMgr.listSessions();
+                if (sessions.length === 0) {
+                    reply("📋 No sessions. Use /new to create one.");
+                    return true;
+                }
+                const lines = ["📋 Sessions:\n"];
+                for (const s of sessions) {
+                    const status = s.isCurrent ? "▶️" : s.active ? "⏸️" : "🔒";
+                    lines.push(`${status} ${s.title} (${s.sessionId?.slice(0, 8) || "?"}…)`);
+                }
+                reply(lines.join("\n"));
+                return true;
+            }
+            case "pair": {
+                if (!pairing) { reply("🔐 Pairing not available."); return true; }
+
+                if (args === "list") {
+                    if (!pairing.isAdmin(ctx.ref?.chatId || chatId)) {
+                        reply("🔒 Admin only."); return true;
+                    }
+                    const users = pairing.getPairedUsers();
+                    if (users.length === 0) {
+                        reply("👥 No paired users.");
+                    } else {
+                        const lines = ["👥 Paired users:\n"];
+                        for (const u of users) {
+                            const admin = u.isAdmin ? " 👑" : "";
+                            lines.push(`• ${u.username || u.userId}${admin} (${new Date(u.pairedAt).toLocaleDateString()})`);
+                        }
+                        reply(lines.join("\n"));
+                    }
+                    return true;
+                }
+
+                reply(
+                    "🔐 Pairing info:\n" +
+                    "To pair a new device, message the bot from that device.\n" +
+                    "A pairing code will appear in HA add-on logs.\n\n" +
+                    "/pair list — show paired users\n" +
+                    "/unpair <userId> — revoke access"
+                );
+                return true;
+            }
+            case "unpair": {
+                if (!pairing) { reply("🔐 Pairing not available."); return true; }
+                if (!pairing.isAdmin(ctx.ref?.chatId || chatId)) {
+                    reply("🔒 Admin only."); return true;
+                }
+                if (!args) { reply("Usage: /unpair <userId>"); return true; }
+                const targetId = parseInt(args);
+                if (isNaN(targetId)) { reply("❌ Invalid user ID."); return true; }
+                if (pairing.revoke(targetId)) {
+                    reply(`✅ Unpaired user ${targetId}`);
+                } else {
+                    reply(`⚠️ Could not unpair user ${targetId} (admin or not found).`);
+                }
+                return true;
+            }
+            case "delete": {
+                if (sessionMgr && ref?.threadId) {
+                    const session = sessionMgr.getSession(ref);
+                    if (session) {
+                        sessionMgr.deleteSession(ref);
+                        try {
+                            await transport.deleteForumTopic(ref.chatId, ref.threadId);
+                        } catch {}
+                        // Can't reply — topic is deleted
+                    } else {
+                        reply("⚠️ No session found for this topic.");
+                    }
+                } else {
+                    reply("💡 /delete only works in forum topic sessions.");
+                }
                 return true;
             }
             default:

@@ -113,20 +113,26 @@ export class TelegramClient extends EventEmitter {
         return this.call("getFile", { file_id: fileId });
     }
 
+    /**
+     * Send a raw FormData request to a Telegram API method.
+     */
+    async callForm(method, form) {
+        const url = `${TELEGRAM_API}/bot${this.#token}/${method}`;
+        const res = await fetch(url, { method: "POST", body: form });
+        if (!res.ok) {
+            const body = await res.text().catch(() => "");
+            throw new Error(`Telegram ${method} failed: ${res.status} ${body}`);
+        }
+        return (await res.json()).result;
+    }
+
     async sendPhoto(chatId, buffer, mimeType, caption) {
         const ext = mimeType === "image/jpeg" ? "jpg" : mimeType === "image/gif" ? "gif" : "png";
         const form = new FormData();
         form.append("chat_id", String(chatId));
         form.append("photo", new File([buffer], `image.${ext}`, { type: mimeType }));
         if (caption) form.append("caption", caption.slice(0, 1024));
-
-        const url = `${TELEGRAM_API}/bot${this.#token}/sendPhoto`;
-        const res = await fetch(url, { method: "POST", body: form });
-        if (!res.ok) {
-            const body = await res.text().catch(() => "");
-            throw new Error(`Telegram sendPhoto failed: ${res.status} ${body}`);
-        }
-        return (await res.json()).result;
+        return this.callForm("sendPhoto", form);
     }
 
     async sendDocument(chatId, buffer, mimeType, filename, caption) {
@@ -134,14 +140,7 @@ export class TelegramClient extends EventEmitter {
         form.append("chat_id", String(chatId));
         form.append("document", new File([buffer], filename || "file", { type: mimeType }));
         if (caption) form.append("caption", caption.slice(0, 1024));
-
-        const url = `${TELEGRAM_API}/bot${this.#token}/sendDocument`;
-        const res = await fetch(url, { method: "POST", body: form });
-        if (!res.ok) {
-            const body = await res.text().catch(() => "");
-            throw new Error(`Telegram sendDocument failed: ${res.status} ${body}`);
-        }
-        return (await res.json()).result;
+        return this.callForm("sendDocument", form);
     }
 
     async downloadFile(filePath) {

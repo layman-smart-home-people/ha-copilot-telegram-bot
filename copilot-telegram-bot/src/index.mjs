@@ -9,6 +9,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { ACPClient } from "./acp.mjs";
 import { TelegramClient } from "./telegram.mjs";
 import { Bridge } from "./bridge.mjs";
+import { PairingManager } from "./pairing.mjs";
+import { SessionManager } from "./sessions.mjs";
 
 // --- Config ---
 
@@ -182,6 +184,10 @@ async function main() {
                 { command: "mode", description: "Switch conversation mode" },
                 { command: "history", description: "Show recent chat history" },
                 { command: "skills", description: "Show available tools & skills" },
+                { command: "new", description: "Create new session/topic" },
+                { command: "close", description: "Close current topic session" },
+                { command: "sessions", description: "List all sessions" },
+                { command: "pair", description: "Pairing & user management" },
             ],
         });
         log("Registered bot commands with Telegram");
@@ -199,12 +205,27 @@ async function main() {
         permissionPolicy: config.permissionPolicy || "interactive",
     });
 
+    // Create pairing manager
+    const pairing = new PairingManager({
+        persistPath: "/data/paired_users.json",
+        preApprovedIds: config.allowedChatIds || [],
+        log,
+    });
+
+    // Create session manager
+    const sessionMgr = new SessionManager({
+        persistPath: "/data/sessions.json",
+        log,
+    });
+
     // Create bridge
     const bridge = new Bridge({
         telegram,
         acp,
         config,
         log,
+        pairing,
+        sessionMgr,
     });
 
     bridge.setupACPHandlers();
