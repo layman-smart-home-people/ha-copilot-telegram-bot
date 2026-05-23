@@ -1,4 +1,4 @@
-ARG BUILD_FROM=ghcr.io/hassio-addons/debian-base:7.9.0
+ARG BUILD_FROM=ghcr.io/hassio-addons/debian-base:6.2.7
 FROM ${BUILD_FROM}
 
 # Install Node.js 20 from NodeSource
