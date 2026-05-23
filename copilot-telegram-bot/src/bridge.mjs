@@ -435,12 +435,10 @@ export class Bridge {
 
         // Create session (small delay to let auth propagate in the ACP process)
         await new Promise(r => setTimeout(r, 500));
-        const mcpCount = (this.#config.mcpServers || []).filter(s => s.url).length;
-        this.#log(`Creating new ACP session... (${mcpCount} HTTP MCP servers)`);
+        this.#log("Creating new ACP session...");
         try {
             await this.#acp.newSession({
                 cwd: this.#config.workingDirectory || "/config",
-                mcpServers: this.#config.mcpServers || [],
             });
         } catch (err) {
             if (err.message?.includes("-32000")) {
