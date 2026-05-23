@@ -122,10 +122,12 @@ export class Bridge {
 
         // Message boundaries
         acp.on("message_start", () => {
+            this.#log("Agent message_start");
             this.#messageBuffer = "";
         });
 
         acp.on("message_end", () => {
+            this.#log("Agent message_end");
             this.#flushMessageBuffer();
             this.#stopTyping();
             this.#dismissBubble();
@@ -133,6 +135,7 @@ export class Bridge {
 
         // Tool calls → bubble updates
         acp.on("tool_start", ({ toolCallId, toolName, arguments: args }) => {
+            this.#log(`Tool start: ${toolName} (${toolCallId})`);
             this.#resetTypingDebounce();
             this.#bubbleActive = true;
             const desc = describeToolCall(toolName, args);
@@ -147,8 +150,10 @@ export class Bridge {
         });
 
         acp.on("tool_end", ({ toolCallId, result }) => {
-            this.#resetTypingDebounce();
             const completed = this.#activeTools.get(toolCallId);
+            const resultSummary = result ? JSON.stringify(result).substring(0, 200) : "null";
+            this.#log(`Tool end: ${completed?.name || toolCallId} → ${resultSummary}`);
+            this.#resetTypingDebounce();
             if (completed?.description) {
                 this.#lastCompletedToolDesc = completed.description;
             }
@@ -648,7 +653,8 @@ export class Bridge {
                 }
             }
 
-            await this.#acp.prompt(text, opts);
+            const result = await this.#acp.prompt(text, opts);
+            this.#log(`Prompt completed successfully: ${JSON.stringify(result)?.substring(0, 200)}`);
         } catch (err) {
             this.#log(`Prompt error: ${err.message}`);
             const userMsg = formatError(err);

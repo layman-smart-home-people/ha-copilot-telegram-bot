@@ -256,9 +256,22 @@ export class ACPClient extends EventEmitter {
             id: requestId,
             result: { optionId },
         };
+        const payload = JSON.stringify(response) + "\n";
         this.emit("log", `Permission response: ${JSON.stringify(response)}`);
         try {
-            this.#process.stdin.write(JSON.stringify(response) + "\n");
+            const ok = this.#process.stdin.write(payload, (err) => {
+                if (err) {
+                    this.emit("log", `Permission stdin write error: ${err.message}`);
+                } else {
+                    this.emit("log", `Permission response flushed to ACP stdin (id=${requestId})`);
+                }
+            });
+            if (!ok) {
+                this.emit("log", `Permission stdin backpressure — waiting for drain`);
+                this.#process.stdin.once("drain", () => {
+                    this.emit("log", `Permission stdin drained`);
+                });
+            }
         } catch (err) {
             this.emit("log", `Failed to respond permission ${requestId}: ${err.message}`);
         }
@@ -317,7 +330,24 @@ export class ACPClient extends EventEmitter {
     }
 
     #handleMessage(msg) {
-        // Response to a request
+        // JSON-RPC 2.0 message routing:
+        // - Request/notification: has "method"
+        // - Response: has "result" or "error", no "method"
+        // Check method FIRST to prevent server request IDs from colliding
+        // with our pending client request IDs.
+
+        if (msg.method) {
+            if (msg.id != null) {
+                // Server-to-client request (e.g., session/request_permission)
+                this.#handleServerRequest(msg);
+            } else {
+                // Notification (no id)
+                this.#handleNotification(msg);
+            }
+            return;
+        }
+
+        // Response to one of our requests
         if (msg.id != null && this.#pending.has(msg.id)) {
             const { resolve, reject, timeout } = this.#pending.get(msg.id);
             this.#pending.delete(msg.id);
@@ -332,16 +362,9 @@ export class ACPClient extends EventEmitter {
             return;
         }
 
-        // Server-to-client request (e.g., requestPermission)
-        if (msg.method && msg.id != null) {
-            this.#handleServerRequest(msg);
-            return;
-        }
-
-        // Notification (no id)
-        if (msg.method) {
-            this.#handleNotification(msg);
-            return;
+        // Unmatched response (stale or unknown id)
+        if (msg.id != null) {
+            this.emit("log", `ACP unmatched response id=${msg.id}: ${JSON.stringify(msg).substring(0, 200)}`);
         }
     }
 
