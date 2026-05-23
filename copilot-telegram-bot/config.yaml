@@ -2,7 +2,7 @@ name: Copilot Telegram Bot
 description: Always-on Telegram bot connected to GitHub Copilot CLI via ACP
 slug: copilot-telegram-bot
 url: https://github.com/layman-smart-home-people/ha-copilot-telegram-bot
-version: 0.4.1
+version: 0.5.0
 init: false
 arch:
   - aarch64
@@ -32,6 +32,7 @@ options:
   idle_timeout_minutes: 0
   model: ""
   working_directory: /config
+  permission_policy: interactive
 schema:
   bot_token: str
   allowed_chat_ids:
@@ -45,3 +46,4 @@ schema:
   idle_timeout_minutes: int(0,1440)
   model: str
   working_directory: str
+  permission_policy: "list(allow_all|interactive)?"

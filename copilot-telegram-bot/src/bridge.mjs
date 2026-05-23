@@ -6,6 +6,7 @@
 
 import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "./formatter.mjs";
 import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
+import { ButtonManager } from "./buttons.mjs";
 import { basename } from "node:path";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -63,6 +64,14 @@ export class Bridge {
     // Temp dir
     #tmpDir;
 
+    // Button manager for inline keyboards
+    #buttons;
+
+    // Session state
+    #models = [];
+    #modes = [];
+    #sessionGrantedTools = new Set();
+
     constructor({ telegram, acp, config, log }) {
         this.#telegram = telegram;
         this.#acp = acp;
@@ -70,6 +79,7 @@ export class Bridge {
         this.#log = log;
         this.#allowedChatIds = (config.allowedChatIds || []).map(Number);
         this.#tmpDir = join("/tmp", `copilot-tg-${process.pid}`);
+        this.#buttons = new ButtonManager(telegram);
     }
 
     get allowedChatIds() { return this.#allowedChatIds; }
@@ -162,8 +172,91 @@ export class Bridge {
             this.#log(`ACP: ${text}`);
         });
 
-        acp.on("permission", (params) => {
-            this.#log(`Auto-approved permission: ${JSON.stringify(params).substring(0, 200)}`);
+        acp.on("permission_request", async (req) => {
+            const { requestId, toolName, description } = req;
+            const tool = toolName || req.tool || "unknown_tool";
+            const desc = description || req.input?.service || "";
+
+            // Policy: auto-approve read-only HA tools + standard copilot tools
+            const readOnlyTools = new Set([
+                "ha_search_entities", "ha_get_state", "ha_get_history",
+                "ha_deep_search", "ha_get_overview", "ha_get_entity_state",
+                "ha_search_automations", "ha_get_automation",
+            ]);
+            const isReadOnly = readOnlyTools.has(tool) || !tool.startsWith("ha_");
+
+            // Session grants: user previously allowed this tool for the session
+            if (isReadOnly || this.#sessionGrantedTools.has(tool)) {
+                acp.respondPermission(requestId, "approved");
+                this.#log(`Permission auto-approved: ${tool}`);
+                return;
+            }
+
+            // Ask user via inline buttons
+            const chatId = this.#allowedChatIds?.[0];
+            if (!chatId || !this.#buttons) {
+                // No chat to ask — deny by default
+                acp.respondPermission(requestId, "denied");
+                this.#log(`Permission denied (no chat): ${tool}`);
+                return;
+            }
+
+            const label = desc ? `${tool}\n${desc}` : tool;
+            const rows = [
+                [
+                    { text: "✅ Allow once", value: "once" },
+                    { text: "✅ Allow session", value: "session" },
+                    { text: "❌ Deny", value: "deny" },
+                ],
+            ];
+            const selected = await this.#buttons.prompt(
+                chatId,
+                `🔐 Permission request:\n${label}`,
+                rows,
+                { timeoutMs: 60000, timeoutText: "🔐 Permission denied (timeout)" }
+            );
+
+            if (selected === "once" || selected === "session") {
+                if (selected === "session") {
+                    this.#sessionGrantedTools.add(tool);
+                }
+                acp.respondPermission(requestId, "approved");
+                this.#log(`Permission granted (${selected}): ${tool}`);
+            } else {
+                acp.respondPermission(requestId, "denied");
+                this.#log(`Permission denied: ${tool}`);
+            }
+        });
+
+        // Capture session data (models, modes) from session events
+        acp.on("session", (result) => {
+            if (result.models?.availableModels) {
+                this.#models = result.models.availableModels;
+                this.#log(`Models available: ${this.#models.length}`);
+            }
+            if (result.modes?.availableModes) {
+                this.#modes = result.modes.availableModes;
+            }
+        });
+
+        // config_option_update can update models/modes mid-session
+        acp.on("config_options", (options) => {
+            const modelOpt = options?.find(o => o.id === "model");
+            if (modelOpt?.options) {
+                this.#models = modelOpt.options.map(o => ({
+                    modelId: o.value,
+                    name: o.name,
+                    description: o.description,
+                }));
+            }
+            const modeOpt = options?.find(o => o.id === "mode");
+            if (modeOpt?.options) {
+                this.#modes = modeOpt.options.map(o => ({
+                    id: o.value,
+                    name: o.name,
+                    description: o.description,
+                }));
+            }
         });
     }
 
@@ -186,13 +279,25 @@ export class Bridge {
         const userId = query.from?.id;
         if (!chatId || !this.#allowedChatIds.includes(userId)) return;
 
-        // Acknowledge the button press
+        // Try ButtonManager first (handles btn: prefix callbacks)
+        if (this.#buttons.handleCallback(query)) return;
+
+        // Legacy callback handling — acknowledge the button press
         try {
             await this.#telegram.call("answerCallbackQuery", { callback_query_id: query.id });
         } catch {}
 
         const data = query.data;
         if (!data) return;
+
+        // Clean up the button message after selection
+        try {
+            await this.#telegram.call("editMessageReplyMarkup", {
+                chat_id: chatId,
+                message_id: query.message.message_id,
+                reply_markup: { inline_keyboard: [] },
+            });
+        } catch {}
 
         // Route callback data as slash commands
         const parts = data.split(" ");
@@ -208,6 +313,9 @@ export class Bridge {
             startCopilot: () => this.startCopilot(),
             stopCopilot: () => this.stopCopilot(),
             restartCopilot: () => this.restartCopilot(),
+            buttons: this.#buttons,
+            models: this.#models,
+            modes: this.#modes,
         }, command, args);
     }
 
@@ -260,6 +368,9 @@ export class Bridge {
                     startCopilot: () => this.startCopilot(),
                     stopCopilot: () => this.stopCopilot(),
                     restartCopilot: () => this.restartCopilot(),
+                    buttons: this.#buttons,
+                    models: this.#models,
+                    modes: this.#modes,
                 }, parsed.command, parsed.args);
                 if (handled) return;
             }

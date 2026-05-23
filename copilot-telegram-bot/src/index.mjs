@@ -37,6 +37,7 @@ function loadConfig() {
         idleTimeoutMinutes: options.idle_timeout_minutes || 0,
         model: options.model || "",
         workingDirectory: options.working_directory || "/config",
+        permissionPolicy: options.permission_policy || "interactive",
         mcpServers: [],
     };
 
@@ -108,6 +109,7 @@ async function validate(config) {
         model: config.model,
         extraArgs: config.copilotExtraArgs,
         copilotHome: config.copilotConfigDir,
+        permissionPolicy: "allow_all", // test always uses allow_all
     });
 
     // Capture stderr for diagnostics
@@ -191,6 +193,7 @@ async function main() {
         model: config.model,
         extraArgs: config.copilotExtraArgs,
         copilotHome: config.copilotConfigDir,
+        permissionPolicy: config.permissionPolicy || "interactive",
     });
 
     // Create bridge

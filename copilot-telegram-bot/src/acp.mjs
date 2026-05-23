@@ -36,7 +36,11 @@ export class ACPClient extends EventEmitter {
         this.#sessionId = null;
         this.#initialized = false;
 
-        const args = ["--acp", "--stdio", "--allow-all"];
+        const args = ["--acp", "--stdio"];
+        // Only use --allow-all if permission_policy is "allow_all" (legacy mode)
+        if (this.#config.permissionPolicy === "allow_all") {
+            args.push("--allow-all");
+        }
         if (this.#config.model) args.push("--model", this.#config.model);
         if (this.#config.extraArgs) {
             const extra = this.#config.extraArgs.trim().split(/\s+/);
@@ -241,6 +245,24 @@ export class ACPClient extends EventEmitter {
         }
     }
 
+    /**
+     * Respond to a requestPermission server request.
+     * @param {number} requestId - The JSON-RPC id from the server request
+     * @param {"approved"|"denied"} outcome
+     */
+    respondPermission(requestId, outcome) {
+        const response = {
+            jsonrpc: "2.0",
+            id: requestId,
+            result: { outcome: { outcome } },
+        };
+        try {
+            this.#process.stdin.write(JSON.stringify(response) + "\n");
+        } catch (err) {
+            this.emit("log", `Failed to respond permission ${requestId}: ${err.message}`);
+        }
+    }
+
     // --- Internal ---
 
     #send(method, params, timeoutMs = 30000) {
@@ -325,16 +347,11 @@ export class ACPClient extends EventEmitter {
     #handleServerRequest(msg) {
         switch (msg.method) {
             case "requestPermission": {
-                // Auto-approve all permissions (we started with --allow-all too)
-                const response = {
-                    jsonrpc: "2.0",
-                    id: msg.id,
-                    result: { outcome: { outcome: "approved" } },
-                };
-                this.emit("permission", msg.params);
-                try {
-                    this.#process.stdin.write(JSON.stringify(response) + "\n");
-                } catch {}
+                // Emit for bridge to handle (may ask user or auto-approve)
+                this.emit("permission_request", {
+                    requestId: msg.id,
+                    ...msg.params,
+                });
                 break;
             }
             case "sessionUpdate": {

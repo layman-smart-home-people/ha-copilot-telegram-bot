@@ -13,7 +13,7 @@ export function parseSlashCommand(text, botUsername) {
 }
 
 export async function handleSlashCommand(ctx, command, args) {
-    const { acp, telegram, chatId, chatIds, log } = ctx;
+    const { acp, telegram, chatId, chatIds, log, buttons, models, modes } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {
         for (const cid of chatIds) {
@@ -47,7 +47,19 @@ export async function handleSlashCommand(ctx, command, args) {
             }
             case "mode": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
-                reply("📋 Mode: use /autopilot or /plan to change");
+                if (buttons && modes?.length > 0) {
+                    const rows = modes.map(m => [{ text: m.name || m.id, value: m.id }]);
+                    const selected = await buttons.prompt(chatId, "📋 Select a mode:", rows, {
+                        timeoutText: "📋 Mode selection expired",
+                    });
+                    if (selected) {
+                        await acp.setMode(selected);
+                        const name = modes.find(m => m.id === selected)?.name || selected;
+                        broadcast(`📋 Mode → ${name}`);
+                    }
+                } else {
+                    reply("📋 Mode: use /autopilot or /plan to change");
+                }
                 return true;
             }
             case "compact": {
@@ -61,8 +73,26 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (args) {
                     await acp.setModel(args);
                     broadcast(`🤖 Model → ${args}`);
+                } else if (buttons && models?.length > 0) {
+                    // Show interactive model picker
+                    const rows = [];
+                    for (let i = 0; i < models.length; i += 2) {
+                        const row = [{ text: models[i].name || models[i].modelId, value: models[i].modelId }];
+                        if (models[i + 1]) {
+                            row.push({ text: models[i + 1].name || models[i + 1].modelId, value: models[i + 1].modelId });
+                        }
+                        rows.push(row);
+                    }
+                    const selected = await buttons.prompt(chatId, "🤖 Select a model:", rows, {
+                        timeoutText: "🤖 Model selection expired",
+                    });
+                    if (selected) {
+                        await acp.setModel(selected);
+                        const name = models.find(m => m.modelId === selected)?.name || selected;
+                        broadcast(`🤖 Model → ${name}`);
+                    }
                 } else {
-                    reply("🤖 Use: /model <name> to switch models");
+                    reply("🤖 No models available yet. Try again after session starts.");
                 }
                 return true;
             }
