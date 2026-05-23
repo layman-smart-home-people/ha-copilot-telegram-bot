@@ -15,6 +15,7 @@ export class ACPClient extends EventEmitter {
     #initialized = false;
     #dead = false;
     #config;
+    #authMethods = [];
 
     constructor(config) {
         super();
@@ -23,6 +24,7 @@ export class ACPClient extends EventEmitter {
 
     get sessionId() { return this.#sessionId; }
     get alive() { return this.#process && !this.#dead; }
+    get authMethods() { return this.#authMethods; }
 
     // --- Lifecycle ---
 
@@ -84,8 +86,21 @@ export class ACPClient extends EventEmitter {
             clientCapabilities: {},
         });
         this.#initialized = true;
+        this.#authMethods = initResult.authMethods || [];
         this.emit("initialized", initResult);
         return initResult;
+    }
+
+    // --- Authentication ---
+
+    async authenticate(methodId) {
+        if (!methodId && this.#authMethods.length > 0) {
+            methodId = this.#authMethods[0].id;
+        }
+        if (!methodId) {
+            throw new Error("No auth method available");
+        }
+        return this.#send("authenticate", { methodId }, 15000);
     }
 
     async stop() {

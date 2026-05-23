@@ -383,24 +383,30 @@ export class Bridge {
 
     async #doStartCopilot() {
         await this.#acp.start();
+
+        // Authenticate — required by ACP protocol before session/new
         try {
-            await this.#acp.newSession({
-                cwd: this.#config.workingDirectory || "/config",
-            });
+            await this.#acp.authenticate();
+            this.#log("ACP authentication successful");
         } catch (err) {
-            await this.#acp.stop();
-            if (err.message?.includes("Authentication required")) {
-                // Run device login — sends code to Telegram, waits for user
+            if (err.message?.includes("Authentication required") || err.message?.includes("-32000")) {
+                this.#log("No valid token — starting device login flow");
+                await this.#acp.stop();
                 await this.#runDeviceLogin();
-                // After login completes, retry session creation
+                // Restart ACP and retry auth after login
                 await this.#acp.start();
-                await this.#acp.newSession({
-                    cwd: this.#config.workingDirectory || "/config",
-                });
+                await this.#acp.authenticate();
+                this.#log("ACP authentication successful after login");
             } else {
+                await this.#acp.stop();
                 throw err;
             }
         }
+
+        // Create session
+        await this.#acp.newSession({
+            cwd: this.#config.workingDirectory || "/config",
+        });
 
         this.#preambleSent = false;
         this.#log(`Copilot started, session: ${this.#acp.sessionId}`);
@@ -504,34 +510,16 @@ export class Bridge {
                 if (resolved) return;
                 resolved = true;
                 this.#log(`[login] Process exited with code ${exitCode}`);
-                this.#log(`[login] Full stdout: ${stdout.trim()}`);
-                if (stderr) this.#log(`[login] Full stderr: ${stderr.trim()}`);
+                if (stderr) this.#log(`[login] stderr: ${stderr.trim()}`);
 
-                // copilot login may exit non-zero even after successful auth
-                // (e.g. "failed to open browser" warnings). Check if auth
-                // actually succeeded by looking for success indicators in output.
-                const allOutput = stdout + stderr;
-                const authSuccess = allOutput.includes("Authenticated") ||
-                    allOutput.includes("authenticated") ||
-                    allOutput.includes("logged in") ||
-                    allOutput.includes("Login succeeded") ||
-                    allOutput.includes("success") ||
-                    exitCode === 0;
-
-                if (authSuccess) {
-                    this.#log("[login] Authentication successful");
-                    for (const chatId of this.#allowedChatIds) {
-                        this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(chatId, "✅ GitHub authentication successful!")
-                        );
-                    }
-                    resolve();
-                } else {
-                    // Even if exit code != 0, the auth might have worked.
-                    // Resolve anyway and let session creation verify.
-                    this.#log("[login] Exit code non-zero but auth may have succeeded — will verify via session creation");
-                    resolve();
+                // Always resolve — the caller will verify auth via acp.authenticate()
+                // Login may exit non-zero due to browser/clipboard warnings in containers
+                for (const chatId of this.#allowedChatIds) {
+                    this.#telegram.enqueue(() =>
+                        this.#telegram.sendMessage(chatId, "✅ Login flow completed — verifying token...")
+                    );
                 }
+                resolve();
             });
 
             proc.on("error", (err) => {

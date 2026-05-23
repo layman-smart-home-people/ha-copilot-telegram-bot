@@ -123,13 +123,14 @@ async function main() {
     log("Copilot Telegram Bot starting...");
 
     const config = loadConfig();
-    await validate(config);
 
-    // If github_token is set, inject it into env for copilot auth
+    // Inject github_token into env BEFORE validation so the ACP test has it
     if (config.githubToken) {
         process.env.COPILOT_GITHUB_TOKEN = config.githubToken;
         log("Using configured GitHub token for authentication");
     }
+
+    await validate(config);
 
     // Create Telegram client
     const telegram = new TelegramClient({
