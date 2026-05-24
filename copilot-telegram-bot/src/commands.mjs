@@ -14,7 +14,7 @@ export function parseSlashCommand(text, botUsername) {
 
 export async function handleSlashCommand(ctx, command, args) {
     const { acp, telegram, transport, chatId, chatIds, ref, log, buttons, models, modes, history,
-            currentModel, currentMode, availableCommands, knownTools, pairing, sessionMgr, bridge } = ctx;
+            currentModel, currentMode, availableCommands, knownTools, pairing, sessionMgr, bridge, config } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {
         for (const cid of chatIds) {
@@ -126,6 +126,7 @@ export async function handleSlashCommand(ctx, command, args) {
 
                 const lines = [];
                 lines.push(ready ? "✅ Copilot Ready" : alive ? "⏳ Copilot Starting..." : "⏹️ Copilot Stopped");
+                if (config?.version) lines.push(`📦 Version: ${config.version}`);
                 lines.push("");
 
                 if (ready) {

@@ -407,6 +407,7 @@ export class Bridge {
             pairing: this.#pairing,
             sessionMgr: this.#sessionMgr,
             bridge: this,
+            config: this.#config,
         };
     }
 
@@ -1090,6 +1091,8 @@ export class Bridge {
     // --- Tool notifications for interactive mode ---
 
     #showToolNotification(toolName, result) {
+        this.#log(`Tool notification check: ${toolName}, allowAll=${this.#allowAll}`);
+
         // Only notify for HA write tools
         const writeTools = new Set([
             "ha-mcp-ha_call_service", "ha-mcp-ha_call_event",
@@ -1097,21 +1100,38 @@ export class Bridge {
             "ha-mcp-ha_backup_restore", "ha-mcp-ha_remove_entity",
             "ha-mcp-ha_config_set_automation",
         ]);
-        if (!writeTools.has(toolName)) return;
+        if (!writeTools.has(toolName)) {
+            this.#log(`Tool notification skipped: ${toolName} not a write tool`);
+            return;
+        }
 
-        // Parse result to build notification
+        // Parse result to build notification — handle multiple formats
         let content;
         try {
-            const raw = typeof result === "string" ? result :
-                        result?.content ? result.content :
-                        JSON.stringify(result);
+            let raw;
+            if (typeof result === "string") {
+                raw = result;
+            } else if (typeof result?.content === "string") {
+                raw = result.content;
+            } else if (Array.isArray(result)) {
+                // ACP content blocks array: [{type:"content", content:{type:"text", text:"..."}}]
+                const textBlock = result.find(b => b?.content?.type === "text");
+                raw = textBlock?.content?.text || JSON.stringify(result);
+            } else {
+                raw = JSON.stringify(result);
+            }
             content = typeof raw === "string" ? JSON.parse(raw) : raw;
-        } catch { content = {}; }
+        } catch (e) {
+            this.#log(`Tool notification parse error: ${e.message}`);
+            content = {};
+        }
 
         const domain = content?.domain || "";
         const service = content?.service || "";
         const entityId = content?.entity_id || "";
         const success = content?.success !== false;
+
+        this.#log(`Tool notification parsed: ${domain}.${service} → ${entityId} success=${success}`);
 
         if (!domain && !service) return;
 

@@ -42,6 +42,20 @@ function loadConfig() {
         }
     }
 
+    // Read addon version from config.yaml
+    let addonVersion = "unknown";
+    try {
+        const configYaml = readFileSync("/data/config.yaml", "utf8").toString();
+        const vMatch = configYaml.match(/^version:\s*(.+)/m);
+        if (vMatch) addonVersion = vMatch[1].trim();
+    } catch {
+        try {
+            const configYaml = readFileSync("/config.yaml", "utf8").toString();
+            const vMatch = configYaml.match(/^version:\s*(.+)/m);
+            if (vMatch) addonVersion = vMatch[1].trim();
+        } catch {}
+    }
+
     // Allow env overrides for development
     const config = {
         botToken: process.env.TELEGRAM_BOT_TOKEN || options.bot_token || "",
@@ -56,6 +70,7 @@ function loadConfig() {
         model: options.model || "",
         workingDirectory: options.working_directory || "/config",
         permissionPolicy: options.permission_policy || "interactive",
+        version: addonVersion,
         mcpServers: [],
     };
 
