@@ -17,12 +17,12 @@ import { SessionManager } from "./sessions.mjs";
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
     const { get } = await import("node:http");
     const token = process.env.SUPERVISOR_TOKEN;
-    // Try multiple supervisor API endpoints (different ones have different access levels)
     const endpoints = [
-        "http://supervisor/core/api/config",   // HA Core config (homeassistant_api)
-        "http://supervisor/supervisor/info",    // Supervisor info
-        "http://supervisor/info",              // System info
+        "http://supervisor/core/api/config",
+        "http://supervisor/supervisor/info",
+        "http://supervisor/info",
     ];
+    let found = false;
     for (const url of endpoints) {
         try {
             const raw = await new Promise((resolve, reject) => {
@@ -33,7 +33,7 @@ if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC")
                     res.on("data", (chunk) => { body += chunk; });
                     res.on("end", () => {
                         if (res.statusCode !== 200) {
-                            reject(new Error(`${res.statusCode} from ${url}`));
+                            reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 100)}`));
                         } else {
                             resolve(body);
                         }
@@ -43,17 +43,19 @@ if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC")
                 req.setTimeout(5000, () => { req.destroy(); reject(new Error("timeout")); });
             });
             const data = JSON.parse(raw);
-            // HA Core config: { time_zone: "Asia/Singapore", ... }
-            // Supervisor info: { result: "ok", data: { timezone: "...", ... } }
             const tz = data?.time_zone || data?.data?.timezone;
             if (tz) {
                 process.env.TZ = tz;
-                console.error(`[TZ] Set timezone to ${tz} from ${url}`);
+                console.error(`[TZ] Timezone set to ${tz} (from ${url})`);
+                found = true;
                 break;
             }
-        } catch {
-            // Try next endpoint
+        } catch (e) {
+            console.error(`[TZ] ${url}: ${e.message}`);
         }
+    }
+    if (!found) {
+        console.error(`[TZ] Could not determine timezone. SUPERVISOR_TOKEN ${token ? "is set" : "NOT SET"}`);
     }
 }
 
