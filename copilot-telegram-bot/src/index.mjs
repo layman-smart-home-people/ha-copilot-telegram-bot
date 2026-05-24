@@ -12,6 +12,21 @@ import { Bridge } from "./bridge.mjs";
 import { PairingManager } from "./pairing.mjs";
 import { SessionManager } from "./sessions.mjs";
 
+// --- Set timezone from HA system before any Date operations ---
+if (!process.env.TZ) {
+    try {
+        const resp = await fetch("http://supervisor/info", {
+            headers: { Authorization: `Bearer ${process.env.SUPERVISOR_TOKEN}` },
+        });
+        const data = await resp.json();
+        if (data?.data?.timezone) {
+            process.env.TZ = data.data.timezone;
+        }
+    } catch {
+        // Supervisor API not available — leave TZ unset
+    }
+}
+
 // --- Config ---
 
 function loadConfig() {
@@ -78,9 +93,16 @@ function loadConfig() {
 }
 
 function log(msg) {
-    const ts = new Date().toISOString();
+    // Use local time (respects TZ env) in ISO-ish format
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const ms = String(d.getMilliseconds()).padStart(3, "0");
+    const ts = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${ms}`;
     console.log(`[${ts}] ${msg}`);
 }
+
+// Log timezone after it's been set
+log(`Copilot Telegram Bot starting... (TZ=${process.env.TZ || "UTC"})`);
 
 // --- Startup validation ---
 
@@ -136,7 +158,6 @@ async function validate(config) {
 // --- Main ---
 
 async function main() {
-    log("Copilot Telegram Bot starting...");
 
     const config = loadConfig();
 

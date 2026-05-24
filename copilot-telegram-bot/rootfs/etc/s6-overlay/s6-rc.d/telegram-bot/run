@@ -12,15 +12,6 @@ if [ ! -f "${OPTIONS}" ]; then
     exit 1
 fi
 
-# Set timezone from Home Assistant
-if [ -z "${TZ}" ]; then
-    HA_TZ="$(curl -sS -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" http://supervisor/info 2>/dev/null | jq -r '.data.timezone // empty')"
-    if [ -n "${HA_TZ}" ]; then
-        export TZ="${HA_TZ}"
-        echo "[$(date -Iseconds)] INFO: Timezone set to ${TZ}"
-    fi
-fi
-
 # Set up copilot config symlink
 COPILOT_CONFIG_DIR="$(jq -r '.copilot_config_dir // "/share/copilot-tools/.copilot"' ${OPTIONS})"
 if [ -d "${COPILOT_CONFIG_DIR}" ]; then
