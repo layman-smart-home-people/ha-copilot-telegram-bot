@@ -330,6 +330,12 @@ export class ACPClient extends EventEmitter {
     }
 
     #handleMessage(msg) {
+        // Trace ALL incoming ACP messages for debugging
+        const methodOrType = msg.method || (msg.result !== undefined ? "response" : "unknown");
+        const sessionUpdate = msg.params?.update?.sessionUpdate || "";
+        const brief = sessionUpdate ? `${methodOrType}/${sessionUpdate}` : methodOrType;
+        this.emit("log", `ACP msg: ${brief} id=${msg.id ?? "-"} ${JSON.stringify(msg).substring(0, 300)}`);
+
         // JSON-RPC 2.0 message routing:
         // - Request/notification: has "method"
         // - Response: has "result" or "error", no "method"
