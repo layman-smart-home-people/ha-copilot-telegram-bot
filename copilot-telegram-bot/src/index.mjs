@@ -14,29 +14,13 @@ import { SessionManager } from "./sessions.mjs";
 
 // --- Set timezone from HA system before any Date operations ---
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
-    const { get } = await import("node:http");
     const token = process.env.SUPERVISOR_TOKEN;
     if (token) {
-        const urls = [
-            "http://supervisor/core/api/config",
-            "http://supervisor/info",
-        ];
-        for (const url of urls) {
+        for (const url of ["http://supervisor/core/api/config", "http://supervisor/info"]) {
             try {
-                const raw = await new Promise((resolve, reject) => {
-                    const req = get(url, {
-                        headers: { Authorization: `Bearer ${token}` },
-                    }, (res) => {
-                        let body = "";
-                        res.on("data", (c) => { body += c; });
-                        res.on("end", () => res.statusCode === 200
-                            ? resolve(body)
-                            : reject(new Error(`HTTP ${res.statusCode}`)));
-                    });
-                    req.on("error", reject);
-                    req.setTimeout(5000, () => { req.destroy(); reject(new Error("timeout")); });
-                });
-                const data = JSON.parse(raw);
+                const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+                if (!res.ok) continue;
+                const data = await res.json();
                 const tz = data?.time_zone || data?.data?.timezone;
                 if (tz) { process.env.TZ = tz; break; }
             } catch { /* try next */ }
