@@ -37,9 +37,15 @@ export class ACPClient extends EventEmitter {
         this.#initialized = false;
 
         const args = ["--acp", "--stdio"];
-        // Only use --allow-all if permission_policy is "allow_all" (legacy mode)
+        // ACP is non-interactive: --allow-all-tools is required so the CLI
+        // doesn't auto-reject tool calls. We handle permission prompting
+        // via session/request_permission in the bridge layer.
         if (this.#config.permissionPolicy === "allow_all") {
             args.push("--allow-all");
+        } else {
+            // Interactive mode: allow tools to run (we handle permission UI)
+            // but keep path/URL verification
+            args.push("--allow-all-tools");
         }
         if (this.#config.model) args.push("--model", this.#config.model);
         if (this.#config.extraArgs) {
@@ -248,13 +254,18 @@ export class ACPClient extends EventEmitter {
     /**
      * Respond to a session/request_permission server request.
      * @param {number} requestId - The JSON-RPC id from the server request
-     * @param {string} optionId - "allow_once", "allow_always", or "reject_once"
+     * @param {string} optionId - e.g. "allow_once", "allow_always", "reject_once"
+     * @param {boolean} cancelled - if true, send cancelled outcome
      */
-    respondPermission(requestId, optionId) {
+    respondPermission(requestId, optionId, cancelled = false) {
+        // ACP spec: result.outcome = { outcome: "selected"|"cancelled", optionId? }
+        const outcome = cancelled
+            ? { outcome: "cancelled" }
+            : { outcome: "selected", optionId };
         const response = {
             jsonrpc: "2.0",
             id: requestId,
-            result: { optionId },
+            result: { outcome },
         };
         const payload = JSON.stringify(response) + "\n";
         this.emit("log", `Permission response: ${JSON.stringify(response)}`);
@@ -330,11 +341,15 @@ export class ACPClient extends EventEmitter {
     }
 
     #handleMessage(msg) {
-        // Trace ALL incoming ACP messages for debugging
+        // Log incoming ACP messages (summary only for frequent types)
         const methodOrType = msg.method || (msg.result !== undefined ? "response" : "unknown");
         const sessionUpdate = msg.params?.update?.sessionUpdate || "";
         const brief = sessionUpdate ? `${methodOrType}/${sessionUpdate}` : methodOrType;
-        this.emit("log", `ACP msg: ${brief} id=${msg.id ?? "-"} ${JSON.stringify(msg).substring(0, 300)}`);
+        // Only log full JSON for non-frequent messages (skip chunks, agent_thought)
+        const isFrequent = sessionUpdate === "agent_message_chunk" || sessionUpdate === "agent_thought_chunk";
+        if (!isFrequent) {
+            this.emit("log", `ACP ← ${brief} id=${msg.id ?? "-"}`);
+        }
 
         // JSON-RPC 2.0 message routing:
         // - Request/notification: has "method"
@@ -423,18 +438,32 @@ export class ACPClient extends EventEmitter {
                 case "agent_message_end":
                     this.emit("message_end", update);
                     break;
-                case "tool_call_start":
+                case "tool_call":
+                    // ACP sends tool_call with status "pending" when a tool is invoked
                     this.emit("tool_start", {
                         toolCallId: update.toolCallId,
-                        toolName: update.toolName,
-                        arguments: update.arguments,
+                        toolName: update.title || "unknown",
+                        arguments: update.rawInput,
+                        kind: update.kind,
+                        status: update.status,
                     });
                     break;
-                case "tool_call_end":
-                    this.emit("tool_end", {
+                case "tool_call_update":
+                    // ACP sends tool_call_update with status changes
+                    this.emit("tool_update", {
                         toolCallId: update.toolCallId,
-                        result: update.result,
+                        status: update.status,
+                        content: update.content,
+                        rawOutput: update.rawOutput,
                     });
+                    // Emit tool_end when the tool reaches a terminal state
+                    if (update.status === "completed" || update.status === "failed") {
+                        this.emit("tool_end", {
+                            toolCallId: update.toolCallId,
+                            status: update.status,
+                            result: update.rawOutput || update.content,
+                        });
+                    }
                     break;
                 case "available_commands_update":
                     this.emit("commands", update.availableCommands);

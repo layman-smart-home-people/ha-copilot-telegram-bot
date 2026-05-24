@@ -160,15 +160,20 @@ export class Bridge {
             }
         });
 
-        acp.on("tool_end", ({ toolCallId, result }) => {
+        acp.on("tool_end", ({ toolCallId, status, result }) => {
             const completed = this.#activeTools.get(toolCallId);
             const resultSummary = result ? JSON.stringify(result).substring(0, 200) : "null";
-            this.#log(`Tool end: ${completed?.name || toolCallId} → ${resultSummary}`);
-            // Detect tool errors from MCP result or ACP status
-            const resultStr = typeof result === "string" ? result : JSON.stringify(result || "");
-            if (result?.isError || result?.error || /\"isError\"\s*:\s*true/i.test(resultStr)) {
+            this.#log(`Tool end: ${completed?.name || toolCallId} [${status}] → ${resultSummary}`);
+            // Detect tool errors from status or MCP result
+            if (status === "failed") {
                 this.#turnToolErrors++;
-                this.#log(`Tool error detected: ${completed?.name || toolCallId}`);
+                this.#log(`Tool failed: ${completed?.name || toolCallId}`);
+            } else {
+                const resultStr = typeof result === "string" ? result : JSON.stringify(result || "");
+                if (result?.isError || result?.error || /\"isError\"\s*:\s*true/i.test(resultStr)) {
+                    this.#turnToolErrors++;
+                    this.#log(`Tool error detected: ${completed?.name || toolCallId}`);
+                }
             }
             this.#resetTypingDebounce();
             if (completed?.description) {
@@ -179,6 +184,13 @@ export class Bridge {
 
             // Relay images from tool results
             this.#relayToolImages(result);
+        });
+
+        // Tool progress updates (in_progress status)
+        acp.on("tool_update", ({ toolCallId, status }) => {
+            if (status === "in_progress") {
+                this.#resetTypingDebounce();
+            }
         });
 
         // Process exit — handle crash recovery
@@ -234,7 +246,9 @@ export class Bridge {
 
             // Allow-all mode: skip all permission prompts
             if (this.#allowAll) {
-                acp.respondPermission(requestId, "allow_always");
+                const options = req.options || [];
+                const allowId = options.find(o => o.kind === "allow_always")?.optionId || "allow_always";
+                acp.respondPermission(requestId, allowId);
                 this.#log(`Permission auto-approved (allow-all mode): ${tool} (${desc})`);
                 return;
             }
@@ -247,9 +261,16 @@ export class Bridge {
             ]);
             const isReadOnly = readOnlyTools.has(tool) || !tool.startsWith("ha_");
 
+            // Extract the actual optionIds from the request's options array
+            const options = req.options || [];
+            const findOption = (kind) => options.find(o => o.kind === kind)?.optionId;
+            const allowOnceId = findOption("allow_once") || "allow_once";
+            const allowAlwaysId = findOption("allow_always") || "allow_always";
+            const rejectOnceId = findOption("reject_once") || "reject_once";
+
             // Session grants: user previously allowed this tool for the session
             if (isReadOnly || this.#sessionGrantedTools.has(tool)) {
-                acp.respondPermission(requestId, "allow_always");
+                acp.respondPermission(requestId, allowAlwaysId);
                 this.#log(`Permission auto-approved: ${tool} (${desc})`);
                 return;
             }
@@ -259,7 +280,7 @@ export class Bridge {
             const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
             if (!chatId || !this.#buttons) {
                 // No chat to ask — deny by default
-                acp.respondPermission(requestId, "reject_once");
+                acp.respondPermission(requestId, rejectOnceId);
                 this.#log(`Permission denied (no chat): ${tool}`);
                 return;
             }
@@ -267,9 +288,9 @@ export class Bridge {
             const label = desc ? `${tool}\n${desc}` : tool;
             const rows = [
                 [
-                    { text: "✅ Allow once", value: "allow_once" },
-                    { text: "✅ Always allow", value: "allow_always" },
-                    { text: "❌ Deny", value: "reject_once" },
+                    { text: "✅ Allow once", value: allowOnceId },
+                    { text: "✅ Always allow", value: allowAlwaysId },
+                    { text: "❌ Deny", value: rejectOnceId },
                 ],
             ];
             const selected = await this.#buttons.prompt(
@@ -279,14 +300,14 @@ export class Bridge {
                 { timeoutMs: 60000, timeoutText: "🔐 Permission denied (timeout)" }
             );
 
-            if (selected === "allow_once" || selected === "allow_always") {
-                if (selected === "allow_always") {
+            if (selected === allowOnceId || selected === allowAlwaysId) {
+                if (selected === allowAlwaysId) {
                     this.#sessionGrantedTools.add(tool);
                 }
                 acp.respondPermission(requestId, selected);
                 this.#log(`Permission granted (${selected}): ${tool}`);
             } else {
-                acp.respondPermission(requestId, "reject_once");
+                acp.respondPermission(requestId, rejectOnceId);
                 this.#log(`Permission denied: ${tool}`);
             }
         });
