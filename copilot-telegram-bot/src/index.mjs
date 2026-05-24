@@ -13,7 +13,8 @@ import { PairingManager } from "./pairing.mjs";
 import { SessionManager } from "./sessions.mjs";
 
 // --- Set timezone from HA system before any Date operations ---
-if (!process.env.TZ) {
+// HA containers default to TZ=UTC — override with the actual HA system timezone
+if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
     try {
         const resp = await fetch("http://supervisor/info", {
             headers: { Authorization: `Bearer ${process.env.SUPERVISOR_TOKEN}` },
@@ -22,8 +23,8 @@ if (!process.env.TZ) {
         if (data?.data?.timezone) {
             process.env.TZ = data.data.timezone;
         }
-    } catch {
-        // Supervisor API not available — leave TZ unset
+    } catch (e) {
+        console.error(`[TZ] Failed to fetch timezone: ${e.message}`);
     }
 }
 
