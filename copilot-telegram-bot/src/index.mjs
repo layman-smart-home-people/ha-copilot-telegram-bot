@@ -30,7 +30,7 @@ if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC")
 
 // --- Config ---
 
-function loadConfig() {
+async function loadConfig() {
     // HA add-on options are at /data/options.json
     const optionsPath = "/data/options.json";
     let options = {};
@@ -42,15 +42,21 @@ function loadConfig() {
         }
     }
 
-    // Read addon version from config.yaml
+    // Read addon version from supervisor API
     let addonVersion = "unknown";
     try {
-        const configYaml = readFileSync("/data/config.yaml", "utf8").toString();
-        const vMatch = configYaml.match(/^version:\s*(.+)/m);
-        if (vMatch) addonVersion = vMatch[1].trim();
+        const supervisorToken = process.env.SUPERVISOR_TOKEN;
+        if (supervisorToken) {
+            const res = await fetch("http://supervisor/addons/self/info", {
+                headers: { "Authorization": `Bearer ${supervisorToken}` },
+            });
+            const data = await res.json();
+            addonVersion = data?.data?.version || "unknown";
+        }
     } catch {
+        // Fallback: try reading from local config.yaml (dev mode)
         try {
-            const configYaml = readFileSync("/config.yaml", "utf8").toString();
+            const configYaml = readFileSync("/app/config.yaml", "utf8").toString();
             const vMatch = configYaml.match(/^version:\s*(.+)/m);
             if (vMatch) addonVersion = vMatch[1].trim();
         } catch {}
@@ -175,7 +181,7 @@ async function validate(config) {
 
 async function main() {
 
-    const config = loadConfig();
+    const config = await loadConfig();
 
     // Inject github_token into env BEFORE validation so the ACP test has it
     if (config.githubToken) {

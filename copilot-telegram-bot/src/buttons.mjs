@@ -156,8 +156,9 @@ export class ButtonManager {
                 parse_mode: parseMode || undefined,
                 reply_markup: { inline_keyboard: [] },
             });
-        } catch {
-            // Message may have been deleted
+        } catch (err) {
+            // Log finalize failures for debugging
+            console.error(`[Buttons] finalize error: ${err.message} (chat=${chatId}, msg=${messageId})`);
         }
     }
 

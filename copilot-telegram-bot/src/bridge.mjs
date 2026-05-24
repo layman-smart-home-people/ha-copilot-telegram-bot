@@ -313,13 +313,16 @@ export class Bridge {
                 acp.respondPermission(requestId, selected);
                 this.#log(`Permission granted (${selected}): ${tool}`);
                 if (permMsgId) {
-                    this.#buttons.finalize(chatId, permMsgId, `✅ Allowed: ${desc || tool}`);
+                    await this.#buttons.finalize(chatId, permMsgId, `✅ Allowed: ${desc || tool}`);
                 }
             } else {
                 acp.respondPermission(requestId, rejectOnceId);
                 this.#log(`Permission denied: ${tool}`);
                 if (permMsgId) {
-                    this.#buttons.finalize(chatId, permMsgId, `❌ Denied: ${desc || tool}`);
+                    this.#log(`Finalizing deny message: chat=${chatId} msg=${permMsgId}`);
+                    await this.#buttons.finalize(chatId, permMsgId, `❌ Denied: ${desc || tool}`);
+                } else {
+                    this.#log(`No permMsgId for deny feedback`);
                 }
             }
         });
