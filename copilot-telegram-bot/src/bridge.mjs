@@ -823,16 +823,8 @@ export class Bridge {
     #getPrefix() {
         if (!this.#preambleSent) {
             this.#preambleSent = true;
-            let rules = this.#config.preamble;
-            // In interactive mode, instruct the agent to confirm before write actions
-            if (!this.#allowAll) {
-                rules += `\n• SAFETY: Before performing ANY write action on Home Assistant (turning on/off devices, calling services, running automations, changing settings), you MUST first describe exactly what you plan to do and ask the user to confirm. Only proceed after explicit user confirmation. Read-only actions (searching entities, checking states, viewing history) are fine without confirmation.`;
-            }
+            const rules = this.#config.preamble;
             return `[SYSTEM: This message arrived via Telegram. Follow these rules for your reply:\n• ${rules}]\n`;
-        }
-        // In interactive mode, include a shorter reminder on subsequent messages
-        if (!this.#allowAll) {
-            return "[Via Telegram — remember: confirm with user before any HA write actions]\n";
         }
         return "[Via Telegram]\n";
     }

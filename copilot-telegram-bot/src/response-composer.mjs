@@ -189,7 +189,7 @@ export class ResponseComposer {
         } else if (answerHtml) {
             html = answerHtml;
         } else if (stepsHtml) {
-            html = `${stepsHtml}\n⏳ <i>Working...</i>`;
+            html = `🤔 <i>Thinking...</i>\n${stepsHtml}`;
         } else {
             html = "🤔 <i>Thinking...</i>";
         }
