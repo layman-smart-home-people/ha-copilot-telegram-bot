@@ -90,6 +90,11 @@ export class Bridge {
     #availableCommands = [];  // Copilot slash commands from ACP
     #knownTools = new Map();  // MCP tool names seen → description
 
+    // Turn-level tracking for tool call reactions
+    #turnToolCount = 0;
+    #turnToolErrors = 0;
+    #lastBotMessageId = null;  // Message ID of last bot message sent during this turn
+
     constructor({ telegram, acp, config, log, pairing, sessionMgr }) {
         this.#telegram = telegram;
         this.#acp = acp;
@@ -136,6 +141,7 @@ export class Bridge {
         // Tool calls → bubble updates
         acp.on("tool_start", ({ toolCallId, toolName, arguments: args }) => {
             this.#log(`Tool start: ${toolName} (${toolCallId})`);
+            this.#turnToolCount++;
             this.#resetTypingDebounce();
             this.#bubbleActive = true;
             const desc = describeToolCall(toolName, args);
@@ -153,6 +159,12 @@ export class Bridge {
             const completed = this.#activeTools.get(toolCallId);
             const resultSummary = result ? JSON.stringify(result).substring(0, 200) : "null";
             this.#log(`Tool end: ${completed?.name || toolCallId} → ${resultSummary}`);
+            // Detect tool errors from MCP result or ACP status
+            const resultStr = typeof result === "string" ? result : JSON.stringify(result || "");
+            if (result?.isError || result?.error || /\"isError\"\s*:\s*true/i.test(resultStr)) {
+                this.#turnToolErrors++;
+                this.#log(`Tool error detected: ${completed?.name || toolCallId}`);
+            }
             this.#resetTypingDebounce();
             if (completed?.description) {
                 this.#lastCompletedToolDesc = completed.description;
@@ -603,6 +615,11 @@ export class Bridge {
         }
         this.#promptActive = true;
 
+        // Reset turn-level tracking
+        this.#turnToolCount = 0;
+        this.#turnToolErrors = 0;
+        this.#lastBotMessageId = null;
+
         // Set active ref for ACP output routing
         this.#activeRef = ref;
 
@@ -657,6 +674,7 @@ export class Bridge {
             this.#log(`Prompt completed successfully: ${JSON.stringify(result)?.substring(0, 200)}`);
         } catch (err) {
             this.#log(`Prompt error: ${err.message}`);
+            this.#turnToolErrors++; // Count prompt failure for reaction
             const userMsg = formatError(err);
             if (ref) {
                 this.#transport.enqueueSend(ref, userMsg);
@@ -668,7 +686,7 @@ export class Bridge {
                 }
             }
         } finally {
-            // Clear reaction — response delivered
+            // Clear reaction on user's message — response delivered
             if (ref && messageId) {
                 this.#telegram.setMessageReaction(ref.chatId, messageId, null).catch(() => {});
             }
@@ -678,6 +696,12 @@ export class Bridge {
             this.#flushMessageBuffer();
             this.#stopTyping();
             this.#dismissBubble();
+
+            // React on bot's last response if tools were called
+            if (ref && this.#lastBotMessageId && this.#turnToolCount > 0) {
+                const emoji = this.#turnToolErrors > 0 ? "👎" : "👍";
+                this.#telegram.setMessageReaction(ref.chatId, this.#lastBotMessageId, emoji).catch(() => {});
+            }
 
             this.#promptActive = false;
             this.#activeRef = null;
@@ -998,14 +1022,20 @@ export class Bridge {
 
     async #sendFormatted(ref, markdown) {
         const html = markdownToTelegramHtml(markdown);
+        let sent;
         try {
-            return await this.#transport.send(ref, html, "HTML");
+            sent = await this.#transport.send(ref, html, "HTML");
         } catch (err) {
             if (err.message && /can.t parse|entit/i.test(err.message)) {
-                return this.#transport.send(ref, markdown);
+                sent = await this.#transport.send(ref, markdown);
+            } else {
+                throw err;
             }
-            throw err;
         }
+        if (sent?.message_id) {
+            this.#lastBotMessageId = sent.message_id;
+        }
+        return sent;
     }
 
     // --- Relay images from tool results ---
