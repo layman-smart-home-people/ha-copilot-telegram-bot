@@ -12,6 +12,34 @@ if [ ! -f "${OPTIONS}" ]; then
     exit 1
 fi
 
+# Source SUPERVISOR_TOKEN from s6-overlay environment if not already set
+if [ -z "${SUPERVISOR_TOKEN}" ] && [ -f /run/s6/container_environment/SUPERVISOR_TOKEN ]; then
+    SUPERVISOR_TOKEN="$(cat /run/s6/container_environment/SUPERVISOR_TOKEN)"
+    export SUPERVISOR_TOKEN
+fi
+
+# Set timezone from Home Assistant
+if [ -z "${TZ}" ] || [ "${TZ}" = "UTC" ] || [ "${TZ}" = "Etc/UTC" ]; then
+    if [ -n "${SUPERVISOR_TOKEN}" ]; then
+        # Try HA Core API config (most reliable)
+        HA_TZ="$(wget -qO- --header="Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            "http://supervisor/core/api/config" 2>/dev/null | jq -r '.time_zone // empty')"
+        if [ -z "${HA_TZ}" ]; then
+            # Fallback to supervisor info
+            HA_TZ="$(wget -qO- --header="Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+                "http://supervisor/info" 2>/dev/null | jq -r '.data.timezone // empty')"
+        fi
+        if [ -n "${HA_TZ}" ]; then
+            export TZ="${HA_TZ}"
+            echo "[$(date -Iseconds)] INFO: Timezone set to ${TZ}"
+        else
+            echo "[$(date -Iseconds)] WARNING: Could not determine timezone from HA"
+        fi
+    else
+        echo "[$(date -Iseconds)] WARNING: SUPERVISOR_TOKEN not available for TZ lookup"
+    fi
+fi
+
 # Set up copilot config symlink
 COPILOT_CONFIG_DIR="$(jq -r '.copilot_config_dir // "/share/copilot-tools/.copilot"' ${OPTIONS})"
 if [ -d "${COPILOT_CONFIG_DIR}" ]; then

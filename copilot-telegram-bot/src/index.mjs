@@ -12,52 +12,7 @@ import { Bridge } from "./bridge.mjs";
 import { PairingManager } from "./pairing.mjs";
 import { SessionManager } from "./sessions.mjs";
 
-// --- Set timezone from HA system before any Date operations ---
-// HA containers default to TZ=UTC — override with the actual HA system timezone
-if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
-    const { get } = await import("node:http");
-    const token = process.env.SUPERVISOR_TOKEN;
-    const endpoints = [
-        "http://supervisor/core/api/config",
-        "http://supervisor/supervisor/info",
-        "http://supervisor/info",
-    ];
-    let found = false;
-    for (const url of endpoints) {
-        try {
-            const raw = await new Promise((resolve, reject) => {
-                const req = get(url, {
-                    headers: { Authorization: `Bearer ${token}` },
-                }, (res) => {
-                    let body = "";
-                    res.on("data", (chunk) => { body += chunk; });
-                    res.on("end", () => {
-                        if (res.statusCode !== 200) {
-                            reject(new Error(`HTTP ${res.statusCode}: ${body.slice(0, 100)}`));
-                        } else {
-                            resolve(body);
-                        }
-                    });
-                });
-                req.on("error", reject);
-                req.setTimeout(5000, () => { req.destroy(); reject(new Error("timeout")); });
-            });
-            const data = JSON.parse(raw);
-            const tz = data?.time_zone || data?.data?.timezone;
-            if (tz) {
-                process.env.TZ = tz;
-                console.error(`[TZ] Timezone set to ${tz} (from ${url})`);
-                found = true;
-                break;
-            }
-        } catch (e) {
-            console.error(`[TZ] ${url}: ${e.message}`);
-        }
-    }
-    if (!found) {
-        console.error(`[TZ] Could not determine timezone. SUPERVISOR_TOKEN ${token ? "is set" : "NOT SET"}`);
-    }
-}
+// --- Timezone is set by the s6 run script before Node starts ---
 
 // --- Config ---
 
