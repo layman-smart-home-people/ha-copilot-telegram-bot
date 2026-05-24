@@ -28,6 +28,7 @@ if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC")
             req.on("error", reject);
             req.setTimeout(5000, () => { req.destroy(); reject(new Error("timeout")); });
         });
+        console.error(`[TZ] Raw supervisor response (${raw.length} bytes): ${raw.slice(0, 300)}`);
         const data = JSON.parse(raw);
         if (data?.data?.timezone) {
             process.env.TZ = data.data.timezone;
