@@ -281,6 +281,7 @@ async function main() {
 
     bridge.setupACPHandlers();
     bridge.setupTelegramHandlers();
+    _bridge = bridge; // expose for shutdown handler
 
     // Start Telegram polling FIRST so the bot can send/receive messages
     // during login flow
@@ -325,15 +326,17 @@ async function main() {
 
 // --- Shutdown ---
 
+let _bridge = null; // set during main() for shutdown access
+
 async function shutdown(signal) {
     log(`Received ${signal}, shutting down...`);
 
-    // Give 5 seconds for cleanup
     const timer = setTimeout(() => process.exit(0), 5000);
 
     try {
-        // Notify users
-        // (telegram client may already be stopped, so this is best-effort)
+        if (_bridge) {
+            await _bridge.notifyShutdown();
+        }
     } catch {}
 
     clearTimeout(timer);

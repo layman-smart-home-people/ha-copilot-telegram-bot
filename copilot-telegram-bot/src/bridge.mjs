@@ -121,6 +121,38 @@ export class Bridge {
     set allowAll(v) { this.#allowAll = !!v; this.#log(`Allow-all mode: ${this.#allowAll}`); }
     resetPreamble() { this.#preambleSent = false; }
 
+    /** Best-effort notification before process exit. */
+    async notifyShutdown() {
+        const promises = [];
+
+        // If a response was in progress, notify the user
+        if (this.#composer?.active && this.#activeRef) {
+            promises.push(
+                this.#telegram.sendMessage(
+                    this.#activeRef.chatId,
+                    "⚠️ Add-on is shutting down — current operation was interrupted. Send a message to resume when it's back."
+                ).catch(() => {})
+            );
+        }
+
+        // Update status menu if one exists
+        if (this.#statusMsg) {
+            promises.push(
+                this.#telegram.call("editMessageText", {
+                    chat_id: this.#statusMsg.chatId,
+                    message_id: this.#statusMsg.messageId,
+                    text: "⏹️ Copilot Stopped\n\nAdd-on was shut down.",
+                    reply_markup: { inline_keyboard: [] },
+                }).catch(() => {})
+            );
+            this.#statusMsg = null;
+        }
+
+        if (promises.length > 0) {
+            await Promise.allSettled(promises);
+        }
+    }
+
     /** Re-submit a message as if the user sent it (for /retry) */
     submitRetry(ref, text) {
         this.#queuePrompt(this.#getPrefix(ref) + text, {}, ref);
