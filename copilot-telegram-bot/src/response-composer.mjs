@@ -60,6 +60,9 @@ export class ResponseComposer {
             disable_notification: true,
         };
         if (ref.threadId) params.message_thread_id = ref.threadId;
+        if (ref.triggerMessageId && (ref.chatType === "group" || ref.chatType === "supergroup")) {
+            params.reply_to_message_id = ref.triggerMessageId;
+        }
 
         try {
             const sent = await this.#telegram.call("sendMessage", params);

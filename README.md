@@ -1,6 +1,6 @@
 # 🤖 Copilot Telegram Bot — Home Assistant Add-on
 
-**Version 0.11.0**
+**Version 0.12.0**
 
 Talk to [GitHub Copilot CLI](https://githubnext.com/projects/copilot-cli/) directly from Telegram. This Home Assistant add-on gives you an always-on Telegram bot that starts Copilot on demand, streams progress back to chat, and lets you work from your phone without opening a terminal.
 
@@ -15,16 +15,18 @@ Send a message to your private Telegram bot → it wakes up Copilot CLI → Copi
 ### Key Features
 
 - 🔄 **Always-on bot, on-demand Copilot** — the bot stays online even when Copilot is idle
-- 📌 **Pinned instructions** — pin a message like “Always answer in German” and it is included in future prompts
+- 👤 **Multi-user isolation** — each user gets their own independent Copilot session
+- 👥 **Group chat support** — add the bot to groups; responds to @mentions or all messages
+- 📌 **Pinned instructions** — pin a message like "Always answer in German" and it is included in future prompts
 - ↩️ **Reply-chain context** — replying to a message includes up to 5 linked messages as context
-- 🔐 **Real permission system** — interactive approval prompts for write actions, or optional allow-all mode
+- 🔐 **Per-user permissions** — interactive approval prompts scoped per user and conversation
 - 🧵 **Forum mode** — in Telegram forums, each topic becomes its own Copilot session
 - 👥 **User pairing** — add extra users with 6-character pairing codes that expire after 15 minutes
 - 📊 **Live status menu** — singleton dashboard with auto-refresh, action buttons, and 5-minute TTL
 - 💬 **Progressive responses** — thinking, tool activity, and answer text stream into Telegram as work happens
 - 🛑 **Recovery controls** — `/stop`, `/retry`, `/history`, `/sessions`, `/new`, `/close`, `/delete`, and more
 - 🔔 **Graceful shutdown notices** — users are told if the add-on stops mid-response
-- ⏸️ **Resource-friendly** — optional idle timeout can stop Copilot automatically
+- ⏸️ **Resource-friendly** — optional idle timeout, LRU eviction, rate limiting
 
 ---
 

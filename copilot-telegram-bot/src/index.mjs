@@ -5,12 +5,14 @@
 // Always-on Telegram bot that connects to GitHub Copilot CLI
 // via the Agent Client Protocol (ACP).
 
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { ACPClient } from "./acp.mjs";
 import { TelegramClient } from "./telegram.mjs";
 import { Bridge } from "./bridge.mjs";
 import { PairingManager } from "./pairing.mjs";
+import { ScopeManager } from "./scope-manager.mjs";
 import { SessionManager } from "./sessions.mjs";
+import { loadConfig } from "./config.mjs";
 
 // --- Set timezone from HA system before any Date operations ---
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
@@ -29,96 +31,6 @@ if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC")
 }
 
 // --- Config ---
-
-async function loadConfig() {
-    // HA add-on options are at /data/options.json
-    const optionsPath = "/data/options.json";
-    let options = {};
-    if (existsSync(optionsPath)) {
-        try {
-            options = JSON.parse(readFileSync(optionsPath, "utf-8"));
-        } catch (err) {
-            log(`Failed to read options.json: ${err.message}`);
-        }
-    }
-
-    // Read addon version from supervisor API, fallback to config.yaml
-    let addonVersion = "unknown";
-    try {
-        const supervisorToken = process.env.SUPERVISOR_TOKEN;
-        if (supervisorToken) {
-            const res = await fetch("http://supervisor/addons/self/info", {
-                headers: { "Authorization": `Bearer ${supervisorToken}` },
-            });
-            const data = await res.json();
-            addonVersion = data?.data?.version || "unknown";
-            log(`Version from supervisor API: ${addonVersion}`);
-        }
-    } catch (err) {
-        log(`Supervisor API version fetch failed: ${err.message}`);
-    }
-    if (addonVersion === "unknown") {
-        // Fallback: read from config.yaml (copied into container by Dockerfile)
-        for (const p of ["/app/config.yaml", "/config.yaml", "/data/config.yaml"]) {
-            try {
-                const configYaml = readFileSync(p, "utf8").toString();
-                const vMatch = configYaml.match(/^version:\s*(.+)/m);
-                if (vMatch) { addonVersion = vMatch[1].trim(); log(`Version from ${p}: ${addonVersion}`); break; }
-            } catch {}
-        }
-    }
-
-    // Allow env overrides for development
-    const config = {
-        botToken: process.env.TELEGRAM_BOT_TOKEN || options.bot_token || "",
-        allowedChatIds: options.allowed_chat_ids || [],
-        copilotBinary: process.env.COPILOT_BINARY || options.copilot_binary || "/share/copilot-tools/copilot",
-        copilotConfigDir: options.copilot_config_dir || "/share/copilot-tools/.copilot",
-        copilotExtraArgs: options.copilot_extra_args || "",
-        githubToken: process.env.COPILOT_GITHUB_TOKEN || options.github_token || "",
-        preamble: options.preamble || "Be concise, mobile-first, Telegram-friendly PLAIN TEXT only.",
-        autoStart: options.auto_start !== false,
-        idleTimeoutMinutes: options.idle_timeout_minutes || 0,
-        model: options.model || "",
-        workingDirectory: options.working_directory || "/config",
-        permissionPolicy: options.permission_policy || "interactive",
-        version: addonVersion,
-        mcpServers: [],
-    };
-
-    // Try to load MCP config (copilot uses mcp-config.json)
-    const mcpPaths = [
-        "/data/.copilot/mcp-config.json",
-        `${config.copilotConfigDir}/mcp-config.json`,
-        "/data/.copilot/mcp.json",
-        `${config.copilotConfigDir}/mcp.json`,
-    ];
-    for (const p of mcpPaths) {
-        if (existsSync(p)) {
-            try {
-                const mcpConfig = JSON.parse(readFileSync(p, "utf-8"));
-                if (mcpConfig.mcpServers) {
-                    config.mcpServers = Object.entries(mcpConfig.mcpServers).map(([name, server]) => ({
-                        name,
-                        ...server,
-                    }));
-                }
-                log(`Loaded MCP config from ${p} (${config.mcpServers.length} servers)`);
-                for (const s of config.mcpServers) {
-                    log(`  MCP: ${s.name} → ${s.url ? s.url : s.command || "unknown"}`);
-                }
-                break;
-            } catch (err) {
-                log(`WARNING: Failed to parse MCP config ${p}: ${err.message}`);
-            }
-        }
-    }
-    if (config.mcpServers.length === 0) {
-        log("No MCP servers configured — ha-mcp will not be available");
-    }
-
-    return config;
-}
 
 function log(msg) {
     // Use local time (respects TZ env) in ISO-ish format
@@ -187,7 +99,7 @@ async function validate(config) {
 
 async function main() {
 
-    const config = await loadConfig();
+    const config = await loadConfig(log);
 
     // Inject github_token into env BEFORE validation so the ACP test has it
     if (config.githubToken) {
@@ -269,7 +181,12 @@ async function main() {
         log,
     });
 
-    // Create bridge
+    const scopeMgr = new ScopeManager({
+        persistPath: "/data/scopes.json",
+        defaultAllowAll: config.permissionPolicy === "allow_all",
+        log,
+    });
+
     const bridge = new Bridge({
         telegram,
         acp,
@@ -277,11 +194,13 @@ async function main() {
         log,
         pairing,
         sessionMgr,
+        scopeMgr,
     });
 
     bridge.setupACPHandlers();
     bridge.setupTelegramHandlers();
     _bridge = bridge; // expose for shutdown handler
+    _scopeMgr = scopeMgr;
 
     // Start Telegram polling FIRST so the bot can send/receive messages
     // during login flow
@@ -327,11 +246,18 @@ async function main() {
 // --- Shutdown ---
 
 let _bridge = null; // set during main() for shutdown access
+let _scopeMgr = null;
 
 async function shutdown(signal) {
     log(`Received ${signal}, shutting down...`);
 
     const timer = setTimeout(() => process.exit(0), 5000);
+
+    try {
+        if (_scopeMgr) _scopeMgr.shutdown();
+    } catch (err) {
+        log(`Scope shutdown error: ${err.message}`);
+    }
 
     try {
         if (_bridge) {

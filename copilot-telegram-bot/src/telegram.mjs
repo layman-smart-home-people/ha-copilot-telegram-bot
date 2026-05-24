@@ -195,7 +195,7 @@ export class TelegramClient extends EventEmitter {
                 const updates = await this.call("getUpdates", {
                     offset: this.#offset,
                     timeout: this.#pollTimeout,
-                    allowed_updates: ["message", "callback_query"],
+                    allowed_updates: ["message", "callback_query", "my_chat_member"],
                 });
                 errorDelay = 5000;
 

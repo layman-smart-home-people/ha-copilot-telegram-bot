@@ -10,6 +10,9 @@
  * @property {number} chatId       - Telegram chat ID
  * @property {number|null} threadId - message_thread_id (null = private chat or General)
  * @property {string|null} sessionId - ACP session ID (null = not yet created)
+ * @property {string|null} chatType - Telegram chat type: 'private', 'group', 'supergroup', or null
+ * @property {number|null} triggerMessageId - message ID that triggered this response (for reply-to in groups)
+ * @property {number|null} userId - Telegram user ID of the sender
  */
 
 /**
@@ -17,10 +20,11 @@
  * @param {number} chatId
  * @param {number|null} [threadId=null]
  * @param {string|null} [sessionId=null]
+ * @param {string|null} [chatType=null]
  * @returns {ConversationRef}
  */
-export function makeRef(chatId, threadId = null, sessionId = null) {
-    return { chatId, threadId, sessionId };
+export function makeRef(chatId, threadId = null, sessionId = null, chatType = null) {
+    return { chatId, threadId, sessionId, chatType };
 }
 
 /**
@@ -47,6 +51,9 @@ export class MessageTransport {
         if (ref.threadId) params.message_thread_id = ref.threadId;
         if (parseMode) params.parse_mode = parseMode;
         if (replyMarkup) params.reply_markup = replyMarkup;
+        if (ref.triggerMessageId && (ref.chatType === "group" || ref.chatType === "supergroup")) {
+            params.reply_to_message_id = ref.triggerMessageId;
+        }
         return this.#telegram.call("sendMessage", params);
     }
 

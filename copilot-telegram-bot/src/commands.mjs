@@ -13,7 +13,7 @@ export function parseSlashCommand(text, botUsername) {
 }
 
 export async function handleSlashCommand(ctx, command, args) {
-    const { acp, telegram, transport, chatId, chatIds, ref, log, buttons, models, modes, history,
+    const { acp, telegram, transport, chatId, chatIds, ref, scope, scopeMgr, log, buttons, models, modes, history,
             currentModel, currentMode, availableCommands, knownTools, pairing, sessionMgr, bridge, config } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {
@@ -21,33 +21,68 @@ export async function handleSlashCommand(ctx, command, args) {
             telegram.enqueue(() => telegram.sendMessage(cid, text));
         }
     };
+    const scopeKey = scope?.key || ref?.scopeKey || null;
+    const scopeType = scopeKey?.startsWith("forum:") ? "Forum"
+        : scopeKey?.startsWith("group:") ? "Group"
+        : "DM";
+    const scopeLabel = scopeType === "DM" ? "this conversation" : `this ${scopeType.toLowerCase()} conversation`;
+    const scopeHistory = scope?.history || history || null;
+    const updateScopeSettings = (result) => {
+        if (!scope) return;
+        if (result?.models?.currentModelId) scope.model = result.models.currentModelId;
+        if (result?.modes?.currentModeId) scope.mode = result.modes.currentModeId;
+    };
+    const activateScopeSession = async ({ createIfMissing = false } = {}) => {
+        if (!acp?.alive || !scope) return false;
+        if (scope.sessionId) {
+            if (acp.sessionId !== scope.sessionId) {
+                await acp.loadSession(scope.sessionId);
+            }
+        } else {
+            if (!createIfMissing) return false;
+            const result = await acp.newSession({ cwd: config?.workingDirectory || "/config" });
+            scope.sessionId = result.sessionId;
+            if (ref) ref.sessionId = result.sessionId;
+            scope.preambleSent = false;
+            updateScopeSettings(result);
+        }
+        if (scopeMgr && scopeKey) scopeMgr.setActive(scopeKey);
+        return true;
+    };
 
     try {
         switch (command) {
             case "autopilot": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
+                await activateScopeSession({ createIfMissing: true });
                 if (args === "off" || args === "false") {
                     await acp.setMode("interactive");
-                    broadcast("✅ Autopilot OFF → interactive mode");
+                    if (scope) scope.mode = "interactive";
+                    reply(`✅ Autopilot OFF for ${scopeLabel}`);
                 } else {
                     await acp.setMode("autopilot");
-                    broadcast("✅ Autopilot ON");
+                    if (scope) scope.mode = "autopilot";
+                    reply(`✅ Autopilot ON for ${scopeLabel}`);
                 }
                 return true;
             }
             case "plan": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
+                await activateScopeSession({ createIfMissing: true });
                 if (args === "off" || args === "false") {
                     await acp.setMode("interactive");
-                    broadcast("✅ Plan mode OFF → interactive mode");
+                    if (scope) scope.mode = "interactive";
+                    reply(`✅ Plan mode OFF for ${scopeLabel}`);
                 } else {
                     await acp.setMode("plan");
-                    broadcast("✅ Plan mode ON");
+                    if (scope) scope.mode = "plan";
+                    reply(`✅ Plan mode ON for ${scopeLabel}`);
                 }
                 return true;
             }
             case "mode": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
+                await activateScopeSession({ createIfMissing: true });
                 if (buttons && modes?.length > 0) {
                     const rows = modes.map(m => [{ text: m.name || m.id, value: m.id }]);
                     const { value: selected } = await buttons.prompt(chatId, "📋 Select a mode:", rows, {
@@ -55,8 +90,9 @@ export async function handleSlashCommand(ctx, command, args) {
                     });
                     if (selected) {
                         await acp.setMode(selected);
+                        if (scope) scope.mode = selected;
                         const name = modes.find(m => m.id === selected)?.name || selected;
-                        broadcast(`📋 Mode → ${name}`);
+                        reply(`📋 Mode for ${scopeLabel} → ${name}`);
                     }
                 } else {
                     reply("📋 Mode: use /autopilot or /plan to change");
@@ -65,15 +101,21 @@ export async function handleSlashCommand(ctx, command, args) {
             }
             case "compact": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
+                if (!await activateScopeSession()) {
+                    reply("⚠️ No session yet in this conversation.");
+                    return true;
+                }
                 await acp.compact();
-                broadcast("🗜️ History compacted");
+                reply(`🗜️ History compacted for ${scopeLabel}`);
                 return true;
             }
             case "model": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
+                await activateScopeSession({ createIfMissing: true });
                 if (args) {
                     await acp.setModel(args);
-                    broadcast(`🤖 Model → ${args}`);
+                    if (scope) scope.model = args;
+                    reply(`🤖 Model for ${scopeLabel} → ${args}`);
                 } else if (buttons && models?.length > 0) {
                     // Show interactive model picker
                     const rows = [];
@@ -89,8 +131,9 @@ export async function handleSlashCommand(ctx, command, args) {
                     });
                     if (selected) {
                         await acp.setModel(selected);
+                        if (scope) scope.model = selected;
                         const name = models.find(m => m.modelId === selected)?.name || selected;
-                        broadcast(`🤖 Model → ${name}`);
+                        reply(`🤖 Model for ${scopeLabel} → ${name}`);
                     }
                 } else {
                     reply("🤖 No models available yet. Try again after session starts.");
@@ -100,6 +143,10 @@ export async function handleSlashCommand(ctx, command, args) {
             case "usage":
             case "context": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
+                if (!await activateScopeSession()) {
+                    reply("⚠️ No session yet in this conversation.");
+                    return true;
+                }
                 try {
                     const metrics = await acp.getUsage();
                     const lines = ["📊 Usage Metrics:"];
@@ -120,19 +167,34 @@ export async function handleSlashCommand(ctx, command, args) {
                 return true;
             }
             case "status": {
-                await bridge.showStatusMenu(chatId);
+                await bridge.showStatusMenu(chatId, scope);
                 return true;
             }
             case "start":
                 return true; // Telegram built-in, ignore
             case "session": {
                 if (args === "new" || args === "restart") {
+                    if (!scope) { reply("⚠️ Scope not available"); return true; }
+                    scope.reset();
+                    scope.sessionId = null;
+                    scope.model = "";
+                    scope.mode = "";
+                    if (ref) ref.sessionId = null;
                     if (acp?.alive) {
-                        broadcast("🔄 Restarting Copilot session...");
-                        await ctx.restartCopilot?.();
+                        const result = await acp.newSession({ cwd: config?.workingDirectory || "/config" });
+                        scope.sessionId = result.sessionId;
+                        if (ref) ref.sessionId = result.sessionId;
+                        scope.preambleSent = false;
+                        updateScopeSettings(result);
+                        if (scopeMgr && scopeKey) scopeMgr.setActive(scopeKey);
+                        reply(`🔄 Started a new session for ${scopeLabel}.`);
                     } else {
-                        broadcast("🚀 Starting Copilot...");
+                        reply("🚀 Starting Copilot...");
                         await ctx.startCopilot?.();
+                        scope.sessionId = acp?.sessionId || null;
+                        if (ref) ref.sessionId = scope.sessionId;
+                        if (scopeMgr && scopeKey) scopeMgr.setActive(scopeKey);
+                        reply(`✅ New session ready for ${scopeLabel}.`);
                     }
                     return true;
                 }
@@ -147,7 +209,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 }
                 reply(
                     "🔗 Session commands:\n" +
-                    "  /session new — restart session\n" +
+                    "  /session new — new session for this conversation\n" +
                     "  /session stop — stop Copilot"
                 );
                 return true;
@@ -155,20 +217,24 @@ export async function handleSlashCommand(ctx, command, args) {
             case "stop":
             case "cancel": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
+                if (!scopeMgr || !bridge?.promptActive || scopeMgr.activeScope !== scope) {
+                    reply("⚠️ No active request in this conversation.");
+                    return true;
+                }
                 try {
                     await acp.cancel();
-                    broadcast("🛑 Cancelled current operation");
+                    reply("🛑 Cancelled current operation");
                 } catch (err) {
                     reply(`⚠️ Cancel failed: ${err.message}`);
                 }
                 return true;
             }
             case "retry": {
-                if (!history) { reply("⚠️ No history available"); return true; }
-                const lastUser = history.getLastUserMessage();
+                if (!scopeHistory) { reply("⚠️ No history available"); return true; }
+                const lastUser = scopeHistory.getLastUserMessage();
                 if (!lastUser) { reply("⚠️ No previous message to retry"); return true; }
-                // Cancel current operation if running, then resend
-                if (acp?.alive && bridge?.promptActive) {
+                // Cancel current operation if it belongs to this scope, then resend
+                if (acp?.alive && bridge?.promptActive && (!scopeMgr || scopeMgr.activeScope === scope)) {
                     try { await acp.cancel(); } catch {}
                 }
                 reply(`🔄 Retrying: "${lastUser.length > 60 ? lastUser.slice(0, 60) + '...' : lastUser}"`);
@@ -179,9 +245,9 @@ export async function handleSlashCommand(ctx, command, args) {
                 return true;
             }
             case "history": {
-                if (!history) { reply("📜 No history available"); return true; }
+                if (!scopeHistory) { reply("📜 No history available"); return true; }
                 const n = parseInt(args) || 10;
-                const formatted = history.format(Math.min(n, 30));
+                const formatted = scopeHistory.format(Math.min(n, 30));
                 reply(`📜 Recent messages (${Math.min(n, 30)}):\n\n${formatted}`);
                 return true;
             }
@@ -278,9 +344,9 @@ export async function handleSlashCommand(ctx, command, args) {
                     "  /session [new|stop]\n" +
                     "  /new [title] — new session/topic\n" +
                     "  /close — close current topic\n" +
-                    "  /sessions — list sessions\n" +
+                    "  /sessions — list scopes\n" +
                     "  /pair — pairing info\n" +
-                    "  /allowall [on|off] — toggle tool auto-approve\n" +
+                    "  /allowall [on|off] — toggle tool auto-approve for this conversation\n" +
                     "  /help\n\n" +
                     "💡 Reply to any message to give Copilot context.\n\n" +
                     "Or tap a button below:",
@@ -334,16 +400,24 @@ export async function handleSlashCommand(ctx, command, args) {
                 return true;
             }
             case "sessions": {
-                if (!sessionMgr) { reply("📋 Forum topics not configured."); return true; }
-                const sessions = sessionMgr.listSessions();
+                if (!scopeMgr) { reply("📋 No scopes available."); return true; }
+                const sessions = scopeMgr.list().sort((a, b) => b.lastActivity - a.lastActivity);
                 if (sessions.length === 0) {
-                    reply("📋 No sessions. Use /new to create one.");
+                    reply("📋 No scopes yet.");
                     return true;
                 }
-                const lines = ["📋 Sessions:\n"];
+                const stats = scopeMgr.stats();
+                const activeKey = scopeMgr.activeScope?.key;
+                const lines = [`📋 Scopes (${stats.total} total):\n`];
                 for (const s of sessions) {
-                    const status = s.isCurrent ? "▶️" : s.active ? "⏸️" : "🔒";
-                    lines.push(`${status} ${s.title} (${s.sessionId?.slice(0, 8) || "?"}…)`);
+                    const type = s.key.startsWith("forum:") ? "Forum" : s.key.startsWith("group:") ? "Group" : "DM";
+                    const status = s.key === activeKey ? "▶️" : s.sessionId ? "💬" : "🆕";
+                    const details = [];
+                    if (s.sessionId) details.push(`${s.sessionId.slice(0, 8)}…`);
+                    if (s.model) details.push(s.model);
+                    if (s.mode) details.push(s.mode);
+                    lines.push(`${status} ${type} — ${s.key}`);
+                    if (details.length > 0) lines.push(`   ${details.join(" · ")}`);
                 }
                 reply(lines.join("\n"));
                 return true;
@@ -394,16 +468,15 @@ export async function handleSlashCommand(ctx, command, args) {
                 return true;
             }
             case "allowall": {
-                if (!bridge) { reply("⚠️ Not available"); return true; }
-                if (args === "off" || args === "false") {
-                    bridge.allowAll = false;
-                    bridge.resetPreamble();
-                    broadcast("🔐 Allow-all OFF → agent will confirm before HA write actions");
-                } else {
-                    bridge.allowAll = true;
-                    bridge.resetPreamble();
-                    broadcast("🔓 Allow-all ON → all tool calls auto-approved");
-                }
+                if (!scope || !bridge) { reply("⚠️ Not available"); return true; }
+                const enabled = (args === "off" || args === "false") ? false
+                    : (args === "on" || args === "true") ? true
+                    : !scope.allowAll;
+                scope.allowAll = enabled;
+                bridge.resetPreamble();
+                reply(enabled
+                    ? `🔓 Allow-all ON for ${scopeLabel}`
+                    : `🔐 Allow-all OFF for ${scopeLabel}`);
                 return true;
             }
             case "delete": {

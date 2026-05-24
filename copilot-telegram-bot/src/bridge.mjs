@@ -8,9 +8,8 @@ import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "./format
 import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
 import { ButtonManager } from "./buttons.mjs";
 import { ResponseComposer } from "./response-composer.mjs";
-import { ChatHistory } from "./history.mjs";
 import { formatError } from "./errors.mjs";
-import { MessageTransport, makeRef, refKey } from "./transport.mjs";
+import { MessageTransport, makeRef } from "./transport.mjs";
 import { spawn } from "node:child_process";
 
 const TYPING_INTERVAL_MS = 4000;
@@ -45,29 +44,27 @@ export class Bridge {
     #log;
     #allowedChatIds;
 
-    // New v0.6 subsystems
+    // Subsystems
     #transport;
     #pairing;
+    #scopeMgr;
     #sessionMgr;
 
     // Active conversation ref — where ACP output is routed
     #activeRef = null;
 
+    // Active scope — per-scope state for the current prompt
+    #activeScope = null;
+
+    // Session switch guard — true while loading a different ACP session
+    #switching = false;
+
     // Typing state
     #typingInterval = null;
     #typingDebounce = null;
 
-    // Active tool tracking (for tool_end name lookups)
-    #activeTools = new Map();
-
-    // Message accumulator (collect chunks → send as complete message)
-    // Use a longer flush timer as a safety net — primary flush happens on message_end
-    #messageBuffer = "";
-    #messageFlushTimer = null;
+    // Message flush interval (safety net timer length)
     #messageFlushMs = 2000;
-
-    // Preamble (tracked per-chat so forum topics each get their own)
-    #preambleSentChats = new Set();
 
     // Pinned instructions per chat (chatId → text)
     #pinnedInstructions = new Map();
@@ -75,9 +72,9 @@ export class Bridge {
     // Prompt lock (one prompt at a time)
     #promptActive = false;
     #promptQueue = [];
-
-    // Ask-user state
-    #awaitingInput = null;
+    #lastProcessedScope = null;
+    #lastProcessedAt = 0;
+    #userMessageTimes = new Map(); // userId → [timestamps]
 
     // Login lock — prevents multiple concurrent login flows
     #loginPromise = null;
@@ -85,55 +82,49 @@ export class Bridge {
     // startCopilot lock — prevents overlapping start attempts
     #startPromise = null;
 
-    // Temp dir
     // Button manager for inline keyboards
     #buttons;
 
-    // Chat history ring buffer
-    #history;
-
-    // Session state
+    // Global session state (shared across all scopes)
     #models = [];
     #modes = [];
-    #currentModel = "";
-    #currentMode = "";
-    #sessionGrantedTools = new Set();
     #availableCommands = [];  // Copilot slash commands from ACP
     #knownTools = new Map();  // MCP tool names seen → description
-
-    // Allow-all mode toggle (runtime, toggled via /allowall command)
-    #allowAll = false;
 
     // Active status menu (singleton — only one at a time)
     #statusMsg = null; // { chatId, messageId, createdAt }
     #statusRefreshPaused = false; // true during intentional restart (skip exit event refresh)
 
-    // Turn-level tracking for tool call reactions
-    #turnToolCount = 0;
-    #turnToolErrors = 0;
-    #lastBotMessageId = null;  // Message ID of last bot message sent during this turn
-
-    // Response composer — unified progressive message
-    #composer = null;
-
-    constructor({ telegram, acp, config, log, pairing, sessionMgr }) {
+    constructor({ telegram, acp, config, log, pairing, scopeMgr, sessionMgr }) {
         this.#telegram = telegram;
         this.#acp = acp;
         this.#config = config;
         this.#log = log;
         this.#allowedChatIds = (config.allowedChatIds || []).map(Number);
         this.#buttons = new ButtonManager(telegram);
-        this.#history = new ChatHistory(50);
         this.#transport = new MessageTransport(telegram);
         this.#pairing = pairing || null;
+        this.#scopeMgr = scopeMgr || null;
         this.#sessionMgr = sessionMgr || null;
     }
 
     get allowedChatIds() { return this.#allowedChatIds; }
     get promptActive() { return this.#promptActive; }
-    get allowAll() { return this.#allowAll; }
-    set allowAll(v) { this.#allowAll = !!v; this.#log(`Allow-all mode: ${this.#allowAll}`); }
-    resetPreamble() { this.#preambleSentChats.clear(); }
+    get allowAll() { return this.#activeScope?.allowAll ?? false; }
+    set allowAll(v) {
+        const val = !!v;
+        if (this.#activeScope) this.#activeScope.allowAll = val;
+        this.#log(`Allow-all mode: ${val}`);
+    }
+    resetPreamble() {
+        // Clear preambleSent on ALL scopes
+        if (this.#scopeMgr) {
+            for (const entry of this.#scopeMgr.list()) {
+                const scope = this.#scopeMgr.get(entry.key);
+                if (scope) scope.preambleSent = false;
+            }
+        }
+    }
 
     #sanitizePinnedInstruction(text) {
         return String(text || "")
@@ -152,9 +143,10 @@ export class Bridge {
     /** Best-effort notification before process exit. */
     async notifyShutdown() {
         const promises = [];
+        const scope = this.#activeScope;
 
         // If a response was in progress, notify the user
-        if (this.#composer?.active && this.#activeRef) {
+        if (scope?.composer?.active && this.#activeRef) {
             promises.push(
                 this.#telegram.sendMessage(
                     this.#activeRef.chatId,
@@ -186,19 +178,54 @@ export class Bridge {
         this.#queuePrompt(this.#getPrefix(ref) + text, {}, ref);
     }
 
+    #resolveScopeKey(scope, ref = null) {
+        if (scope?.key) return scope.key;
+        if (ref?.scopeKey) return ref.scopeKey;
+        if (this.#scopeMgr && ref) return this.#scopeMgr.resolveKey(ref);
+        return null;
+    }
+
+    isPromptActiveForScope(scope, ref = null) {
+        const requestedKey = this.#resolveScopeKey(scope, ref);
+        if (!this.#promptActive) return false;
+        if (!requestedKey) return true;
+        return this.#activeScope?.key === requestedKey;
+    }
+
+    async cancelActivePromptForScope(scope, ref = null, opts = {}) {
+        const { notifyIfMissing = true } = opts;
+        const requestedKey = this.#resolveScopeKey(scope, ref);
+
+        if (this.#promptActive && (!requestedKey || this.#activeScope?.key === requestedKey)) {
+            await this.#acp.cancel();
+            return true;
+        }
+
+        if (notifyIfMissing && ref) {
+            this.#transport.enqueueSend(ref, "ℹ️ No active request in this conversation to cancel.");
+        }
+        return false;
+    }
+
     // --- Status menu (singleton with auto-refresh) ---
 
     static #STATUS_TTL_MS = 5 * 60 * 1000; // 5 min expiry
 
     /** Send or refresh the status menu. Dismisses any previous one. */
-    async showStatusMenu(chatId) {
+    async showStatusMenu(chatId, scope = null) {
         // Dismiss old status message if exists
         await this.#dismissOldStatus(chatId);
 
-        const { text, buttons } = this.#buildStatusContent();
+        const requestedScope = scope || this.#activeScope || this.#scopeMgr?.activeScope || null;
+        const { text, buttons } = this.#buildStatusContent(requestedScope);
         const sent = await this.#telegram.sendMessage(chatId, text, undefined, buttons);
         if (sent?.message_id) {
-            this.#statusMsg = { chatId, messageId: sent.message_id, createdAt: Date.now() };
+            this.#statusMsg = {
+                chatId,
+                messageId: sent.message_id,
+                createdAt: Date.now(),
+                scopeKey: requestedScope?.key || null,
+            };
         }
     }
 
@@ -217,7 +244,8 @@ export class Bridge {
             this.#statusMsg = null;
             return;
         }
-        const { text, buttons } = this.#buildStatusContent();
+        const scope = this.#statusMsg.scopeKey ? this.#scopeMgr?.get(this.#statusMsg.scopeKey) : null;
+        const { text, buttons } = this.#buildStatusContent(scope);
         const firstLine = text.split("\n")[0];
         this.#log(`Status refresh: updating to "${firstLine}" (msgId=${this.#statusMsg.messageId})`);
         try {
@@ -249,26 +277,39 @@ export class Bridge {
         this.#statusMsg = null;
     }
 
-    #buildStatusContent() {
+    #buildStatusContent(requestedScope = null) {
         const alive = this.#acp?.alive;
         const hasSession = !!this.#acp?.sessionId;
         const ready = alive && hasSession;
+        const scope = requestedScope || this.#activeScope || this.#scopeMgr?.activeScope;
+        const scopeType = scope?.key?.startsWith("forum:") ? "Forum"
+            : scope?.key?.startsWith("group:") ? "Group"
+            : "DM";
+        const scopeSessionId = scope?.sessionId || this.#acp?.sessionId || null;
 
         const lines = [];
         lines.push(ready ? "✅ Copilot Ready" : alive ? "⏳ Copilot Starting..." : "⏹️ Copilot Stopped");
         if (this.#config?.version) lines.push(`📦 Version: ${this.#config.version}`);
         lines.push("");
 
+        if (scope) {
+            lines.push(`🗂️ Scope: ${scopeType}`);
+            lines.push(`🔑 Scope key: ${scope.key}`);
+        }
+
         if (ready) {
-            const modelName = this.#models?.find(m => m.modelId === this.#currentModel)?.name || this.#currentModel || "unknown";
-            const modeName = this.#modes?.find(m => m.id === this.#currentMode)?.name || this.#currentMode || "unknown";
+            const currentModel = scope?.model || "";
+            const currentMode = scope?.mode || "";
+            const modelName = this.#models?.find(m => m.modelId === currentModel)?.name || currentModel || "unknown";
+            const modeName = this.#modes?.find(m => m.id === currentMode)?.name || currentMode || "unknown";
             lines.push(`🤖 Model: ${modelName}`);
             lines.push(`📋 Mode: ${modeName}`);
-            lines.push(`🔗 Session: ${this.#acp.sessionId.slice(0, 8)}…`);
+            lines.push(`🔗 Session: ${scopeSessionId ? `${scopeSessionId.slice(0, 8)}…` : "none"}`);
             lines.push(`📊 Models available: ${this.#models?.length || 0}`);
         }
 
-        if (this.#allowAll) {
+        const scopeAllowAll = scope?.allowAll ?? false;
+        if (scopeAllowAll) {
             lines.push(`🔓 Permissions: allow-all`);
         } else {
             lines.push(`🔐 Permissions: interactive`);
@@ -278,10 +319,11 @@ export class Bridge {
         if (this.#pairing) {
             lines.push(`🔐 Paired users: ${this.#pairing.getPairedUsers().length}`);
         }
-        if (this.#sessionMgr?.forumChatId) {
-            lines.push(`🗂️ Active sessions: ${this.#sessionMgr.listActiveSessions().length}`);
+        if (this.#scopeMgr) {
+            const stats = this.#scopeMgr.stats();
+            lines.push(`🗂️ Scopes: ${stats.total} (${stats.dm} DM, ${stats.group} group, ${stats.forum} forum)`);
         }
-        if (this.#history) lines.push(`📜 History: ${this.#history.length} messages`);
+        if (scope?.history) lines.push(`📜 History: ${scope.history.length} messages`);
 
         const statusButtons = {
             inline_keyboard: ready ? [
@@ -294,8 +336,8 @@ export class Bridge {
                     { text: "🗜️ Compact", callback_data: "/compact" },
                 ],
                 [
-                    { text: this.#allowAll ? "\u{1F512} Allow-all OFF" : "\u{1F513} Allow-all ON",
-                      callback_data: this.#allowAll ? "/allowall off" : "/allowall on" },
+                    { text: scopeAllowAll ? "\u{1F512} Allow-all OFF" : "\u{1F513} Allow-all ON",
+                      callback_data: scopeAllowAll ? "/allowall off" : "/allowall on" },
                 ],
                 [
                     { text: "🔄 Restart", callback_data: "/session new" },
@@ -321,41 +363,48 @@ export class Bridge {
 
         // Text chunks → feed to composer for progressive display
         acp.on("text_chunk", (text) => {
+            if (this.#switching) return;
+            const scope = this.#activeScope;
+            if (!scope) return;
             this.#resetTypingDebounce();
-            this.#messageBuffer += text;
-            if (this.#composer?.active) {
-                this.#composer.appendText(text);
-                // Don't flush buffer separately — composer handles display
+            scope.messageBuffer += text;
+            if (scope.composer?.active) {
+                scope.composer.appendText(text);
             } else {
                 // Legacy path: no composer, flush as separate messages
-                if (this.#messageFlushTimer) clearTimeout(this.#messageFlushTimer);
-                this.#messageFlushTimer = setTimeout(() => this.#flushMessageBuffer(), this.#messageFlushMs);
+                if (scope.messageFlushTimer) clearTimeout(scope.messageFlushTimer);
+                scope.messageFlushTimer = setTimeout(() => this.#flushMessageBuffer(), this.#messageFlushMs);
             }
         });
 
         // Message boundaries
         acp.on("message_start", () => {
             this.#log("Agent message_start");
-            this.#messageBuffer = "";
+            if (this.#switching) return;
+            const scope = this.#activeScope;
+            if (scope) scope.messageBuffer = "";
         });
 
         acp.on("message_end", () => {
             this.#log("Agent message_end");
+            if (this.#switching) return;
             this.#finalizeComposer();
             this.#stopTyping();
         });
 
         // Tool calls → composer progress updates
         acp.on("tool_start", ({ toolCallId, toolName, arguments: args }) => {
+            if (this.#switching) return;
+            const scope = this.#activeScope;
+            if (!scope) return;
             this.#log(`Tool start: ${toolName} (${toolCallId})`);
-            this.#turnToolCount++;
+            scope.turnToolCount++;
             this.#resetTypingDebounce();
             const desc = describeToolCall(toolName, args);
             if (desc) {
-                this.#activeTools.set(toolCallId, { name: toolName, description: desc });
-                // Update composer with tool step
-                if (this.#composer?.active) {
-                    this.#composer.addToolStep(toolCallId, desc, "running");
+                scope.activeTools.set(toolCallId, { name: toolName, description: desc });
+                if (scope.composer?.active) {
+                    scope.composer.addToolStep(toolCallId, desc, "running");
                 }
             }
             // Track tool for /skills discovery
@@ -365,29 +414,30 @@ export class Bridge {
         });
 
         acp.on("tool_end", ({ toolCallId, status, result }) => {
-            const completed = this.#activeTools.get(toolCallId);
+            if (this.#switching) return;
+            const scope = this.#activeScope;
+            if (!scope) return;
+            const completed = scope.activeTools.get(toolCallId);
             const resultSummary = result ? JSON.stringify(result).substring(0, 200) : "null";
             this.#log(`Tool end: ${completed?.name || toolCallId} [${status}] → ${resultSummary}`);
-            // Detect tool errors from status or MCP result
             if (status === "failed") {
-                this.#turnToolErrors++;
+                scope.turnToolErrors++;
                 this.#log(`Tool failed: ${completed?.name || toolCallId}`);
             } else {
                 const resultStr = typeof result === "string" ? result : JSON.stringify(result || "");
                 if (result?.isError || result?.error || /\"isError\"\s*:\s*true/i.test(resultStr)) {
-                    this.#turnToolErrors++;
+                    scope.turnToolErrors++;
                     this.#log(`Tool error detected: ${completed?.name || toolCallId}`);
                 }
             }
             this.#resetTypingDebounce();
-            this.#activeTools.delete(toolCallId);
-            // Update composer with tool completion
-            if (this.#composer?.active && completed?.description) {
-                this.#composer.addToolStep(toolCallId, completed.description, status === "failed" ? "failed" : "completed");
+            scope.activeTools.delete(toolCallId);
+            if (scope.composer?.active && completed?.description) {
+                scope.composer.addToolStep(toolCallId, completed.description, status === "failed" ? "failed" : "completed");
             }
 
             // Interactive mode: show notification + undo for HA write tools
-            if (!this.#allowAll && status === "completed" && completed?.name) {
+            if (!scope.allowAll && status === "completed" && completed?.name) {
                 this.#showToolNotification(completed.name, result);
             }
 
@@ -397,6 +447,7 @@ export class Bridge {
 
         // Tool progress updates (in_progress status)
         acp.on("tool_update", ({ toolCallId, status }) => {
+            if (this.#switching) return;
             if (status === "in_progress") {
                 this.#resetTypingDebounce();
             }
@@ -405,24 +456,29 @@ export class Bridge {
         // Process exit — handle crash recovery
         acp.on("exit", ({ code, signal }) => {
             this.#stopTyping();
-            if (this.#composer?.active) {
-                this.#composer.abort("Copilot process exited unexpectedly").catch(() => {});
-                this.#composer = null;
-            }
-            this.#activeTools.clear();
-            this.#flushMessageBuffer();
+            const scope = this.#activeScope;
+            if (scope) {
+                if (scope.composer?.active) {
+                    scope.composer.abort("Copilot process exited unexpectedly").catch(() => {});
+                    scope.composer = null;
+                }
+                scope.activeTools.clear();
+                this.#flushMessageBuffer();
 
-            // Resolve any pending ask-user prompt so it doesn't hang
-            if (this.#awaitingInput) {
-                clearTimeout(this.#awaitingInput.timer);
-                this.#awaitingInput.resolve(null);
-                this.#awaitingInput = null;
+                // Resolve any pending ask-user prompt so it doesn't hang
+                if (scope.awaitingInput) {
+                    clearTimeout(scope.awaitingInput.timer);
+                    scope.awaitingInput.resolve(null);
+                    scope.awaitingInput = null;
+                }
             }
 
             // Crash recovery: reject any active prompt so the queue doesn't wedge
             if (this.#promptActive) {
                 this.#promptActive = false;
                 this.#activeRef = null;
+                this.#activeScope = null;
+                this.#scopeMgr?.clearActive();
                 // Drain the queue — notify users that queued messages were lost
                 const dropped = this.#promptQueue.length;
                 this.#promptQueue = [];
@@ -447,18 +503,19 @@ export class Bridge {
         });
 
         acp.on("permission_request", async (req) => {
+            if (this.#switching) return;
+            const scope = this.#activeScope;
+            if (!scope) return;
             this.#log(`Permission request: ${JSON.stringify(req)}`);
             const { requestId } = req;
 
             // Extract tool identification from the new session/request_permission format
             const toolCall = req.toolCall || {};
             const rawInput = toolCall.rawInput || {};
-            // Build a meaningful tool name from the request
             const toolTitle = toolCall.title || "";
             const domain = rawInput.domain || "";
             const service = rawInput.service || "";
             const entityId = rawInput.entity_id || "";
-            // Derive a tool-like name for policy matching
             const tool = domain && service ? `ha_${domain}_${service}` :
                          toolTitle.toLowerCase().includes("call service") ? "ha_call_service" :
                          req.toolName || req.tool || req.name || "unknown_tool";
@@ -466,7 +523,7 @@ export class Bridge {
                          toolTitle || "";
 
             // Allow-all mode: skip all permission prompts
-            if (this.#allowAll) {
+            if (scope.allowAll) {
                 const options = req.options || [];
                 const allowId = options.find(o => o.kind === "allow_always")?.optionId || "allow_always";
                 acp.respondPermission(requestId, allowId);
@@ -482,15 +539,16 @@ export class Bridge {
             ]);
             const isReadOnly = readOnlyTools.has(tool) || !tool.startsWith("ha_");
 
-            // Extract the actual optionIds from the request's options array
             const options = req.options || [];
             const findOption = (kind) => options.find(o => o.kind === kind)?.optionId;
             const allowOnceId = findOption("allow_once") || "allow_once";
             const allowAlwaysId = findOption("allow_always") || "allow_always";
             const rejectOnceId = findOption("reject_once") || "reject_once";
 
-            // Session grants: user previously allowed this tool for the session
-            if (isReadOnly || this.#sessionGrantedTools.has(tool)) {
+            // Per-user per-scope grants
+            const ref = this.#activeRef;
+            const userId = ref?.userId;
+            if (isReadOnly || (userId && scope.isToolGranted(userId, tool))) {
                 acp.respondPermission(requestId, allowAlwaysId);
                 this.#log(`Permission auto-approved: ${tool} (${desc})`);
                 return;
@@ -500,7 +558,6 @@ export class Bridge {
             const targetRef = this.#activeRef;
             const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
             if (!chatId || !this.#buttons) {
-                // No chat to ask — deny by default
                 acp.respondPermission(requestId, rejectOnceId);
                 this.#log(`Permission denied (no chat): ${tool}`);
                 return;
@@ -518,7 +575,7 @@ export class Bridge {
                     { text: "❌ Deny", value: rejectOnceValue },
                 ],
             ];
-            if (this.#composer) this.#composer.setPermissionPending(true);
+            if (scope.composer) scope.composer.setPermissionPending(true);
             let selected, permMsgId;
             try {
                 ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
@@ -528,13 +585,13 @@ export class Bridge {
                     { timeoutMs: 60000, timeoutText: "🔐 Permission denied (timeout)" }
                 ));
             } finally {
-                if (this.#composer) this.#composer.setPermissionPending(false);
+                if (scope.composer) scope.composer.setPermissionPending(false);
             }
 
             const selectedOption = this.#unwrapPermissionSelection(selected);
             if (selectedOption === allowOnceId || selectedOption === allowAlwaysId) {
-                if (selectedOption === allowAlwaysId) {
-                    this.#sessionGrantedTools.add(tool);
+                if (selectedOption === allowAlwaysId && userId) {
+                    scope.grantTool(userId, tool);
                 }
                 acp.respondPermission(requestId, selectedOption);
                 this.#log(`Permission granted (${selectedOption}): ${tool}`);
@@ -567,19 +624,23 @@ export class Bridge {
                 this.#models = result.models.availableModels;
                 this.#log(`Models available: ${this.#models.length}`);
             }
-            if (result.models?.currentModelId) {
-                this.#currentModel = result.models.currentModelId;
+            const scope = this.#activeScope;
+            if (scope) {
+                if (result.models?.currentModelId) {
+                    scope.model = result.models.currentModelId;
+                }
+                if (result.modes?.currentModeId) {
+                    scope.mode = result.modes.currentModeId;
+                }
             }
             if (result.modes?.availableModes) {
                 this.#modes = result.modes.availableModes;
-            }
-            if (result.modes?.currentModeId) {
-                this.#currentMode = result.modes.currentModeId;
             }
         });
 
         // config_option_update can update models/modes mid-session
         acp.on("config_options", (options) => {
+            const scope = this.#activeScope;
             const modelOpt = options?.find(o => o.id === "model");
             if (modelOpt?.options) {
                 this.#models = modelOpt.options.map(o => ({
@@ -588,8 +649,8 @@ export class Bridge {
                     description: o.description,
                 }));
             }
-            if (modelOpt?.currentValue) {
-                this.#currentModel = modelOpt.currentValue;
+            if (modelOpt?.currentValue && scope) {
+                scope.model = modelOpt.currentValue;
             }
             const modeOpt = options?.find(o => o.id === "mode");
             if (modeOpt?.options) {
@@ -599,8 +660,8 @@ export class Bridge {
                     description: o.description,
                 }));
             }
-            if (modeOpt?.currentValue) {
-                this.#currentMode = modeOpt.currentValue;
+            if (modeOpt?.currentValue && scope) {
+                scope.mode = modeOpt.currentValue;
             }
         });
 
@@ -628,6 +689,8 @@ export class Bridge {
     // --- Build command context ---
 
     #buildCommandContext(ref) {
+        const scopeKey = ref.scopeKey || (this.#scopeMgr ? this.#scopeMgr.resolveKey(ref) : null);
+        const scope = scopeKey && this.#scopeMgr ? this.#scopeMgr.getOrCreate(scopeKey) : this.#activeScope;
         return {
             acp: this.#acp,
             telegram: this.#telegram,
@@ -635,6 +698,7 @@ export class Bridge {
             chatId: ref.chatId,
             chatIds: this.#allowedChatIds,
             ref,
+            scope,
             log: this.#log,
             startCopilot: () => this.startCopilot(),
             stopCopilot: () => this.stopCopilot(),
@@ -642,13 +706,14 @@ export class Bridge {
             buttons: this.#buttons,
             models: this.#models,
             modes: this.#modes,
-            history: this.#history,
-            currentModel: this.#currentModel,
-            currentMode: this.#currentMode,
+            history: scope?.history || null,
+            currentModel: scope?.model || "",
+            currentMode: scope?.mode || "",
             availableCommands: this.#availableCommands,
             knownTools: this.#knownTools,
             pairing: this.#pairing,
             sessionMgr: this.#sessionMgr,
+            scopeMgr: this.#scopeMgr,
             bridge: this,
             config: this.#config,
         };
@@ -672,6 +737,19 @@ export class Bridge {
         if (!value?.startsWith("perm:")) return value;
         const parts = value.split(":");
         return parts.length >= 3 ? parts.slice(2).join(":") : value;
+    }
+
+    #checkRateLimit(userId) {
+        const now = Date.now();
+        const times = this.#userMessageTimes.get(userId) || [];
+        const recent = times.filter((t) => now - t < 60000);
+        if (recent.length >= 10) {
+            this.#userMessageTimes.set(userId, recent);
+            return false;
+        }
+        recent.push(now);
+        this.#userMessageTimes.set(userId, recent);
+        return true;
     }
 
     // --- Inbound message processing ---
@@ -725,7 +803,10 @@ export class Bridge {
 
         // Handle /status refresh — edit in place instead of sending new
         if (data === "/status") {
-            await this.showStatusMenu(chatId);
+            const threadId = query.message?.message_thread_id || null;
+            const ref = makeRef(chatId, threadId, null, query.message?.chat?.type || null);
+            ref.userId = userId;
+            await this.showStatusMenu(chatId, this.#buildCommandContext(ref).scope);
             return;
         }
 
@@ -733,7 +814,7 @@ export class Bridge {
         // immediately show transitional state, execute command, then refresh
         const isFromStatusMenu = this.#statusMsg?.messageId === query.message?.message_id;
         if (isFromStatusMenu && (data === "/session new" || data === "/session stop")) {
-            const label = data === "/session new" ? "⏳ Restarting Copilot..." : "⏳ Stopping Copilot...";
+            const label = data === "/session new" ? "⏳ Starting a new scope session..." : "⏳ Stopping Copilot...";
             try {
                 await this.#telegram.call("editMessageText", {
                     chat_id: chatId,
@@ -742,21 +823,17 @@ export class Bridge {
                     reply_markup: { inline_keyboard: [[{ text: "✕ Dismiss", callback_data: "dismiss" }]] },
                 });
             } catch {}
-            // Execute the command (suppress the broadcast — status menu shows state)
             const threadId = query.message?.message_thread_id || null;
-            const ref = makeRef(chatId, threadId);
+            const ref = makeRef(chatId, threadId, null, query.message?.chat?.type || null);
+            ref.userId = userId;
             try {
-                if (data === "/session new") {
-                    this.#statusRefreshPaused = true;
-                    const pauseGuard = setTimeout(() => { this.#statusRefreshPaused = false; }, 60000);
-                    try {
-                        await this.restartCopilot();
-                    } finally {
-                        clearTimeout(pauseGuard);
-                        this.#statusRefreshPaused = false;
-                    }
-                } else {
-                    await this.stopCopilot();
+                this.#statusRefreshPaused = true;
+                const pauseGuard = setTimeout(() => { this.#statusRefreshPaused = false; }, 60000);
+                try {
+                    await handleSlashCommand(this.#buildCommandContext(ref), "session", data === "/session new" ? "new" : "stop");
+                } finally {
+                    clearTimeout(pauseGuard);
+                    this.#statusRefreshPaused = false;
                 }
             } catch (err) {
                 this.#statusRefreshPaused = false;
@@ -789,10 +866,92 @@ export class Bridge {
         await handleSlashCommand(this.#buildCommandContext(ref), command, args);
     }
 
+    async #handleMembershipChange(memberUpdate) {
+        const chat = memberUpdate.chat;
+        if (!chat || (chat.type !== "group" && chat.type !== "supergroup")) return;
+
+        const newStatus = memberUpdate.new_chat_member?.status;
+        const oldStatus = memberUpdate.old_chat_member?.status;
+        const chatId = chat.id;
+
+        // Bot added to group
+        if ((newStatus === "member" || newStatus === "administrator") &&
+            (oldStatus === "left" || oldStatus === "kicked" || !oldStatus)) {
+
+            // Whitelist check
+            const allowedGroups = this.#config.allowedGroups || [];
+            if (allowedGroups.length > 0 && !allowedGroups.includes(String(chatId))) {
+                this.#log(`Group ${chatId} not in allowed_groups, leaving`);
+                await this.#telegram.call("leaveChat", { chat_id: chatId }).catch(() => {});
+                return;
+            }
+
+            // Size check
+            try {
+                const count = await this.#telegram.call("getChatMemberCount", { chat_id: chatId });
+                const maxMembers = this.#config.maxGroupMembers || 50;
+                if (count > maxMembers) {
+                    await this.#telegram.sendMessage(
+                        chatId,
+                        `⚠️ This group has ${count} members (max ${maxMembers}). I can't operate in large groups.`
+                    );
+                    await this.#telegram.call("leaveChat", { chat_id: chatId }).catch(() => {});
+                    return;
+                }
+            } catch {
+                // Ignore count errors.
+            }
+
+            // Welcome message
+            const isForum = chat.is_forum === true;
+            if (isForum) {
+                this.#scopeMgr?.setForumChat(chatId);
+                await this.#telegram.sendMessage(
+                    chatId,
+                    "👋 Forum mode activated!\n\n" +
+                    "📝 Use /new [title] to create a topic with its own AI session\n" +
+                    "📋 Use /sessions to see active topics\n" +
+                    "ℹ️ This General topic is for management commands only"
+                );
+            } else {
+                const botUsername = this.#telegram.botInfo?.username || "bot";
+                const groupMode = this.#config.groupMode || "mention";
+                const promptLine = groupMode === "all"
+                    ? "💬 I can respond to messages in this group\n"
+                    : `📌 @${botUsername} — mention me to ask a question\n`;
+                await this.#telegram.sendMessage(
+                    chatId,
+                    "👋 Hi! I'm your AI assistant.\n\n" +
+                    promptLine +
+                    "↩️ Reply to my messages to continue a conversation\n" +
+                    "🔐 Only authorized users can interact\n\n" +
+                    "⚠️ Responses are visible to all group members."
+                );
+            }
+
+            this.#log(`Bot added to ${isForum ? "forum" : "group"} ${chatId} (${chat.title || "untitled"})`);
+        }
+
+        // Bot removed from group
+        if ((newStatus === "left" || newStatus === "kicked") &&
+            (oldStatus === "member" || oldStatus === "administrator")) {
+            this.#log(`Bot removed from group ${chatId}`);
+            this.#scopeMgr?.deleteByChat(chatId);
+            // Clean up pinned instructions for this chat
+            this.#pinnedInstructions?.delete(chatId);
+        }
+    }
+
     async #processUpdate(update) {
         // Handle callback queries (inline keyboard buttons)
         if (update.callback_query) {
             await this.#handleCallbackQuery(update.callback_query);
+            return;
+        }
+
+        // Handle bot membership changes (added/removed from groups)
+        if (update.my_chat_member) {
+            await this.#handleMembershipChange(update.my_chat_member);
             return;
         }
 
@@ -806,7 +965,7 @@ export class Bridge {
 
         const threadId = message.message_thread_id || null;
         const isForum = message.chat.is_forum === true;
-        const text = message.text || message.caption || "";
+        let text = message.text || message.caption || "";
 
         // --- Auth check: pairing-based or legacy allowed_chat_ids ---
         if (this.#pairing) {
@@ -859,8 +1018,66 @@ export class Bridge {
             }
         }
 
+        // --- Group mention filter (non-forum groups only) ---
+        const chatType = message.chat.type;
+        const groupMode = this.#config.groupMode || "mention";
+        if ((chatType === "group" || chatType === "supergroup") && !isForum && groupMode !== "all") {
+            const botUsername = this.#telegram.botInfo?.username;
+            const botId = this.#telegram.botInfo?.id;
+
+            // Check 1: @mention via Telegram entities
+            const entities = message.text ? (message.entities || []) : (message.caption_entities || []);
+            const mentioned = entities.some((e) =>
+                e.type === "mention" &&
+                text.substring(e.offset, e.offset + e.length).toLowerCase() === `@${botUsername?.toLowerCase()}`
+            );
+
+            // Check 2: Reply to bot message
+            const repliedToBot = message.reply_to_message?.from?.id === botId;
+
+            // Check 3: Slash command with @botname
+            const commandForBot = text.startsWith("/") &&
+                text.toLowerCase().includes(`@${botUsername?.toLowerCase()}`);
+
+            if (!mentioned && !repliedToBot && !commandForBot) {
+                return; // Not addressed to us — silently ignore
+            }
+
+            // Strip @botname from the text
+            if (botUsername) {
+                text = text.replace(new RegExp(`@${botUsername}\\b`, "gi"), "").trim();
+            }
+        }
+
+        if (!this.#checkRateLimit(userId)) {
+            this.#telegram.enqueue(() =>
+                this.#telegram.sendMessage(chatId, "⏳ Rate limit reached (10 messages/minute). Please wait.")
+            );
+            return;
+        }
+
         // Handle pinned messages as agent instructions (after auth check)
         if (message.pinned_message) {
+            const chatType = message.chat.type;
+            if (chatType === "group" || chatType === "supergroup") {
+                const pairingAdmin = this.#pairing?.isAdmin(userId) === true;
+                if (!pairingAdmin) {
+                    try {
+                        const member = await this.#telegram.call("getChatMember", {
+                            chat_id: chatId,
+                            user_id: userId,
+                        });
+                        if (!["administrator", "creator"].includes(member?.status)) {
+                            this.#log(`Non-admin ${userId} tried to pin instructions in group ${chatId}`);
+                            return;
+                        }
+                    } catch (err) {
+                        this.#log(`Rejecting pinned instructions for ${userId} in group ${chatId}: ${err.message}`);
+                        return;
+                    }
+                }
+            }
+
             const pinned = message.pinned_message;
             const pinnedText = (pinned.text || pinned.caption || "").trim().slice(0, 2000);
             if (pinnedText) {
@@ -871,7 +1088,7 @@ export class Bridge {
                 }
                 const sanitizedPinnedText = this.#sanitizePinnedInstruction(pinnedText);
                 this.#pinnedInstructions.set(chatId, sanitizedPinnedText);
-                this.#preambleSentChats.clear(); // force preamble refresh
+                this.resetPreamble(); // force preamble refresh across all scopes
                 this.#log(`Pinned instruction set for chat=${chatId}: ${sanitizedPinnedText.substring(0, 100)}`);
                 this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(chatId, "📌 Noted! This pinned message will be included as context for all future messages in this chat.")
@@ -880,21 +1097,29 @@ export class Bridge {
             return;
         }
 
-        // Build ConversationRef
-        const ref = makeRef(chatId, threadId);
+        // Build ConversationRef with scope resolution
+        const ref = makeRef(chatId, threadId, null, message.chat.type);
         ref.userId = userId;
+        ref.firstName = message.from?.first_name || null;
+        ref.triggerMessageId = message.message_id;
+
+        // Resolve scope
+        const scopeKey = this.#scopeMgr ? this.#scopeMgr.resolveKey(ref) : `dm:${userId}`;
+        const scope = this.#scopeMgr ? this.#scopeMgr.getOrCreate(scopeKey) : null;
+        ref.scopeKey = scopeKey;
+        if (scope?.sessionId) ref.sessionId = scope.sessionId;
 
         // --- Forum routing ---
-        if (isForum && this.#sessionMgr) {
+        if (isForum && this.#scopeMgr) {
             // Auto-detect forum chat on first message
-            if (!this.#sessionMgr.isForumChat(chatId)) {
-                this.#sessionMgr.setForumChat(chatId);
+            if (!this.#scopeMgr.isForumChat(chatId)) {
+                this.#scopeMgr.setForumChat(chatId);
                 this.#log(`Forum chat detected: ${chatId}`);
             }
 
             // Management topic: commands only, no ACP routing
-            if (this.#sessionMgr.isManagementTopic(ref)) {
-                this.#history.push({ role: "user", text, messageId: message.message_id, replyToMessageId: message.reply_to_message?.message_id });
+            if (this.#scopeMgr.isManagementTopic(ref)) {
+                if (scope) scope.history.push({ role: "user", text, messageId: message.message_id, replyToMessageId: message.reply_to_message?.message_id });
                 this.#telegram.enqueue(() =>
                     this.#telegram.setMessageReaction(chatId, message.message_id, "⏳").catch(() => {})
                 );
@@ -915,21 +1140,16 @@ export class Bridge {
                 this.#telegram.setMessageReaction(chatId, message.message_id, null).catch(() => {});
                 return;
             }
-
-            // Session topic: look up or create session
-            const session = this.#sessionMgr.getSession(ref);
-            if (session) {
-                ref.sessionId = session.sessionId;
-            }
-            // If no session exists for this topic, it will be created when prompt is queued
         }
 
         // Track incoming user message in history
-        this.#history.push({ role: "user", text, messageId: message.message_id, replyToMessageId: message.reply_to_message?.message_id });
-        if (this.#awaitingInput) {
-            const { resolve } = this.#awaitingInput;
-            clearTimeout(this.#awaitingInput.timer);
-            this.#awaitingInput = null;
+        if (scope) scope.history.push({ role: "user", text, messageId: message.message_id, replyToMessageId: message.reply_to_message?.message_id });
+
+        // Check if scope is awaiting input (ask-user)
+        if (scope?.awaitingInput) {
+            const { resolve } = scope.awaitingInput;
+            clearTimeout(scope.awaitingInput.timer);
+            scope.awaitingInput = null;
             resolve(text);
             return;
         }
@@ -958,13 +1178,14 @@ export class Bridge {
                 await this.startCopilot();
             } catch (err) {
                 this.#stopTyping();
-                if (this.#composer) {
-                    await this.#composer.abort(formatError(err));
-                    this.#composer = null;
+                if (scope?.composer) {
+                    await scope.composer.abort(formatError(err));
+                    scope.composer = null;
                 }
-                this.#activeTools.clear();
+                if (scope) scope.activeTools.clear();
                 this.#promptActive = false;
                 this.#activeRef = null;
+                this.#activeScope = null;
                 return;
             }
         }
@@ -1004,31 +1225,60 @@ export class Bridge {
     // --- Prompt queue (one at a time) ---
 
     async #queuePrompt(text, opts = {}, ref = null, messageId = null) {
+        const scopeKey = ref?.scopeKey || (this.#scopeMgr && ref ? this.#scopeMgr.resolveKey(ref) : null);
+
         if (this.#promptActive) {
+            const existing = this.#promptQueue.find((p) => p.scopeKey === scopeKey);
+            if (existing) {
+                existing.text += `
+
+[Follow-up]: ${text}`;
+                existing.messageId = messageId;
+                existing.ref = ref;
+                if (opts?.images?.length) {
+                    existing.opts = {
+                        ...existing.opts,
+                        ...opts,
+                        images: [...(existing.opts?.images || []), ...opts.images],
+                    };
+                } else {
+                    existing.opts = { ...existing.opts, ...opts };
+                }
+                this.#log(`Appended to queued prompt for ${scopeKey}`);
+                return;
+            }
             if (this.#promptQueue.length >= 10) {
                 this.#log("Prompt queue full (10), dropping oldest");
                 this.#promptQueue.shift();
             }
-            this.#promptQueue.push({ text, opts, ref, messageId });
+            this.#promptQueue.push({ text, opts, ref, messageId, scopeKey });
             return;
         }
         this.#promptActive = true;
 
-        // Reset turn-level tracking
-        this.#turnToolCount = 0;
-        this.#turnToolErrors = 0;
-        this.#lastBotMessageId = null;
+        // Resolve scope for this prompt
+        const scope = scopeKey && this.#scopeMgr ? this.#scopeMgr.getOrCreate(scopeKey) : null;
 
-        // Set active ref for ACP output routing
+        // Reset turn-level tracking on scope
+        if (scope) {
+            scope.turnToolCount = 0;
+            scope.turnToolErrors = 0;
+            scope.lastBotMessageId = null;
+            scope.touch();
+        }
+
+        // Set active ref and scope for ACP output routing
         this.#activeRef = ref;
+        this.#activeScope = scope;
+        if (scopeKey && this.#scopeMgr) this.#scopeMgr.setActive(scopeKey);
 
         // Create composer for progressive message display
-        if (ref) {
+        if (ref && scope) {
             this.#log(`Creating ResponseComposer for chat=${ref.chatId}`);
-            this.#composer = new ResponseComposer(this.#telegram, this.#log);
+            scope.composer = new ResponseComposer(this.#telegram, this.#log);
             try {
-                await this.#composer.start(ref);
-                this.#log(`Composer started, messageId=${this.#composer.messageId}`);
+                await scope.composer.start(ref);
+                this.#log(`Composer started, messageId=${scope.composer.messageId}`);
             } catch (err) {
                 this.#log(`Composer start failed: ${err.message}`);
             }
@@ -1040,65 +1290,77 @@ export class Bridge {
         }
 
         try {
-            // Session switching for forum topics
-            if (ref && this.#sessionMgr && this.#acp.alive) {
-                const session = this.#sessionMgr.getSession(ref);
-                if (session && session.sessionId) {
+            // Session switching for scope-based sessions
+            if (scope && this.#acp.alive) {
+                if (scope.sessionId) {
                     // Check if we need to switch sessions
-                    if (this.#sessionMgr.needsSwitch(ref)) {
+                    if (this.#scopeMgr && this.#scopeMgr.needsSwitch(scopeKey)) {
+                        this.#switching = true;
                         try {
-                            this.#log(`Switching session to ${session.sessionId} for ${refKey(ref)}`);
-                            await this.#acp.loadSession(session.sessionId);
-                            this.#sessionMgr.setActive(ref);
+                            this.#log(`Switching session to ${scope.sessionId} for ${scopeKey}`);
+                            await this.#acp.loadSession(scope.sessionId);
+                            this.#scopeMgr.setActive(scopeKey);
                         } catch (err) {
-                            this.#log(`Session load failed for ${session.sessionId}: ${err.message}`);
+                            this.#log(`Session load failed for ${scope.sessionId}: ${err.message}`);
                             const msg = `⚠️ Could not load session. Use /new to start a fresh session.\nError: ${err.message}`;
-                            if (this.#composer?.active) {
-                                await this.#composer.abort(msg);
-                                this.#composer = null;
-                            } else {
+                            if (scope.composer?.active) {
+                                await scope.composer.abort(msg);
+                                scope.composer = null;
+                            } else if (ref) {
                                 this.#transport.enqueueSend(ref, msg);
                             }
                             this.#promptActive = false;
                             this.#activeRef = null;
+                            this.#activeScope = null;
+                            this.#scopeMgr?.clearActive();
                             return;
+                        } finally {
+                            this.#switching = false;
                         }
                     }
-                } else if (ref.threadId && this.#sessionMgr.isForumChat(ref.chatId)) {
-                    // No session for this topic — create one
+                } else {
+                    // New scope — create session
                     try {
-                        this.#log(`Auto-creating session for topic ${ref.threadId}`);
+                        this.#log(`Auto-creating session for scope ${scopeKey}`);
                         const result = await this.#acp.newSession({
                             cwd: this.#config.workingDirectory || "/config",
                         });
+                        scope.sessionId = result.sessionId;
                         ref.sessionId = result.sessionId;
-                        this.#sessionMgr.register(ref, result.sessionId, `Topic ${ref.threadId}`, false);
-                        this.#preambleSentChats.clear();                    } catch (err) {
+                        scope.preambleSent = false;
+                        if (this.#scopeMgr) this.#scopeMgr.setActive(scopeKey);
+                    } catch (err) {
                         this.#log(`Auto-create session failed: ${err.message}`);
                         const msg = `⚠️ Failed to create session: ${err.message}`;
-                        if (this.#composer?.active) {
-                            await this.#composer.abort(msg);
-                            this.#composer = null;
-                        } else {
+                        if (scope.composer?.active) {
+                            await scope.composer.abort(msg);
+                            scope.composer = null;
+                        } else if (ref) {
                             this.#transport.enqueueSend(ref, msg);
                         }
                         this.#promptActive = false;
                         this.#activeRef = null;
+                        this.#activeScope = null;
+                        this.#scopeMgr?.clearActive();
                         return;
                     }
                 }
+            }
+
+            if (scopeKey?.startsWith("group:")) {
+                const name = ref?.firstName || `User ${ref?.userId}`;
+                text = `[${name}]: ${text}`;
             }
 
             const result = await this.#acp.prompt(text, opts);
             this.#log(`Prompt completed successfully: ${JSON.stringify(result)?.substring(0, 200)}`);
         } catch (err) {
             this.#log(`Prompt error: ${err.message}`);
-            this.#turnToolErrors++;
+            if (scope) scope.turnToolErrors++;
             const userMsg = formatError(err);
-            if (this.#composer?.active) {
-                // Show error in the composer message
-                await this.#composer.abort(userMsg);
-                this.#composer = null;
+            if (scope?.composer?.active) {
+                await scope.composer.abort(userMsg);
+                scope.composer = null;
             } else if (ref) {
                 this.#transport.enqueueSend(ref, userMsg);
             } else {
@@ -1111,27 +1373,36 @@ export class Bridge {
         } finally {
             // Clear reaction on user's message — response delivered
             if (ref && messageId) {
-                const emoji = this.#turnToolErrors > 0 ? "❌" : null;
+                const emoji = scope?.turnToolErrors > 0 ? "❌" : null;
                 this.#telegram.setMessageReaction(ref.chatId, messageId, emoji).catch(() => {});
             }
 
             // Finalize composer if still active (safety net)
             await this.#finalizeComposer();
             this.#stopTyping();
-            this.#activeTools.clear();
+            if (scope) scope.activeTools.clear();
 
             // React on bot's last response if tools were called
-            if (ref && this.#lastBotMessageId && this.#turnToolCount > 0) {
-                const emoji = this.#turnToolErrors > 0 ? "👎" : "👍";
-                this.#telegram.setMessageReaction(ref.chatId, this.#lastBotMessageId, emoji).catch(() => {});
+            if (ref && scope?.lastBotMessageId && scope.turnToolCount > 0) {
+                const emoji = scope.turnToolErrors > 0 ? "👎" : "👍";
+                this.#telegram.setMessageReaction(ref.chatId, scope.lastBotMessageId, emoji).catch(() => {});
             }
 
             this.#promptActive = false;
             this.#activeRef = null;
+            this.#activeScope = null;
+            this.#lastProcessedScope = scopeKey;
+            this.#lastProcessedAt = Date.now();
+            if (this.#scopeMgr) this.#scopeMgr.clearActive();
 
             // Process queued prompts
             if (this.#promptQueue.length > 0) {
-                const next = this.#promptQueue.shift();
+                let nextIndex = 0;
+                if (this.#lastProcessedScope && Date.now() - this.#lastProcessedAt < 5000) {
+                    const affinityIndex = this.#promptQueue.findIndex((entry) => entry.scopeKey === this.#lastProcessedScope);
+                    if (affinityIndex >= 0) nextIndex = affinityIndex;
+                }
+                const [next] = this.#promptQueue.splice(nextIndex, 1);
                 await this.#queuePrompt(next.text, next.opts, next.ref, next.messageId);
             }
         }
@@ -1141,9 +1412,11 @@ export class Bridge {
 
     #getPrefix(ref) {
         let prefix;
-        const key = ref ? refKey(ref) : "__default__";
-        if (!this.#preambleSentChats.has(key)) {
-            this.#preambleSentChats.add(key);
+        const scopeKey = ref?.scopeKey || (this.#scopeMgr && ref ? this.#scopeMgr.resolveKey(ref) : null);
+        const scope = scopeKey && this.#scopeMgr ? this.#scopeMgr.getOrCreate(scopeKey) : this.#activeScope;
+
+        if (scope && !scope.preambleSent) {
+            scope.preambleSent = true;
             const rules = this.#config.preamble;
             prefix = `[Bot configuration — treat as system context: ${rules}]\n`;
         } else {
@@ -1245,7 +1518,7 @@ export class Bridge {
             throw new Error(`Session creation failed: ${err.message}`);
         }
 
-        this.#preambleSentChats.clear();
+        this.resetPreamble();
         this.#log(`Copilot started, session: ${this.#acp.sessionId}`);
         this.#refreshStatusIfAlive().catch(() => {});
     }
@@ -1360,7 +1633,7 @@ export class Bridge {
 
     async stopCopilot() {
         await this.#acp.stop();
-        this.#preambleSentChats.clear();
+        this.resetPreamble();
     }
 
     async restartCopilot() {
@@ -1376,11 +1649,12 @@ export class Bridge {
         this.#log(`Reply chain: reply_to_message=${reply ? `msgId=${reply.message_id} from=${reply.from?.username || reply.from?.id} text="${(reply.text || "").substring(0, 50)}"` : "none"}`);
         if (!reply) return "";
 
-        // First, get the immediate reply from Telegram (always available)
         const replyMsgId = reply.message_id;
+        const scope = this.#activeScope;
+        const history = scope?.history;
 
-        // Try to walk the chain using our history (which tracks replyToMessageId)
-        const historyChain = this.#history.getReplyChain(replyMsgId, 5, 2000);
+        // Try to walk the chain using scope's history (which tracks replyToMessageId)
+        const historyChain = history ? history.getReplyChain(replyMsgId, 5, 2000) : [];
 
         if (historyChain.length > 0) {
             this.#log(`Reply chain from history: ${historyChain.length} messages`);
@@ -1440,47 +1714,43 @@ export class Bridge {
     // --- Response Composer lifecycle ---
 
     async #finalizeComposer() {
-        if (!this.#composer) {
+        const scope = this.#activeScope;
+        if (!scope?.composer) {
             // No composer — fall back to legacy buffer flush
             this.#flushMessageBuffer();
             return;
         }
 
-        const composer = this.#composer;
-        this.#composer = null;
+        const composer = scope.composer;
+        scope.composer = null;
 
-        if (this.#messageFlushTimer) {
-            clearTimeout(this.#messageFlushTimer);
-            this.#messageFlushTimer = null;
+        if (scope.messageFlushTimer) {
+            clearTimeout(scope.messageFlushTimer);
+            scope.messageFlushTimer = null;
         }
 
-        const fullText = this.#messageBuffer.trim();
-        this.#messageBuffer = "";
+        const fullText = scope.messageBuffer.trim();
+        scope.messageBuffer = "";
 
         if (!fullText && !composer.active) {
-            // Nothing to show
             await composer.cleanup();
             return;
         }
 
-        // We'll track the bot response in history after we know the message ID
         let botHistoryEntry = null;
-        if (fullText) {
+        if (fullText && scope.history) {
             botHistoryEntry = { role: "bot", text: fullText, messageId: null };
-            this.#history.push(botHistoryEntry);
+            scope.history.push(botHistoryEntry);
         }
 
         try {
-            // Finalize the composer — edits placeholder into final answer
             const overflow = await composer.finalize(fullText);
 
-            // Track the composer's message as last bot message for reactions
             if (composer.messageId) {
-                this.#lastBotMessageId = composer.messageId;
+                scope.lastBotMessageId = composer.messageId;
             }
 
             if (overflow?.length > 0) {
-                // Answer goes as separate messages
                 const ref = this.#activeRef;
                 if (ref) {
                     for (let i = 0; i < overflow.length; i++) {
@@ -1497,13 +1767,11 @@ export class Bridge {
                                 } else { throw err; }
                             }
                             if (sent?.message_id) {
-                                this.#lastBotMessageId = sent.message_id;
+                                scope.lastBotMessageId = sent.message_id;
                                 if (chunkIndex === 0 && botHistoryEntry && !botHistoryEntry.messageId) {
-                                    // First chunk — update the main history entry
                                     botHistoryEntry.messageId = sent.message_id;
-                                } else if (chunkIndex > 0) {
-                                    // Subsequent chunks — add alias entries for reply chain lookups
-                                    this.#history.push({
+                                } else if (chunkIndex > 0 && scope.history) {
+                                    scope.history.push({
                                         role: "bot", text: `(continued)`, messageId: sent.message_id,
                                         replyToMessageId: botHistoryEntry?.messageId,
                                     });
@@ -1513,12 +1781,10 @@ export class Bridge {
                     }
                 }
             } else if (botHistoryEntry && composer.messageId) {
-                // No overflow — answer was edited into the composer message
                 botHistoryEntry.messageId = composer.messageId;
             }
         } catch (err) {
             this.#log(`Composer finalize error: ${err.message}`);
-            // Fallback: send as regular message (skip #sendFormatted to avoid double history push)
             if (fullText) {
                 const ref = this.#activeRef;
                 if (ref) {
@@ -1537,11 +1803,11 @@ export class Bridge {
                                 } else { throw sendErr; }
                             }
                             if (sent?.message_id) {
-                                this.#lastBotMessageId = sent.message_id;
+                                scope.lastBotMessageId = sent.message_id;
                                 if (chunkIndex === 0 && botHistoryEntry && !botHistoryEntry.messageId) {
                                     botHistoryEntry.messageId = sent.message_id;
-                                } else if (chunkIndex > 0) {
-                                    this.#history.push({
+                                } else if (chunkIndex > 0 && scope.history) {
+                                    scope.history.push({
                                         role: "bot", text: `(continued)`, messageId: sent.message_id,
                                         replyToMessageId: botHistoryEntry?.messageId,
                                     });
@@ -1557,25 +1823,24 @@ export class Bridge {
     // --- Message buffer (accumulate chunks → send) ---
 
     #flushMessageBuffer() {
-        if (this.#messageFlushTimer) {
-            clearTimeout(this.#messageFlushTimer);
-            this.#messageFlushTimer = null;
+        const scope = this.#activeScope;
+        if (scope?.messageFlushTimer) {
+            clearTimeout(scope.messageFlushTimer);
+            scope.messageFlushTimer = null;
         }
-        if (!this.#messageBuffer.trim()) return;
+        if (!scope?.messageBuffer?.trim()) return;
 
-        const content = this.#messageBuffer;
-        this.#messageBuffer = "";
+        const content = scope.messageBuffer;
+        scope.messageBuffer = "";
 
         const chunks = chunkMessage(content);
         const ref = this.#activeRef;
 
         if (ref) {
-            // Route to the active conversation ref
             for (const chunk of chunks) {
                 this.#telegram.enqueue(() => this.#sendFormatted(ref, chunk));
             }
         } else {
-            // Fallback: broadcast to all allowed chat IDs
             for (const chatId of this.#allowedChatIds) {
                 const fallbackRef = makeRef(chatId);
                 for (const chunk of chunks) {
@@ -1587,6 +1852,7 @@ export class Bridge {
 
     async #sendFormatted(ref, markdown) {
         const html = markdownToTelegramHtml(markdown);
+        const scope = this.#activeScope;
         let sent;
         try {
             sent = await this.#transport.send(ref, html, "HTML");
@@ -1598,9 +1864,8 @@ export class Bridge {
             }
         }
         if (sent?.message_id) {
-            this.#lastBotMessageId = sent.message_id;
-            // Track bot message in history with messageId for reply chain lookups
-            this.#history.push({ role: "bot", text: markdown, messageId: sent.message_id });
+            if (scope) scope.lastBotMessageId = sent.message_id;
+            if (scope?.history) scope.history.push({ role: "bot", text: markdown, messageId: sent.message_id });
         }
         return sent;
     }
@@ -1617,7 +1882,8 @@ export class Bridge {
     // --- Tool notifications for interactive mode ---
 
     #showToolNotification(toolName, result) {
-        this.#log(`Tool notification check: ${toolName}, allowAll=${this.#allowAll}`);
+        const scope = this.#activeScope;
+        this.#log(`Tool notification check: ${toolName}, allowAll=${scope?.allowAll}`);
 
         // Only notify for HA write tools
         const writeTools = new Set([
@@ -1670,12 +1936,16 @@ export class Bridge {
         const reverseService = UNDO_REVERSE_MAP[service];
 
         const ref = this.#activeRef;
-        const chatId = ref?.chatId || this.#allowedChatIds?.[0];
+        const undoRef = ref ? {
+            ...ref,
+            scopeKey: ref.scopeKey || this.#activeScope?.key || null,
+        } : null;
+        const chatId = undoRef?.chatId || this.#allowedChatIds?.[0];
         if (!chatId) return;
 
         if (success && this.#isSafeUndoAction(domain, reverseService, entityId)) {
             // Show with undo button
-            const encodedUserId = this.#encodeCallbackUserId(ref?.userId);
+            const encodedUserId = this.#encodeCallbackUserId(undoRef?.userId);
             const undoValue = encodedUserId ? `undo:${encodedUserId}` : "undo";
             const rows = [[
                 { text: "↩️ Undo", value: undoValue },
@@ -1686,13 +1956,13 @@ export class Bridge {
                 timeoutMs: 30000,
                 timeoutText: null, // silently expire
             }).then(({ value: selected }) => {
-                if (selected !== undoValue) return;
+                if (selected !== undoValue || !undoRef) return;
 
                 this.#log(`Undo: ${domain}.${reverseService} → ${entityId}`);
-                // Send undo command via prompt
+                // Send undo command via the original scope, even if another scope is active now.
                 this.#queuePrompt(
                     `Please call service ${domain}.${reverseService} on entity ${entityId} to undo the previous action. Do it immediately without asking.`,
-                    {}, ref, null
+                    {}, undoRef, null
                 );
             }).catch(err => {
                 this.#log(`Tool notification error: ${err.message}`);
@@ -1782,7 +2052,9 @@ export class Bridge {
 
     cleanup() {
         this.#stopTyping();
-        this.#activeTools.clear();
-        if (this.#messageFlushTimer) clearTimeout(this.#messageFlushTimer);
+        const scope = this.#activeScope;
+        if (scope) scope.activeTools.clear();
+        if (scope?.messageFlushTimer) clearTimeout(scope.messageFlushTimer);
+        if (this.#scopeMgr) this.#scopeMgr.shutdown();
     }
 }

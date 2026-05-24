@@ -1,6 +1,6 @@
 # Copilot Telegram Bot
 
-**Control your smart home with AI — right from Telegram.** Version **0.11.0**.
+**Control your smart home with AI — right from Telegram.** Version **0.12.0**.
 
 ---
 
@@ -130,7 +130,35 @@ The bot has two permission modes:
 - **Interactive** (default): Read-only Home Assistant tools and standard Copilot tools are auto-approved. Write actions (turning on lights, calling services, etc.) prompt you with Allow/Deny/Allow-for-session buttons
 - **Allow-all**: All tool calls are auto-approved without prompts. Toggle with `/allowall on` or via the status menu
 
-The `permission_policy` config option sets the default on startup.
+Permissions are granted **per user, per scope** — allowing a tool in your DM won't affect group permissions, and vice versa. The `permission_policy` config option sets the default on startup.
+
+### Multi-User Session Isolation
+
+Each conversation gets its own independent Copilot session:
+
+- **DM**: every user gets their own private session (`dm:{userId}`)
+- **Group**: each group chat shares one session for all participants (`group:{chatId}`)
+- **Forum**: each topic in a forum supergroup gets its own session (`forum:{chatId}:{threadId}`)
+
+Sessions are automatically created on first message. The bot handles session switching transparently — you never need to manage this manually. Use `/sessions` to see all active scopes.
+
+Resource limits: 30 DM slots + 20 group/forum slots. Least-recently-used sessions are evicted when limits are reached.
+
+### Group Chat Support
+
+Add the bot to a Telegram group for shared AI access:
+
+- **@mention mode** (default): bot only responds when @mentioned, replied to, or receiving `/command@botname`
+- **All mode**: bot responds to every message (set `group_mode: all` in config)
+- Messages in groups are automatically attributed to the sender
+- Only authorized (paired) users can interact — others are prompted to DM for pairing
+- Responses are visible to all group members
+
+**Group safety**: set `allowed_groups` to whitelist specific groups. Set `max_group_members` to prevent the bot from operating in large groups. The bot auto-leaves groups that don't meet these criteria.
+
+### Rate Limiting
+
+Each user is limited to 10 messages per minute across all conversations. This prevents any single user from overwhelming the bot. A warning message is shown when the limit is reached.
 
 ### Forum Mode (Topic-per-Session)
 
@@ -227,6 +255,19 @@ Automatically stop Copilot after this many minutes of inactivity. Set to `0` (de
 
 **working_directory**
 The directory Copilot works in. Default: `/config` (your Home Assistant configuration directory).
+
+### Group Settings
+
+**group_mode**
+How the bot responds in groups. Options:
+- `mention` (default) — only responds to @mentions, replies, and `/command@botname`
+- `all` — responds to every message in the group
+
+**allowed_groups**
+List of group chat IDs the bot is allowed to join. Leave empty to allow all groups. The bot auto-leaves groups not on this list.
+
+**max_group_members**
+Maximum number of members a group can have for the bot to operate. Default: 50. Range: 1–1000. The bot leaves groups that exceed this limit.
 
 ## Troubleshooting
 

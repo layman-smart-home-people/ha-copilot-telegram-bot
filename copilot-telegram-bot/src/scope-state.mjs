@@ -1,0 +1,141 @@
+// ============================================================
+// ScopeState — Per-scope conversation/session container
+// ============================================================
+// Keeps Telegram/Copilot runtime state isolated per scope:
+// - DM per user
+// - Group per chat
+// - Forum per topic
+
+import { ChatHistory } from "./history.mjs";
+
+const HISTORY_MAX = 50;
+
+function toolGrantKey(userId, toolName) {
+    const numericUserId = Number(userId);
+    return Number.isSafeInteger(numericUserId) ? `${numericUserId}:${toolName}` : null;
+}
+
+export class ScopeState {
+    constructor(scopeKey) {
+        this.key = scopeKey;
+
+        // ACP session
+        this.sessionId = null;
+
+        // Conversation history
+        this.history = new ChatHistory(HISTORY_MAX);
+
+        // Active response composer for the current prompt
+        this.composer = null;
+
+        // Preamble
+        this.preambleSent = false;
+
+        // Permission grants are isolated by user within the same scope
+        this.grantedTools = new Set();
+
+        // toolCallId -> { name, description }
+        this.activeTools = new Map();
+
+        // Streaming message accumulation
+        this.messageBuffer = "";
+        this.messageFlushTimer = null;
+
+        // Turn-level tracking
+        this.turnToolCount = 0;
+        this.turnToolErrors = 0;
+        this.lastBotMessageId = null;
+
+        // Pending ask-user input for this scope only
+        this.awaitingInput = null;
+
+        // ACP-side per-session settings
+        this.model = "";
+        this.mode = "";
+
+        // Scope-local allow-all toggle
+        this.allowAll = false;
+
+        // Activity tracking for LRU eviction
+        this.lastActivity = Date.now();
+
+        // Creation timestamp
+        this.createdAt = Date.now();
+    }
+
+    /** Update the last-activity timestamp. */
+    touch() {
+        this.lastActivity = Date.now();
+    }
+
+    /**
+     * Reset transient scope state for a fresh session.
+     * Keeps the scope key and sessionId intact so callers can overwrite
+     * sessionId immediately after creating a new ACP session.
+     */
+    reset() {
+        this.preambleSent = false;
+        this.grantedTools.clear();
+        this.activeTools.clear();
+        this.messageBuffer = "";
+
+        if (this.messageFlushTimer) {
+            clearTimeout(this.messageFlushTimer);
+            this.messageFlushTimer = null;
+        }
+
+        this.turnToolCount = 0;
+        this.turnToolErrors = 0;
+        this.lastBotMessageId = null;
+
+        if (this.awaitingInput) {
+            clearTimeout(this.awaitingInput.timer);
+            this.awaitingInput.resolve?.(null);
+            this.awaitingInput = null;
+        }
+
+        if (this.composer?.active) {
+            this.composer = null;
+        }
+
+        this.history.clear();
+        this.touch();
+    }
+
+    /** Serialize only the fields that must survive restart. */
+    toJSON() {
+        return {
+            key: this.key,
+            sessionId: this.sessionId,
+            model: this.model,
+            mode: this.mode,
+            allowAll: this.allowAll,
+            lastActivity: this.lastActivity,
+            createdAt: this.createdAt,
+        };
+    }
+
+    /** Restore a scope from persisted JSON. */
+    static fromJSON(data) {
+        const scope = new ScopeState(data.key);
+        scope.sessionId = data.sessionId ?? null;
+        scope.model = data.model ?? "";
+        scope.mode = data.mode ?? "";
+        scope.allowAll = Boolean(data.allowAll);
+        scope.lastActivity = data.lastActivity ?? Date.now();
+        scope.createdAt = data.createdAt ?? Date.now();
+        return scope;
+    }
+
+    /** Check whether a tool is granted for a specific user in this scope. */
+    isToolGranted(userId, toolName) {
+        const key = toolGrantKey(userId, toolName);
+        return key ? this.grantedTools.has(key) : false;
+    }
+
+    /** Grant a tool for a specific user in this scope. */
+    grantTool(userId, toolName) {
+        const key = toolGrantKey(userId, toolName);
+        if (key) this.grantedTools.add(key);
+    }
+}

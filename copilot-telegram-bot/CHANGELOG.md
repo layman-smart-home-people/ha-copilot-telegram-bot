@@ -2,6 +2,33 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.12.0] — 2025-07-18
+
+### Added
+- **Multi-user session isolation**: each user/group/forum topic gets its own independent Copilot session
+- **Conversation scopes**: `dm:{userId}`, `group:{chatId}`, `forum:{chatId}:{threadId}` keys for state isolation
+- **Group chat support**: bot responds to @mentions, replies-to-bot, and `/command@botname` in groups
+- **Group onboarding**: welcome message when bot is added to a group; auto-leave if not in allowed_groups or group too large
+- **Per-user permissions**: tool grants are scoped to `userId:toolName` within each scope
+- **Per-user rate limiting**: 10 messages/minute per user across all scopes
+- **User attribution**: group prompts prefixed with sender's name for context
+- **Queue fairness**: per-scope deduplication with follow-up appending; scope affinity for queue drain
+- **Scope-aware commands**: `/model`, `/mode`, `/allowall`, `/cancel`, `/status`, `/sessions` all operate per-scope
+- **Scope persistence**: dirty-flag + 30s periodic flush to `/data/scopes.json` (SD card friendly)
+- **LRU eviction**: 30 DM slots, 20 group/forum slots with least-recently-used eviction
+- New config options: `group_mode` (mention/all), `allowed_groups`, `max_group_members`
+- New files: `src/scope-state.mjs`, `src/scope-manager.mjs`, `src/config.mjs`
+
+### Security
+- Scope-aware `/cancel` and `/stop` — only cancels prompts belonging to the requesting scope
+- Admin-only pinned instructions in groups (requires Telegram admin or pairing admin)
+- Per-user-per-scope tool grants prevent cross-user permission leakage
+
+### Changed
+- Bridge constructor accepts `sessionMgr` and `scopeMgr`
+- All ACP event handlers guard against session switching (`#switching` flag)
+- Prompt queue uses scope keys for deduplication and affinity
+
 ## [0.11.1] — 2025-07-18
 
 ### Security
