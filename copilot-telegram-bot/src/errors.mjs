@@ -35,7 +35,7 @@ const MESSAGE_PATTERNS = [
         pattern: /rate.*limit|too many|429|throttl/i,
         emoji: "⏳",
         label: "Rate Limited",
-        hint: "You're sending too fast. Wait a few seconds and try again.",
+        hint: "You're sending too fast. Wait a few seconds and use /retry.",
     },
     {
         pattern: /quota|exceeded|limit.*reached|capacity/i,
@@ -53,7 +53,7 @@ const MESSAGE_PATTERNS = [
         pattern: /timeout|timed?\s*out|deadline/i,
         emoji: "⏱️",
         label: "Timeout",
-        hint: "The request took too long. Try a shorter/simpler prompt.",
+        hint: "The request took too long. Try /retry or a shorter prompt.",
     },
     {
         pattern: /session.*(?:not found|expired|invalid)/i,
@@ -135,7 +135,7 @@ export function formatError(err) {
         .replace(/^ACP\s*/i, "")
         .substring(0, 200);
 
-    return `❌ ${cleaned}`;
+    return `❌ ${cleaned}\n💡 Use /retry to resend your last message.`;
 }
 
 function findPattern(msg) {

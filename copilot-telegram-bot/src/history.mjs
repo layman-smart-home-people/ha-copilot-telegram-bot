@@ -79,6 +79,17 @@ export class ChatHistory {
     }
 
     /**
+     * Get the text of the last user message (skipping slash commands).
+     */
+    getLastUserMessage() {
+        for (let i = this.#buffer.length - 1; i >= 0; i--) {
+            const msg = this.#buffer[i];
+            if (msg.role === "user" && !msg.text.startsWith("/")) return msg.text;
+        }
+        return null;
+    }
+
+    /**
      * Simple substring search across message text.
      */
     search(query, limit = 5) {

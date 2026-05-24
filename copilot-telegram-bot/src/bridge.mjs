@@ -117,6 +117,11 @@ export class Bridge {
     set allowAll(v) { this.#allowAll = !!v; this.#log(`Allow-all mode: ${this.#allowAll}`); }
     resetPreamble() { this.#preambleSent = false; }
 
+    /** Re-submit a message as if the user sent it (for /retry) */
+    submitRetry(ref, text) {
+        this.#queuePrompt(this.#getPrefix(ref) + text, {}, ref);
+    }
+
     // --- Setup event handlers ---
 
     setupACPHandlers() {
@@ -936,8 +941,6 @@ export class Bridge {
 
         this.#preambleSent = false;
         this.#log(`Copilot started, session: ${this.#acp.sessionId}`);
-
-        this.#broadcastAdmin("🟢 Copilot session started.");
     }
 
     async #runDeviceLogin() {

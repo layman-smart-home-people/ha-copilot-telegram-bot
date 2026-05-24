@@ -209,6 +209,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 );
                 return true;
             }
+            case "stop":
             case "cancel": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
                 try {
@@ -216,6 +217,21 @@ export async function handleSlashCommand(ctx, command, args) {
                     broadcast("🛑 Cancelled current operation");
                 } catch (err) {
                     reply(`⚠️ Cancel failed: ${err.message}`);
+                }
+                return true;
+            }
+            case "retry": {
+                if (!history) { reply("⚠️ No history available"); return true; }
+                const lastUser = history.getLastUserMessage();
+                if (!lastUser) { reply("⚠️ No previous message to retry"); return true; }
+                // Cancel current operation if running, then resend
+                if (acp?.alive && bridge?.promptActive) {
+                    try { await acp.cancel(); } catch {}
+                }
+                reply(`🔄 Retrying: "${lastUser.length > 60 ? lastUser.slice(0, 60) + '...' : lastUser}"`);
+                // Re-submit through bridge
+                if (bridge?.submitRetry) {
+                    bridge.submitRetry(ref, lastUser);
                 }
                 return true;
             }
@@ -266,7 +282,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 lines.push("📱 Bot Commands:");
                 lines.push("  /help /status /model /mode");
                 lines.push("  /skills /history /compact");
-                lines.push("  /autopilot /plan /cancel");
+                lines.push("  /autopilot /plan /stop /retry");
                 lines.push("  /usage /session");
 
                 if (!knownTools?.size && !availableCommands?.length) {
@@ -290,10 +306,13 @@ export async function handleSlashCommand(ctx, command, args) {
                         ],
                         [
                             { text: "🗜️ Compact", callback_data: "/compact" },
-                            { text: "🛑 Cancel", callback_data: "/cancel" },
+                            { text: "🛑 Stop", callback_data: "/stop" },
                         ],
                         [
+                            { text: "🔄 Retry", callback_data: "/retry" },
                             { text: "🔓 Allow All", callback_data: "/allowall on" },
+                        ],
+                        [
                             { text: "🔄 Restart", callback_data: "/session new" },
                         ],
                     ],
@@ -307,7 +326,8 @@ export async function handleSlashCommand(ctx, command, args) {
                     "  /mode\n" +
                     "  /skills — show available tools\n" +
                     "  /compact\n" +
-                    "  /cancel\n" +
+                    "  /stop — cancel current operation\n" +
+                    "  /retry — resend last message\n" +
                     "  /usage\n" +
                     "  /status\n" +
                     "  /history [n]\n" +

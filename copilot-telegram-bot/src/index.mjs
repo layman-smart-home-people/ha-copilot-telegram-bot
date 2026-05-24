@@ -228,7 +228,8 @@ async function main() {
                 { command: "model", description: "Switch AI model" },
                 { command: "compact", description: "Compact conversation history" },
                 { command: "usage", description: "Show usage metrics" },
-                { command: "cancel", description: "Cancel current operation" },
+                { command: "stop", description: "Stop current operation" },
+                { command: "retry", description: "Retry last message" },
                 { command: "session", description: "Session management (new/stop)" },
                 { command: "mode", description: "Switch conversation mode" },
                 { command: "history", description: "Show recent chat history" },
@@ -316,11 +317,9 @@ async function main() {
         resetIdle();
     }
 
-    // Send startup message
+    // Startup logged (no user-facing message)
     for (const chatId of bridge.allowedChatIds) {
-        telegram.enqueue(() =>
-            telegram.sendMessage(chatId, `🟢 Copilot Telegram Bot online. ${acp.alive ? "Session ready." : "Send a message to start Copilot."}`)
-        );
+        log(`Bot online, chat ${chatId} ready`);
     }
 }
 
