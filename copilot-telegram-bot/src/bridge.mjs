@@ -982,6 +982,8 @@ export class Bridge {
                         this.#telegram.enqueue(() =>
                             this.#telegram.sendMessage(chatId, "✅ Paired successfully! You can now use the bot.")
                         );
+                        // Notify admin
+                        this.#notifyAdminPairing(userId, username, chatId);
                     } else {
                         this.#telegram.enqueue(() =>
                             this.#telegram.sendMessage(chatId, "❌ Invalid or expired code. Check HA logs for a fresh code.")
@@ -990,26 +992,17 @@ export class Bridge {
                     return;
                 }
 
-                // Not paired — start pairing flow
-                // In groups/supergroups: tell them to DM
-                if (message.chat.type !== "private") {
-                    this.#telegram.enqueue(() =>
-                        this.#telegram.sendMessage(chatId, "👋 DM me to get started!", undefined, undefined)
-                    );
-                    return;
-                }
-
-                // In DM: generate pairing code
+                // Not paired — start pairing flow (works in DMs and groups)
                 const code = this.#pairing.generateCode(userId, username);
+                const isGroup = message.chat.type !== "private";
+                const prompt = isGroup
+                    ? `🔐 Hi ${username || "there"}! Pairing required.\n\nA code has been generated — check HA add-on logs or ask the admin.\nReply here or DM me with the code.\n\n⏳ Expires in 15 minutes.`
+                    : `🔐 Pairing required\n\nA pairing code has been generated.\nCheck your Home Assistant add-on logs and enter the code here.\n\n⏳ Code expires in 15 minutes.`;
                 this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(
-                        chatId,
-                        `🔐 Pairing required\n\n` +
-                        `A pairing code has been generated.\n` +
-                        `Check your Home Assistant add-on logs and enter the code here.\n\n` +
-                        `⏳ Code expires in 15 minutes.`
-                    )
+                    this.#telegram.sendMessage(chatId, prompt)
                 );
+                // Notify admin about new pairing request
+                this.#notifyAdminPairingRequest(userId, username, isGroup, chatId);
                 return;
             }
         } else {
@@ -2051,6 +2044,31 @@ export class Bridge {
                 this.#telegram.sendMessage(chatId, text)
             );
         }
+    }
+
+    /** Notify first admin that someone is requesting to pair. */
+    #notifyAdminPairingRequest(userId, username, isGroup, sourceChatId) {
+        const adminChatId = this.#allowedChatIds[0];
+        if (!adminChatId || adminChatId === userId) return; // don't notify yourself
+        const who = username ? `@${username}` : `User ${userId}`;
+        const where = isGroup ? ` (from a group)` : ``;
+        this.#telegram.enqueue(() =>
+            this.#telegram.sendMessage(adminChatId,
+                `🔐 Pairing request${where}\n\n` +
+                `👤 ${who} (ID: ${userId})\n` +
+                `📋 Code is in the add-on logs`
+            )
+        );
+    }
+
+    /** Notify first admin that someone paired successfully. */
+    #notifyAdminPairing(userId, username, sourceChatId) {
+        const adminChatId = this.#allowedChatIds[0];
+        if (!adminChatId || adminChatId === userId) return;
+        const who = username ? `@${username}` : `User ${userId}`;
+        this.#telegram.enqueue(() =>
+            this.#telegram.sendMessage(adminChatId, `✅ ${who} (ID: ${userId}) paired successfully!`)
+        );
     }
 
     // --- Cleanup ---

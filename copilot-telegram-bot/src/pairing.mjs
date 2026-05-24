@@ -82,9 +82,13 @@ export class PairingManager {
         const expiresAt = Date.now() + CODE_TTL_MS;
         this.#pendingCodes.set(code, { userId, username, expiresAt });
 
-        // Log to stdout — visible in HA add-on logs
+        // Log to stdout — visible in HA add-on logs (make it obvious)
         const userLabel = username ? `@${username}` : `user`;
-        this.#log(`[PAIRING] Code ${code} for ${userLabel} (ID: ${userId}) — valid 15 minutes`);
+        this.#log(`\n${"=".repeat(50)}`);
+        this.#log(`🔐 PAIRING CODE: ${code}`);
+        this.#log(`👤 For: ${userLabel} (ID: ${userId})`);
+        this.#log(`⏳ Expires in 15 minutes`);
+        this.#log(`${"=".repeat(50)}\n`);
 
         // Clean up expired codes
         this.#cleanExpired();
