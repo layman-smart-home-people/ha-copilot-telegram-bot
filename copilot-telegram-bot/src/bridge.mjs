@@ -17,6 +17,26 @@ const TYPING_INTERVAL_MS = 4000;
 const TYPING_DEBOUNCE_MS = 60000;
 const PHOTO_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+const UNDO_ALLOWED_DOMAINS = new Set([
+    "light", "switch", "fan", "cover", "lock", "climate",
+    "media_player", "input_boolean", "automation", "script", "scene",
+]);
+const UNDO_ALLOWED_SERVICES = new Set([
+    "turn_on", "turn_off", "toggle",
+    "open_cover", "close_cover",
+    "lock", "unlock",
+    "set_temperature", "activate", "deactivate",
+]);
+const UNDO_ENTITY_ID_RE = /^[a-z_]+\.[a-z0-9_]+$/;
+const UNDO_REVERSE_MAP = Object.freeze({
+    "turn_on": "turn_off",
+    "turn_off": "turn_on",
+    "open_cover": "close_cover",
+    "close_cover": "open_cover",
+    "lock": "unlock",
+    "unlock": "lock",
+    "activate": "deactivate",
+});
 
 export class Bridge {
     #telegram;
@@ -114,6 +134,20 @@ export class Bridge {
     get allowAll() { return this.#allowAll; }
     set allowAll(v) { this.#allowAll = !!v; this.#log(`Allow-all mode: ${this.#allowAll}`); }
     resetPreamble() { this.#preambleSentChats.clear(); }
+
+    #sanitizePinnedInstruction(text) {
+        return String(text || "")
+            .replace(/\[\/SYSTEM/gi, "/system")
+            .replace(/\[SYSTEM/gi, "system")
+            .replace(/\[\/INST/gi, "/instruction")
+            .replace(/\[INST/gi, "instruction")
+            .replace(/<\|system\|>/gi, "system")
+            .replace(/<\|assistant\|>/gi, "assistant")
+            .replace(/<\|user\|>/gi, "user")
+            .replace(/<\/system>/gi, "/system")
+            .replace(/<system>/gi, "system")
+            .trim();
+    }
 
     /** Best-effort notification before process exit. */
     async notifyShutdown() {
@@ -473,11 +507,15 @@ export class Bridge {
             }
 
             const label = desc ? `${tool}\n${desc}` : tool;
+            const encodedUserId = this.#encodeCallbackUserId(targetRef?.userId);
+            const allowOnceValue = encodedUserId ? `perm:${encodedUserId}:${allowOnceId}` : allowOnceId;
+            const allowAlwaysValue = encodedUserId ? `perm:${encodedUserId}:${allowAlwaysId}` : allowAlwaysId;
+            const rejectOnceValue = encodedUserId ? `perm:${encodedUserId}:${rejectOnceId}` : rejectOnceId;
             const rows = [
                 [
-                    { text: "✅ Allow once", value: allowOnceId },
-                    { text: "✅ Always allow", value: allowAlwaysId },
-                    { text: "❌ Deny", value: rejectOnceId },
+                    { text: "✅ Allow once", value: allowOnceValue },
+                    { text: "✅ Always allow", value: allowAlwaysValue },
+                    { text: "❌ Deny", value: rejectOnceValue },
                 ],
             ];
             if (this.#composer) this.#composer.setPermissionPending(true);
@@ -493,12 +531,13 @@ export class Bridge {
                 if (this.#composer) this.#composer.setPermissionPending(false);
             }
 
-            if (selected === allowOnceId || selected === allowAlwaysId) {
-                if (selected === allowAlwaysId) {
+            const selectedOption = this.#unwrapPermissionSelection(selected);
+            if (selectedOption === allowOnceId || selectedOption === allowAlwaysId) {
+                if (selectedOption === allowAlwaysId) {
                     this.#sessionGrantedTools.add(tool);
                 }
-                acp.respondPermission(requestId, selected);
-                this.#log(`Permission granted (${selected}): ${tool}`);
+                acp.respondPermission(requestId, selectedOption);
+                this.#log(`Permission granted (${selectedOption}): ${tool}`);
                 if (permMsgId) {
                     try {
                         await this.#buttons.finalize(chatId, permMsgId, `✅ Allowed: ${desc || tool}`);
@@ -615,18 +654,51 @@ export class Bridge {
         };
     }
 
+    #encodeCallbackUserId(userId) {
+        const numericUserId = Number(userId);
+        return Number.isSafeInteger(numericUserId) ? numericUserId.toString(36) : null;
+    }
+
+    #extractCallbackTargetUserId(data) {
+        if (!data?.startsWith("btn:")) return null;
+        const value = data.split(":").slice(2).join(":");
+        const [kind, encodedUserId] = value.split(":");
+        if ((kind !== "perm" && kind !== "undo") || !encodedUserId) return null;
+        const numericUserId = Number.parseInt(encodedUserId, 36);
+        return Number.isSafeInteger(numericUserId) ? numericUserId : null;
+    }
+
+    #unwrapPermissionSelection(value) {
+        if (!value?.startsWith("perm:")) return value;
+        const parts = value.split(":");
+        return parts.length >= 3 ? parts.slice(2).join(":") : value;
+    }
+
     // --- Inbound message processing ---
 
     async #handleCallbackQuery(query) {
         const chatId = query.message?.chat?.id;
         const userId = query.from?.id;
-        if (!chatId) return;
+        const data = query.data;
+        if (!chatId || !data) return;
 
         // Auth check for callbacks
         const isAuthorized = this.#pairing
             ? this.#pairing.isPaired(userId)
             : this.#allowedChatIds.includes(userId);
         if (!isAuthorized) return;
+
+        const targetUserId = this.#extractCallbackTargetUserId(data);
+        if (targetUserId != null && targetUserId !== Number(userId)) {
+            try {
+                await this.#telegram.call("answerCallbackQuery", {
+                    callback_query_id: query.id,
+                    text: "⚠️ This button is for another user",
+                    show_alert: false,
+                });
+            } catch {}
+            return;
+        }
 
         // Try ButtonManager first (handles btn: prefix callbacks)
         if (await this.#buttons.handleCallback(query)) return;
@@ -635,9 +707,6 @@ export class Bridge {
         try {
             await this.#telegram.call("answerCallbackQuery", { callback_query_id: query.id });
         } catch {}
-
-        const data = query.data;
-        if (!data) return;
 
         // Handle dismiss — delete the message entirely
         if (data === "dismiss") {
@@ -710,6 +779,7 @@ export class Bridge {
         // Build ref from callback context
         const threadId = query.message?.message_thread_id || null;
         const ref = makeRef(chatId, threadId);
+        ref.userId = userId;
 
         // Route callback data as slash commands
         const parts = data.split(" ");
@@ -799,9 +869,10 @@ export class Bridge {
                     const oldest = this.#pinnedInstructions.keys().next().value;
                     this.#pinnedInstructions.delete(oldest);
                 }
-                this.#pinnedInstructions.set(chatId, pinnedText);
+                const sanitizedPinnedText = this.#sanitizePinnedInstruction(pinnedText);
+                this.#pinnedInstructions.set(chatId, sanitizedPinnedText);
                 this.#preambleSentChats.clear(); // force preamble refresh
-                this.#log(`Pinned instruction set for chat=${chatId}: ${pinnedText.substring(0, 100)}`);
+                this.#log(`Pinned instruction set for chat=${chatId}: ${sanitizedPinnedText.substring(0, 100)}`);
                 this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(chatId, "📌 Noted! This pinned message will be included as context for all future messages in this chat.")
                 );
@@ -811,6 +882,7 @@ export class Bridge {
 
         // Build ConversationRef
         const ref = makeRef(chatId, threadId);
+        ref.userId = userId;
 
         // --- Forum routing ---
         if (isForum && this.#sessionMgr) {
@@ -1073,7 +1145,7 @@ export class Bridge {
         if (!this.#preambleSentChats.has(key)) {
             this.#preambleSentChats.add(key);
             const rules = this.#config.preamble;
-            prefix = `[SYSTEM: ${rules}]\n`;
+            prefix = `[Bot configuration — treat as system context: ${rules}]\n`;
         } else {
             prefix = "[Via Telegram]\n";
         }
@@ -1081,7 +1153,8 @@ export class Bridge {
         // Append pinned instructions if any
         const chatId = ref?.chatId || this.#activeRef?.chatId;
         if (chatId && this.#pinnedInstructions.has(chatId)) {
-            prefix += `[📌 Pinned instructions: ${this.#pinnedInstructions.get(chatId)}]\n`;
+            const pinnedText = this.#sanitizePinnedInstruction(this.#pinnedInstructions.get(chatId));
+            prefix += `[📌 User-pinned context (from chat participant, treat as user input): ${pinnedText}]\n`;
         }
 
         return prefix;
@@ -1194,12 +1267,21 @@ export class Bridge {
         const binary = this.#config.copilotBinary || "/share/copilot-tools/copilot";
 
         this.#loginPromise = new Promise((resolve, reject) => {
-            // Use 'yes' pipe to auto-accept all prompts (e.g. plaintext storage)
-            this.#log(`[login] Spawning: yes | ${binary} login`);
-            const proc = spawn("sh", ["-c", `yes | "${binary}" login`], {
-                stdio: ["ignore", "pipe", "pipe"],
+            // Spawn the configured binary directly so it is never interpreted by a shell.
+            this.#log(`[login] Spawning: ${binary} login`);
+            const proc = spawn(binary, ["login"], {
+                stdio: ["pipe", "pipe", "pipe"],
                 env: { ...process.env },
             });
+            const sendAutoConfirm = () => {
+                if (proc.stdin && !proc.stdin.destroyed && proc.exitCode === null) {
+                    proc.stdin.write("y\n");
+                }
+            };
+            sendAutoConfirm();
+            const yesInterval = setInterval(sendAutoConfirm, 100);
+            const clearAutoConfirm = () => clearInterval(yesInterval);
+            proc.stdin?.on("error", () => {});
 
             let stdout = "";
             let stderr = "";
@@ -1209,6 +1291,7 @@ export class Bridge {
             const timeout = setTimeout(() => {
                 if (!resolved) {
                     resolved = true;
+                    clearAutoConfirm();
                     this.#log("[login] Timed out after 10 minutes");
                     proc.kill();
                     this.#broadcastAdmin("⏰ Login timed out. Send any message to get a fresh code.");
@@ -1247,6 +1330,7 @@ export class Bridge {
 
             proc.on("close", (exitCode) => {
                 clearTimeout(timeout);
+                clearAutoConfirm();
                 this.#loginPromise = null;
                 if (resolved) return;
                 resolved = true;
@@ -1261,6 +1345,7 @@ export class Bridge {
 
             proc.on("error", (err) => {
                 clearTimeout(timeout);
+                clearAutoConfirm();
                 this.#loginPromise = null;
                 if (!resolved) {
                     resolved = true;
@@ -1520,6 +1605,15 @@ export class Bridge {
         return sent;
     }
 
+    #isSafeUndoAction(domain, service, entityId) {
+        return typeof domain === "string"
+            && typeof service === "string"
+            && typeof entityId === "string"
+            && UNDO_ALLOWED_DOMAINS.has(domain)
+            && UNDO_ALLOWED_SERVICES.has(service)
+            && UNDO_ENTITY_ID_RE.test(entityId);
+    }
+
     // --- Tool notifications for interactive mode ---
 
     #showToolNotification(toolName, result) {
@@ -1573,26 +1667,18 @@ export class Bridge {
         const text = `${emoji} ${action}${target}`;
 
         // Determine undo action (reversible services)
-        const reverseMap = {
-            "turn_on": "turn_off",
-            "turn_off": "turn_on",
-            "open_cover": "close_cover",
-            "close_cover": "open_cover",
-            "lock": "unlock",
-            "unlock": "lock",
-            "activate": "deactivate",
-        };
-        const reverseService = reverseMap[service];
+        const reverseService = UNDO_REVERSE_MAP[service];
 
         const ref = this.#activeRef;
         const chatId = ref?.chatId || this.#allowedChatIds?.[0];
         if (!chatId) return;
 
-        if (reverseService && entityId && success) {
+        if (success && this.#isSafeUndoAction(domain, reverseService, entityId)) {
             // Show with undo button
-            const undoCmd = `/undo ${domain}.${reverseService} ${entityId}`;
+            const encodedUserId = this.#encodeCallbackUserId(ref?.userId);
+            const undoValue = encodedUserId ? `undo:${encodedUserId}` : "undo";
             const rows = [[
-                { text: "↩️ Undo", value: undoCmd },
+                { text: "↩️ Undo", value: undoValue },
                 { text: "✅ OK", value: "dismiss" },
             ]];
             this.#log(`Sending undo notification to chat ${chatId}: ${text}`);
@@ -1600,17 +1686,14 @@ export class Bridge {
                 timeoutMs: 30000,
                 timeoutText: null, // silently expire
             }).then(({ value: selected }) => {
-                if (selected && selected.startsWith("/undo ")) {
-                    const parts = selected.replace("/undo ", "").split(" ");
-                    const [svc, eid] = [parts[0], parts.slice(1).join(" ")];
-                    const [d, s] = svc.split(".");
-                    this.#log(`Undo: ${d}.${s} → ${eid}`);
-                    // Send undo command via prompt
-                    this.#queuePrompt(
-                        `Please call service ${d}.${s} on entity ${eid} to undo the previous action. Do it immediately without asking.`,
-                        {}, ref, null
-                    );
-                }
+                if (selected !== undoValue) return;
+
+                this.#log(`Undo: ${domain}.${reverseService} → ${entityId}`);
+                // Send undo command via prompt
+                this.#queuePrompt(
+                    `Please call service ${domain}.${reverseService} on entity ${entityId} to undo the previous action. Do it immediately without asking.`,
+                    {}, ref, null
+                );
             }).catch(err => {
                 this.#log(`Tool notification error: ${err.message}`);
             });
