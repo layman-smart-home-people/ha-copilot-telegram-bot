@@ -37,15 +37,15 @@ export class ACPClient extends EventEmitter {
         this.#initialized = false;
 
         const args = ["--acp", "--stdio"];
-        // Permission strategy depends on runtime allowAll flag (can be toggled):
+        // Permission strategy:
         // - allow_all config: pass --allow-all (CLI auto-approves everything)
-        // - interactive config: pass --allow-all-tools (we handle permission UI
-        //   at the bridge level since CLI doesn't wait for async responses)
+        // - interactive config: NO --allow-all-tools flag, so the CLI sends
+        //   session/request_permission for each tool call and we handle it
+        //   via inline buttons in the bridge permission_request handler
         if (this.#config.permissionPolicy === "allow_all") {
             args.push("--allow-all");
-        } else {
-            args.push("--allow-all-tools");
         }
+        // interactive mode: don't pass --allow-all-tools so CLI sends permission requests
         if (this.#config.model) args.push("--model", this.#config.model);
         if (this.#config.extraArgs) {
             const extra = this.#config.extraArgs.trim().split(/\s+/);

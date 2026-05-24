@@ -1163,6 +1163,7 @@ export class Bridge {
                 { text: "↩️ Undo", value: undoCmd },
                 { text: "✅ OK", value: "dismiss" },
             ]];
+            this.#log(`Sending undo notification to chat ${chatId}: ${text}`);
             this.#buttons.prompt(chatId, text, rows, {
                 timeoutMs: 30000,
                 timeoutText: null, // silently expire
@@ -1178,7 +1179,9 @@ export class Bridge {
                         {}, ref, null
                     );
                 }
-            }).catch(() => {});
+            }).catch(err => {
+                this.#log(`Tool notification error: ${err.message}`);
+            });
         } else {
             // Just show notification (no undo available)
             this.#telegram.enqueue(() =>
