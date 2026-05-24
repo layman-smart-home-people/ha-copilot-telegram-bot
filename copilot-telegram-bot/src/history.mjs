@@ -16,13 +16,14 @@ export class ChatHistory {
 
     /**
      * Add a message to the history.
-     * @param {{ role: "user"|"bot", text: string, messageId?: number, timestamp?: number }} entry
+     * @param {{ role: "user"|"bot", text: string, messageId?: number, replyToMessageId?: number, timestamp?: number }} entry
      */
     push(entry) {
         this.#buffer.push({
             role: entry.role,
             text: (entry.text || "").substring(0, 2000),
             messageId: entry.messageId || null,
+            replyToMessageId: entry.replyToMessageId || null,
             timestamp: entry.timestamp || Date.now(),
         });
         if (this.#buffer.length > this.#max) {
@@ -41,7 +42,40 @@ export class ChatHistory {
      * Find a message by its Telegram message_id.
      */
     findByMessageId(messageId) {
+        if (!messageId) return null;
         return this.#buffer.find(e => e.messageId === messageId) || null;
+    }
+
+    /**
+     * Walk the reply chain starting from a messageId.
+     * Returns messages from oldest to newest (parent first).
+     * @param {number} messageId - Starting message to walk up from
+     * @param {number} maxDepth - Max number of parent messages to collect
+     * @param {number} maxChars - Total character budget
+     * @returns {Array<{role: string, text: string, messageId: number}>}
+     */
+    getReplyChain(messageId, maxDepth = 5, maxChars = 2000) {
+        const chain = [];
+        let totalChars = 0;
+        let currentId = messageId;
+
+        while (currentId && chain.length < maxDepth) {
+            const entry = this.findByMessageId(currentId);
+            if (!entry) break;
+
+            const maxForThis = Math.min(500, maxChars - totalChars);
+            if (maxForThis <= 50) break;
+
+            let text = entry.text;
+            if (text.length > maxForThis) text = text.substring(0, maxForThis) + "…";
+
+            chain.unshift({ role: entry.role, text, messageId: entry.messageId });
+            totalChars += text.length;
+
+            currentId = entry.replyToMessageId;
+        }
+
+        return chain;
     }
 
     /**

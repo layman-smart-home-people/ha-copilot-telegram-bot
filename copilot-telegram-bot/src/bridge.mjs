@@ -593,9 +593,7 @@ export class Bridge {
 
             // Management topic: commands only, no ACP routing
             if (this.#sessionMgr.isManagementTopic(ref)) {
-                this.#history.push({ role: "user", text, messageId: message.message_id });
-
-                // Ack reaction
+                this.#history.push({ role: "user", text, messageId: message.message_id, replyToMessageId: message.reply_to_message?.message_id });
                 this.#telegram.enqueue(() =>
                     this.#telegram.setMessageReaction(chatId, message.message_id, "⏳").catch(() => {})
                 );
@@ -626,9 +624,7 @@ export class Bridge {
         }
 
         // Track incoming user message in history
-        this.#history.push({ role: "user", text, messageId: message.message_id });
-
-        // Handle ask_user response
+        this.#history.push({ role: "user", text, messageId: message.message_id, replyToMessageId: message.reply_to_message?.message_id });
         if (this.#awaitingInput) {
             const { resolve } = this.#awaitingInput;
             clearTimeout(this.#awaitingInput.timer);
@@ -1059,60 +1055,47 @@ export class Bridge {
 
     #extractReplyContext(message) {
         const reply = message.reply_to_message;
+        this.#log(`Reply chain: reply_to_message=${reply ? `msgId=${reply.message_id} from=${reply.from?.username || reply.from?.id} text="${(reply.text || "").substring(0, 50)}"` : "none"}`);
         if (!reply) return "";
 
-        // Walk the reply chain to collect thread context
-        const chain = [];
-        const MAX_CHAIN = 5;
-        const MAX_TOTAL_CHARS = 2000;
-        let totalChars = 0;
+        // First, get the immediate reply from Telegram (always available)
+        const replyMsgId = reply.message_id;
 
-        let current = reply;
-        while (current && chain.length < MAX_CHAIN) {
-            const isBotMsg = current.from?.is_bot;
-            let text = current.text || current.caption || "";
+        // Try to walk the chain using our history (which tracks replyToMessageId)
+        const historyChain = this.#history.getReplyChain(replyMsgId, 5, 2000);
 
-            // Check our history for richer context
-            const historyEntry = this.#history.findByMessageId(current.message_id);
-            if (historyEntry && historyEntry.text.length > text.length) {
-                text = historyEntry.text;
+        if (historyChain.length > 0) {
+            this.#log(`Reply chain from history: ${historyChain.length} messages`);
+
+            if (historyChain.length === 1) {
+                const c = historyChain[0];
+                const source = c.role === "bot" ? "Replying to bot" : "Replying to user";
+                return `[${source}: "${c.text}"]`;
             }
 
-            if (!text) {
-                if (current.photo) text = "<photo>";
-                else if (current.sticker) text = `<sticker: ${current.sticker.emoji || "🎴"}>`;
-                else if (current.voice) text = "<voice message>";
-                else if (current.video) text = "<video>";
-                else if (current.document) text = `<file: ${current.document.file_name || "document"}>`;
-                else text = "<message>";
-            }
-
-            // Truncate if adding would exceed budget
-            const maxForThis = Math.min(500, MAX_TOTAL_CHARS - totalChars);
-            if (maxForThis <= 50) break;
-            if (text.length > maxForThis) text = text.substring(0, maxForThis) + "…";
-
-            chain.unshift({ role: isBotMsg ? "bot" : "user", text });
-            totalChars += text.length;
-
-            // Walk up the chain
-            current = current.reply_to_message || null;
+            const formatted = historyChain.map(c => {
+                const who = c.role === "bot" ? "🤖" : "👤";
+                return `${who} ${c.text}`;
+            }).join("\n");
+            return `[Reply thread (${historyChain.length} messages):\n${formatted}]`;
         }
 
-        if (chain.length === 0) return "";
-
-        if (chain.length === 1) {
-            const c = chain[0];
-            const source = c.role === "bot" ? "Replying to bot" : "Replying to user";
-            return `[${source}: "${c.text}"]`;
+        // Fallback: use the immediate reply_to_message from Telegram
+        const isBotMsg = reply.from?.is_bot;
+        let text = reply.text || reply.caption || "";
+        if (!text) {
+            if (reply.photo) text = "<photo>";
+            else if (reply.sticker) text = `<sticker: ${reply.sticker.emoji || "🎴"}>`;
+            else if (reply.voice) text = "<voice message>";
+            else if (reply.video) text = "<video>";
+            else if (reply.document) text = `<file: ${reply.document.file_name || "document"}>`;
+            else text = "<message>";
         }
+        if (text.length > 500) text = text.substring(0, 500) + "…";
 
-        // Multi-message thread
-        const formatted = chain.map(c => {
-            const who = c.role === "bot" ? "🤖" : "👤";
-            return `${who} ${c.text}`;
-        }).join("\n");
-        return `[Reply thread (${chain.length} messages):\n${formatted}]`;
+        const source = isBotMsg ? "Replying to bot" : "Replying to user";
+        this.#log(`Reply chain fallback (Telegram only): 1 message`);
+        return `[${source}: "${text}"]`;
     }
 
     // --- File handling ---
@@ -1162,9 +1145,11 @@ export class Bridge {
             return;
         }
 
-        // Track in history
+        // We'll track the bot response in history after we know the message ID
+        let botHistoryEntry = null;
         if (fullText) {
-            this.#history.push({ role: "bot", text: fullText });
+            botHistoryEntry = { role: "bot", text: fullText, messageId: null };
+            this.#history.push(botHistoryEntry);
         }
 
         try {
@@ -1176,26 +1161,35 @@ export class Bridge {
                 this.#lastBotMessageId = composer.messageId;
             }
 
-            // Send any overflow chunks as separate messages
-            // (answer already tracked in history above — don't double-track)
-            const ref = this.#activeRef;
-            if (overflow?.length > 0 && ref) {
-                for (const chunk of overflow) {
-                    this.#telegram.enqueue(async () => {
-                        const html = markdownToTelegramHtml(chunk);
-                        let sent;
-                        try {
-                            sent = await this.#transport.send(ref, html, "HTML");
-                        } catch (err) {
-                            if (err.message && /can.t parse|entit/i.test(err.message)) {
-                                sent = await this.#transport.send(ref, chunk);
-                            } else { throw err; }
-                        }
-                        if (sent?.message_id) {
-                            this.#lastBotMessageId = sent.message_id;
-                        }
-                    });
+            if (overflow?.length > 0) {
+                // Answer goes as separate messages — track the first one's messageId
+                const ref = this.#activeRef;
+                if (ref) {
+                    for (let i = 0; i < overflow.length; i++) {
+                        const chunk = overflow[i];
+                        this.#telegram.enqueue(async () => {
+                            const html = markdownToTelegramHtml(chunk);
+                            let sent;
+                            try {
+                                sent = await this.#transport.send(ref, html, "HTML");
+                            } catch (err) {
+                                if (err.message && /can.t parse|entit/i.test(err.message)) {
+                                    sent = await this.#transport.send(ref, chunk);
+                                } else { throw err; }
+                            }
+                            if (sent?.message_id) {
+                                this.#lastBotMessageId = sent.message_id;
+                                // Update history entry with actual message ID
+                                if (botHistoryEntry && !botHistoryEntry.messageId) {
+                                    botHistoryEntry.messageId = sent.message_id;
+                                }
+                            }
+                        });
+                    }
                 }
+            } else if (botHistoryEntry && composer.messageId) {
+                // No overflow — answer was edited into the composer message
+                botHistoryEntry.messageId = composer.messageId;
             }
         } catch (err) {
             this.#log(`Composer finalize error: ${err.message}`);
