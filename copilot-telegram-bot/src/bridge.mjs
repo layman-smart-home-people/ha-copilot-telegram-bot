@@ -91,6 +91,7 @@ export class Bridge {
 
     // Active status menu (singleton — only one at a time)
     #statusMsg = null; // { chatId, messageId, createdAt }
+    #statusRefreshPaused = false; // true during intentional restart (skip exit event refresh)
 
     // Turn-level tracking for tool call reactions
     #turnToolCount = 0;
@@ -143,12 +144,22 @@ export class Bridge {
 
     /** Edit the existing status menu if it's still fresh. Called on state changes. */
     async #refreshStatusIfAlive() {
-        if (!this.#statusMsg) return;
+        if (!this.#statusMsg) {
+            this.#log("Status refresh: no active status message");
+            return;
+        }
+        if (this.#statusRefreshPaused) {
+            this.#log("Status refresh: paused (restart in progress)");
+            return;
+        }
         if (Date.now() - this.#statusMsg.createdAt > CopilotBridge.#STATUS_TTL_MS) {
-            this.#statusMsg = null; // expired
+            this.#log("Status refresh: expired");
+            this.#statusMsg = null;
             return;
         }
         const { text, buttons } = this.#buildStatusContent();
+        const firstLine = text.split("\n")[0];
+        this.#log(`Status refresh: updating to "${firstLine}" (msgId=${this.#statusMsg.messageId})`);
         try {
             await this.#telegram.call("editMessageText", {
                 chat_id: this.#statusMsg.chatId,
@@ -156,8 +167,13 @@ export class Bridge {
                 text,
                 reply_markup: buttons,
             });
+            this.#log("Status refresh: edit succeeded");
         } catch (err) {
-            if (/message is not modified/i.test(err?.message)) return;
+            if (/message is not modified/i.test(err?.message)) {
+                this.#log("Status refresh: no change needed");
+                return;
+            }
+            this.#log(`Status refresh: edit failed — ${err.message}`);
             this.#statusMsg = null; // message gone
         }
     }
@@ -612,7 +628,7 @@ export class Bridge {
         }
 
         // If a state-changing command is triggered from the active status menu,
-        // immediately show transitional state before executing the command
+        // immediately show transitional state, execute command, then refresh
         const isFromStatusMenu = this.#statusMsg?.messageId === query.message?.message_id;
         if (isFromStatusMenu && (data === "/session new" || data === "/session stop")) {
             const label = data === "/session new" ? "⏳ Restarting Copilot..." : "⏳ Stopping Copilot...";
@@ -624,10 +640,23 @@ export class Bridge {
                     reply_markup: { inline_keyboard: [[{ text: "✕ Dismiss", callback_data: "dismiss" }]] },
                 });
             } catch {}
-            // Route command, then let event hooks refresh the status menu
+            // Execute the command (suppress the broadcast — status menu shows state)
             const threadId = query.message?.message_thread_id || null;
             const ref = makeRef(chatId, threadId);
-            await handleSlashCommand(this.#buildCommandContext(ref), data.slice(1).split(" ")[0], data.slice(1).split(" ").slice(1).join(" "));
+            try {
+                if (data === "/session new") {
+                    this.#statusRefreshPaused = true; // prevent exit event from showing "Stopped"
+                    await this.restartCopilot();
+                    this.#statusRefreshPaused = false;
+                } else {
+                    await this.stopCopilot();
+                }
+            } catch (err) {
+                this.#statusRefreshPaused = false;
+                this.#log(`Status menu action failed: ${err.message}`);
+            }
+            // Explicitly refresh to final state (don't rely on fire-and-forget hooks)
+            await this.#refreshStatusIfAlive();
             return;
         }
 
