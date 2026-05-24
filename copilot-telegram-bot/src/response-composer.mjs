@@ -97,34 +97,38 @@ export class ResponseComposer {
         this.#textBuffer = fullText || this.#textBuffer;
 
         if (!this.#messageId) {
-            // No placeholder was sent — just return text for normal sending
             return fullText ? chunkMessage(fullText) : [];
         }
 
-        // Build final message
         const stepsHtml = this.#buildStepsHtml(true);
-        const answerHtml = this.#convertAnswer(this.#textBuffer);
-        const combined = stepsHtml ? `${stepsHtml}\n${answerHtml}` : answerHtml;
+        const hasSteps = this.#toolSteps.length > 0;
+        const hasAnswer = this.#textBuffer.trim().length > 0;
 
-        if (combined.length <= MAX_MSG_LEN) {
-            await this.#editMessage(combined);
+        if (hasSteps && hasAnswer) {
+            // Edit placeholder → collapsed steps summary
+            await this.#editMessage(stepsHtml);
+            // Return answer as separate message(s)
+            return chunkMessage(this.#textBuffer);
+        } else if (hasSteps && !hasAnswer) {
+            // Only steps, no text answer — edit to show steps
+            await this.#editMessage(stepsHtml);
+            return [];
+        } else if (!hasSteps && hasAnswer) {
+            // No tool steps — edit placeholder into the answer directly
+            const answerHtml = this.#convertAnswer(this.#textBuffer);
+            if (answerHtml.length <= MAX_MSG_LEN) {
+                await this.#editMessage(answerHtml);
+                return [];
+            }
+            // Answer too long — edit first chunk, return rest
+            const chunks = chunkMessage(this.#textBuffer);
+            await this.#editMessage(this.#convertAnswer(chunks[0]));
+            return chunks.slice(1);
+        } else {
+            // Nothing — delete placeholder
+            await this.cleanup();
             return [];
         }
-
-        // Too long — edit with steps + truncated answer, return overflow
-        const chunks = chunkMessage(this.#textBuffer);
-        const firstChunkHtml = this.#convertAnswer(chunks[0]);
-        const firstMsg = stepsHtml ? `${stepsHtml}\n${firstChunkHtml}` : firstChunkHtml;
-
-        if (firstMsg.length <= MAX_MSG_LEN) {
-            await this.#editMessage(firstMsg);
-            // Return remaining chunks
-            return chunks.slice(1);
-        }
-
-        // Steps alone too big — just send everything as chunks
-        await this.#editMessage(stepsHtml || firstChunkHtml);
-        return stepsHtml ? chunks : chunks.slice(1);
     }
 
     /**
@@ -178,18 +182,14 @@ export class ResponseComposer {
         if (this.#finalized || !this.#messageId) return;
 
         const stepsHtml = this.#buildStepsHtml(false);
-        let answerHtml = "";
-        if (this.#textBuffer.trim()) {
-            answerHtml = this.#convertAnswer(this.#textBuffer);
-        }
 
         let html;
-        if (stepsHtml && answerHtml) {
-            html = `${stepsHtml}\n${answerHtml}`;
-        } else if (answerHtml) {
-            html = answerHtml;
-        } else if (stepsHtml) {
+        if (stepsHtml) {
+            // Show thinking indicator + tool steps
             html = `🤔 <i>Thinking...</i>\n${stepsHtml}`;
+        } else if (this.#textBuffer.trim()) {
+            // No tool steps but text is streaming — show typing indicator
+            html = "✍️ <i>Writing response...</i>";
         } else {
             html = "🤔 <i>Thinking...</i>";
         }
