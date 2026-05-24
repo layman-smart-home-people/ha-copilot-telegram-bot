@@ -15,11 +15,20 @@ import { SessionManager } from "./sessions.mjs";
 // --- Set timezone from HA system before any Date operations ---
 // HA containers default to TZ=UTC — override with the actual HA system timezone
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
+    const { get } = await import("node:http");
     try {
-        const resp = await fetch("http://supervisor/info", {
-            headers: { Authorization: `Bearer ${process.env.SUPERVISOR_TOKEN}` },
+        const raw = await new Promise((resolve, reject) => {
+            const req = get("http://supervisor/info", {
+                headers: { Authorization: `Bearer ${process.env.SUPERVISOR_TOKEN}` },
+            }, (res) => {
+                let body = "";
+                res.on("data", (chunk) => { body += chunk; });
+                res.on("end", () => resolve(body));
+            });
+            req.on("error", reject);
+            req.setTimeout(5000, () => { req.destroy(); reject(new Error("timeout")); });
         });
-        const data = await resp.json();
+        const data = JSON.parse(raw);
         if (data?.data?.timezone) {
             process.env.TZ = data.data.timezone;
         }
