@@ -173,8 +173,10 @@ export async function handleSlashCommand(ctx, command, args) {
                             { text: "🔄 Restart", callback_data: "/session new" },
                             { text: "⏹️ Stop", callback_data: "/session stop" },
                         ],
+                        [{ text: "✕ Dismiss", callback_data: "dismiss" }],
                     ] : [
                         [{ text: "🚀 Start Copilot", callback_data: "/session new" }],
+                        [{ text: "✕ Dismiss", callback_data: "dismiss" }],
                     ],
                 };
                 telegram.enqueue(() => telegram.sendMessage(chatId, lines.join("\n"), undefined, statusButtons));
@@ -315,6 +317,7 @@ export async function handleSlashCommand(ctx, command, args) {
                         [
                             { text: "🔄 Restart", callback_data: "/session new" },
                         ],
+                        [{ text: "✕ Dismiss", callback_data: "dismiss" }],
                     ],
                 };
                 telegram.enqueue(() => telegram.sendMessage(

@@ -473,6 +473,17 @@ export class Bridge {
         const data = query.data;
         if (!data) return;
 
+        // Handle dismiss — delete the message entirely
+        if (data === "dismiss") {
+            try {
+                await this.#telegram.call("deleteMessage", {
+                    chat_id: chatId,
+                    message_id: query.message.message_id,
+                });
+            } catch {}
+            return;
+        }
+
         // Clean up the button message after selection
         try {
             await this.#telegram.call("editMessageReplyMarkup", {
