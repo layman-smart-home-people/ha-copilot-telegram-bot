@@ -116,6 +116,7 @@ export class Bridge {
     get promptActive() { return this.#promptActive; }
     get allowAll() { return this.#allowAll; }
     set allowAll(v) { this.#allowAll = !!v; this.#log(`Allow-all mode: ${this.#allowAll}`); }
+    resetPreamble() { this.#preambleSent = false; }
 
     // --- Setup event handlers ---
 
@@ -753,7 +754,16 @@ export class Bridge {
     #getPrefix() {
         if (!this.#preambleSent) {
             this.#preambleSent = true;
-            return `[SYSTEM: This message arrived via Telegram. Follow these rules for your reply:\n• ${this.#config.preamble}]\n`;
+            let rules = this.#config.preamble;
+            // In interactive mode, instruct the agent to confirm before write actions
+            if (!this.#allowAll) {
+                rules += `\n• SAFETY: Before performing ANY write action on Home Assistant (turning on/off devices, calling services, running automations, changing settings), you MUST first describe exactly what you plan to do and ask the user to confirm. Only proceed after explicit user confirmation. Read-only actions (searching entities, checking states, viewing history) are fine without confirmation.`;
+            }
+            return `[SYSTEM: This message arrived via Telegram. Follow these rules for your reply:\n• ${rules}]\n`;
+        }
+        // In interactive mode, include a shorter reminder on subsequent messages
+        if (!this.#allowAll) {
+            return "[Via Telegram — remember: confirm with user before any HA write actions]\n";
         }
         return "[Via Telegram]\n";
     }

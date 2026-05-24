@@ -138,7 +138,9 @@ export async function handleSlashCommand(ctx, command, args) {
                 }
 
                 if (bridge?.allowAll) {
-                    lines.push(`\u{1F513} Allow-all: ON (all tools auto-approved)`);
+                    lines.push(`🔓 Permissions: allow-all (tools auto-approved)`);
+                } else {
+                    lines.push(`🔐 Permissions: interactive (agent confirms before HA writes)`);
                 }
                 lines.push(`📱 Telegram: connected`);
                 lines.push(`👥 Allowed chats: ${chatIds.length}`);
@@ -430,9 +432,11 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (!bridge) { reply("⚠️ Not available"); return true; }
                 if (args === "off" || args === "false") {
                     bridge.allowAll = false;
-                    broadcast("🔓 Allow-all OFF → interactive permissions");
+                    bridge.resetPreamble();
+                    broadcast("🔐 Allow-all OFF → agent will confirm before HA write actions");
                 } else {
                     bridge.allowAll = true;
+                    bridge.resetPreamble();
                     broadcast("🔓 Allow-all ON → all tool calls auto-approved");
                 }
                 return true;
