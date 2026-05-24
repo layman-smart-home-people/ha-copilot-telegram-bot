@@ -1157,11 +1157,12 @@ export class Bridge {
             }
 
             if (overflow?.length > 0) {
-                // Answer goes as separate messages — track the first one's messageId
+                // Answer goes as separate messages
                 const ref = this.#activeRef;
                 if (ref) {
                     for (let i = 0; i < overflow.length; i++) {
                         const chunk = overflow[i];
+                        const chunkIndex = i;
                         this.#telegram.enqueue(async () => {
                             const html = markdownToTelegramHtml(chunk);
                             let sent;
@@ -1174,9 +1175,15 @@ export class Bridge {
                             }
                             if (sent?.message_id) {
                                 this.#lastBotMessageId = sent.message_id;
-                                // Update history entry with actual message ID
-                                if (botHistoryEntry && !botHistoryEntry.messageId) {
+                                if (chunkIndex === 0 && botHistoryEntry && !botHistoryEntry.messageId) {
+                                    // First chunk — update the main history entry
                                     botHistoryEntry.messageId = sent.message_id;
+                                } else if (chunkIndex > 0) {
+                                    // Subsequent chunks — add alias entries for reply chain lookups
+                                    this.#history.push({
+                                        role: "bot", text: `(continued)`, messageId: sent.message_id,
+                                        replyToMessageId: botHistoryEntry?.messageId,
+                                    });
                                 }
                             }
                         });
@@ -1188,13 +1195,36 @@ export class Bridge {
             }
         } catch (err) {
             this.#log(`Composer finalize error: ${err.message}`);
-            // Fallback: send as regular message
+            // Fallback: send as regular message (skip #sendFormatted to avoid double history push)
             if (fullText) {
                 const ref = this.#activeRef;
                 if (ref) {
                     const chunks = chunkMessage(fullText);
-                    for (const chunk of chunks) {
-                        this.#telegram.enqueue(() => this.#sendFormatted(ref, chunk));
+                    for (let i = 0; i < chunks.length; i++) {
+                        const chunk = chunks[i];
+                        const chunkIndex = i;
+                        this.#telegram.enqueue(async () => {
+                            const html = markdownToTelegramHtml(chunk);
+                            let sent;
+                            try {
+                                sent = await this.#transport.send(ref, html, "HTML");
+                            } catch (sendErr) {
+                                if (sendErr.message && /can.t parse|entit/i.test(sendErr.message)) {
+                                    sent = await this.#transport.send(ref, chunk);
+                                } else { throw sendErr; }
+                            }
+                            if (sent?.message_id) {
+                                this.#lastBotMessageId = sent.message_id;
+                                if (chunkIndex === 0 && botHistoryEntry && !botHistoryEntry.messageId) {
+                                    botHistoryEntry.messageId = sent.message_id;
+                                } else if (chunkIndex > 0) {
+                                    this.#history.push({
+                                        role: "bot", text: `(continued)`, messageId: sent.message_id,
+                                        replyToMessageId: botHistoryEntry?.messageId,
+                                    });
+                                }
+                            }
+                        });
                     }
                 }
             }
