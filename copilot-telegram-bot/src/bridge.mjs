@@ -18,7 +18,6 @@ import { spawn } from "node:child_process";
 
 const TYPING_INTERVAL_MS = 4000;
 const TYPING_DEBOUNCE_MS = 60000;
-const BUBBLE_DEBOUNCE_MS = 300;
 const PHOTO_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 
@@ -41,15 +40,8 @@ export class Bridge {
     #typingInterval = null;
     #typingDebounce = null;
 
-    // Bubble state
+    // Active tool tracking (for tool_end name lookups)
     #activeTools = new Map();
-    #bubbleMessageIds = new Map();
-    #allBubbleIds = new Map();
-    #bubbleDebounce = null;
-    #bubbleActive = false;
-    #flushInProgress = false;
-    #reflushNeeded = false;
-    #lastCompletedToolDesc = null;
 
     // Message accumulator (collect chunks → send as complete message)
     // Use a longer flush timer as a safety net — primary flush happens on message_end
@@ -191,9 +183,6 @@ export class Bridge {
                 }
             }
             this.#resetTypingDebounce();
-            if (completed?.description) {
-                this.#lastCompletedToolDesc = completed.description;
-            }
             this.#activeTools.delete(toolCallId);
             // Update composer with tool completion
             if (this.#composer?.active && completed?.description) {
@@ -223,7 +212,7 @@ export class Bridge {
                 this.#composer.abort("Copilot process exited unexpectedly").catch(() => {});
                 this.#composer = null;
             }
-            this.#dismissBubble();
+            this.#activeTools.clear();
             this.#flushMessageBuffer();
 
             // Crash recovery: reject any active prompt so the queue doesn't wedge
@@ -661,7 +650,7 @@ export class Bridge {
                     await this.#composer.abort(formatError(err));
                     this.#composer = null;
                 }
-                this.#dismissBubble();
+                this.#activeTools.clear();
                 this.#promptActive = false;
                 this.#activeRef = null;
                 return;
@@ -814,7 +803,7 @@ export class Bridge {
             // Finalize composer if still active (safety net)
             await this.#finalizeComposer();
             this.#stopTyping();
-            this.#dismissBubble();
+            this.#activeTools.clear();
 
             // React on bot's last response if tools were called
             if (ref && this.#lastBotMessageId && this.#turnToolCount > 0) {
@@ -1358,7 +1347,7 @@ export class Bridge {
             // Just show notification (no undo available)
             const extra = ref?.threadId ? { message_thread_id: ref.threadId } : {};
             this.#telegram.enqueue(() =>
-                this.#telegram.call("sendMessage", { chat_id: chatId, text, ...extra })
+                this.#telegram.call("sendMessage", { chat_id: chatId, text, disable_notification: true, ...extra })
             );
         }
     }
@@ -1409,7 +1398,6 @@ export class Bridge {
                     this.#telegram.enqueue(() => this.#telegram.sendChatAction(chatId).catch(() => {}));
                 }
             }
-            if (this.#bubbleActive) this.#resetTypingDebounce();
         };
         doType();
         this.#typingInterval = setInterval(doType, TYPING_INTERVAL_MS);
@@ -1426,119 +1414,6 @@ export class Bridge {
         if (this.#typingDebounce) { clearTimeout(this.#typingDebounce); this.#typingDebounce = null; }
     }
 
-    // --- Tool call bubble ---
-
-    #composeBubbleText() {
-        const lines = [];
-        for (const [, info] of this.#activeTools) {
-            if (info.description) lines.push(`● ${info.description}`);
-        }
-        if (lines.length === 0) {
-            if (this.#lastCompletedToolDesc) return `● ${this.#lastCompletedToolDesc}`;
-            return null;
-        }
-        return lines.join("\n");
-    }
-
-    #scheduleBubbleUpdate() {
-        if (!this.#bubbleActive) return;
-        if (this.#bubbleDebounce) clearTimeout(this.#bubbleDebounce);
-        this.#bubbleDebounce = setTimeout(() => this.#flushBubble(), BUBBLE_DEBOUNCE_MS);
-    }
-
-    async #flushBubble() {
-        this.#bubbleDebounce = null;
-        if (!this.#bubbleActive) return;
-        if (this.#flushInProgress) { this.#reflushNeeded = true; return; }
-        this.#flushInProgress = true;
-
-        try {
-            const text = this.#composeBubbleText();
-            if (!text) return;
-
-            const ref = this.#activeRef;
-            const targets = ref ? [ref.chatId] : [...this.#allowedChatIds];
-
-            for (const chatId of targets) {
-                const existingId = this.#bubbleMessageIds.get(chatId);
-                if (existingId) {
-                    try {
-                        await this.#telegram.enqueue(() =>
-                            this.#telegram.editMessageText(chatId, existingId, text)
-                        );
-                    } catch (err) {
-                        if (/message is not modified/i.test(err?.message)) {
-                            // unchanged
-                        } else if (/message to edit not found/i.test(err?.message)) {
-                            this.#bubbleMessageIds.delete(chatId);
-                            this.#allBubbleIds.get(chatId)?.delete(existingId);
-                            if (!this.#bubbleActive) continue;
-                            try {
-                                const params = { chat_id: chatId, text };
-                                if (ref?.threadId) params.message_thread_id = ref.threadId;
-                                const sent = await this.#telegram.enqueue(() =>
-                                    this.#telegram.call("sendMessage", params)
-                                );
-                                if (!this.#bubbleActive) {
-                                    try { await this.#telegram.enqueue(() => this.#telegram.deleteMessage(chatId, sent.message_id)); } catch {}
-                                } else {
-                                    this.#trackBubble(chatId, sent.message_id);
-                                }
-                            } catch {}
-                        }
-                    }
-                } else {
-                    if (!this.#bubbleActive) continue;
-                    try {
-                        const params = { chat_id: chatId, text };
-                        if (ref?.threadId) params.message_thread_id = ref.threadId;
-                        const sent = await this.#telegram.enqueue(() =>
-                            this.#telegram.call("sendMessage", params)
-                        );
-                        if (!this.#bubbleActive) {
-                            try { await this.#telegram.enqueue(() => this.#telegram.deleteMessage(chatId, sent.message_id)); } catch {}
-                        } else {
-                            this.#trackBubble(chatId, sent.message_id);
-                        }
-                    } catch {}
-                }
-            }
-        } finally {
-            this.#flushInProgress = false;
-            if (this.#reflushNeeded) {
-                this.#reflushNeeded = false;
-                this.#scheduleBubbleUpdate();
-            }
-        }
-    }
-
-    #trackBubble(chatId, messageId) {
-        this.#bubbleMessageIds.set(chatId, messageId);
-        if (!this.#allBubbleIds.has(chatId)) this.#allBubbleIds.set(chatId, new Set());
-        this.#allBubbleIds.get(chatId).add(messageId);
-    }
-
-    async #dismissBubble() {
-        this.#bubbleActive = false;
-        this.#reflushNeeded = false;
-        if (this.#bubbleDebounce) { clearTimeout(this.#bubbleDebounce); this.#bubbleDebounce = null; }
-        this.#activeTools.clear();
-        this.#lastCompletedToolDesc = null;
-        await this.#deleteAllBubbles();
-        setTimeout(() => this.#deleteAllBubbles(), 2000);
-    }
-
-    async #deleteAllBubbles() {
-        for (const [chatId, ids] of this.#allBubbleIds) {
-            for (const msgId of ids) {
-                try { await this.#telegram.enqueue(() => this.#telegram.deleteMessage(chatId, msgId)); } catch {}
-            }
-            ids.clear();
-        }
-        this.#allBubbleIds.clear();
-        this.#bubbleMessageIds.clear();
-    }
-
     // --- Broadcast to admin chats ---
 
     #broadcastAdmin(text) {
@@ -1553,7 +1428,7 @@ export class Bridge {
 
     cleanup() {
         this.#stopTyping();
-        this.#dismissBubble();
+        this.#activeTools.clear();
         if (this.#messageFlushTimer) clearTimeout(this.#messageFlushTimer);
         try { rmSync(this.#tmpDir, { recursive: true, force: true }); } catch {}
     }

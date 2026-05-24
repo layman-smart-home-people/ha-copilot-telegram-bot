@@ -23,6 +23,7 @@ export class ResponseComposer {
     #lastEditTime = 0;
     #editTimer = null;
     #finalized = false;
+    #editRetries = 0;
     #log;
 
     constructor(telegram, log = () => {}) {
@@ -48,6 +49,7 @@ export class ResponseComposer {
             chat_id: ref.chatId,
             text: "🤔 <i>Thinking...</i>",
             parse_mode: "HTML",
+            disable_notification: true,
         };
         if (ref.threadId) params.message_thread_id = ref.threadId;
 
@@ -240,6 +242,7 @@ export class ResponseComposer {
                 text: html,
                 parse_mode: "HTML",
             });
+            this.#editRetries = 0; // reset on success
         } catch (err) {
             if (/message is not modified/i.test(err?.message)) return;
             if (/can.t parse|entit/i.test(err?.message)) {
@@ -252,9 +255,16 @@ export class ResponseComposer {
                     });
                 } catch {}
             } else if (/429|retry/i.test(err?.message)) {
-                // Rate limited — retry after delay
-                const retryMs = (err.retryAfter || 2) * 1000;
-                this.#log(`Composer: rate limited, retry in ${retryMs}ms`);
+                // Rate limited — retry with cap
+                if (this.#editRetries >= 3) {
+                    this.#log(`Composer: rate limit retry cap reached, dropping edit`);
+                    return;
+                }
+                this.#editRetries++;
+                // Parse retry_after from Telegram error: "Too Many Requests: retry after 5"
+                const match = err?.message?.match(/retry after (\d+)/i);
+                const retryMs = (match ? parseInt(match[1], 10) : 2) * 1000;
+                this.#log(`Composer: rate limited, retry ${this.#editRetries}/3 in ${retryMs}ms`);
                 setTimeout(() => this.#editMessage(html), retryMs);
             } else {
                 this.#log(`Composer: edit error: ${err.message}`);
