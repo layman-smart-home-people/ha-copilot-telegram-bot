@@ -7,6 +7,7 @@
 import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "./formatter.mjs";
 import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
 import { ButtonManager } from "./buttons.mjs";
+import { ResponseComposer } from "./response-composer.mjs";
 import { ChatHistory } from "./history.mjs";
 import { formatError } from "./errors.mjs";
 import { MessageTransport, makeRef, refKey } from "./transport.mjs";
@@ -98,6 +99,9 @@ export class Bridge {
     #turnToolErrors = 0;
     #lastBotMessageId = null;  // Message ID of last bot message sent during this turn
 
+    // Response composer — unified progressive message
+    #composer = null;
+
     constructor({ telegram, acp, config, log, pairing, sessionMgr }) {
         this.#telegram = telegram;
         this.#acp = acp;
@@ -123,12 +127,18 @@ export class Bridge {
     setupACPHandlers() {
         const acp = this.#acp;
 
-        // Text chunks → accumulate and flush
+        // Text chunks → feed to composer for progressive display
         acp.on("text_chunk", (text) => {
             this.#resetTypingDebounce();
             this.#messageBuffer += text;
-            if (this.#messageFlushTimer) clearTimeout(this.#messageFlushTimer);
-            this.#messageFlushTimer = setTimeout(() => this.#flushMessageBuffer(), this.#messageFlushMs);
+            if (this.#composer?.active) {
+                this.#composer.appendText(text);
+                // Don't flush buffer separately — composer handles display
+            } else {
+                // Legacy path: no composer, flush as separate messages
+                if (this.#messageFlushTimer) clearTimeout(this.#messageFlushTimer);
+                this.#messageFlushTimer = setTimeout(() => this.#flushMessageBuffer(), this.#messageFlushMs);
+            }
         });
 
         // Message boundaries
@@ -139,21 +149,22 @@ export class Bridge {
 
         acp.on("message_end", () => {
             this.#log("Agent message_end");
-            this.#flushMessageBuffer();
+            this.#finalizeComposer();
             this.#stopTyping();
-            this.#dismissBubble();
         });
 
-        // Tool calls → bubble updates
+        // Tool calls → composer progress updates
         acp.on("tool_start", ({ toolCallId, toolName, arguments: args }) => {
             this.#log(`Tool start: ${toolName} (${toolCallId})`);
             this.#turnToolCount++;
             this.#resetTypingDebounce();
-            this.#bubbleActive = true;
             const desc = describeToolCall(toolName, args);
             if (desc) {
                 this.#activeTools.set(toolCallId, { name: toolName, description: desc });
-                this.#scheduleBubbleUpdate();
+                // Update composer with tool step
+                if (this.#composer?.active) {
+                    this.#composer.addToolStep(toolCallId, desc, "running");
+                }
             }
             // Track tool for /skills discovery
             if (toolName && !this.#knownTools.has(toolName)) {
@@ -181,7 +192,10 @@ export class Bridge {
                 this.#lastCompletedToolDesc = completed.description;
             }
             this.#activeTools.delete(toolCallId);
-            this.#scheduleBubbleUpdate();
+            // Update composer with tool completion
+            if (this.#composer?.active && completed?.description) {
+                this.#composer.addToolStep(toolCallId, completed.description, status === "failed" ? "failed" : "completed");
+            }
 
             // Interactive mode: show notification + undo for HA write tools
             if (!this.#allowAll && status === "completed" && completed?.name) {
@@ -202,6 +216,10 @@ export class Bridge {
         // Process exit — handle crash recovery
         acp.on("exit", ({ code, signal }) => {
             this.#stopTyping();
+            if (this.#composer?.active) {
+                this.#composer.abort("Copilot process exited unexpectedly").catch(() => {});
+                this.#composer = null;
+            }
             this.#dismissBubble();
             this.#flushMessageBuffer();
 
@@ -617,8 +635,6 @@ export class Bridge {
 
         // Start typing
         this.#startTyping(ref);
-        this.#bubbleActive = true;
-        this.#scheduleBubbleUpdate();
 
         // Ensure Copilot is running
         if (!this.#acp.alive) {
@@ -626,8 +642,13 @@ export class Bridge {
                 await this.startCopilot();
             } catch (err) {
                 this.#stopTyping();
+                if (this.#composer) {
+                    await this.#composer.abort(formatError(err));
+                    this.#composer = null;
+                }
                 this.#dismissBubble();
-                this.#transport.enqueueSend(ref, formatError(err));
+                this.#promptActive = false;
+                this.#activeRef = null;
                 return;
             }
         }
@@ -681,6 +702,18 @@ export class Bridge {
         // Set active ref for ACP output routing
         this.#activeRef = ref;
 
+        // Create composer for progressive message display
+        if (ref) {
+            this.#log(`Creating ResponseComposer for chat=${ref.chatId}`);
+            this.#composer = new ResponseComposer(this.#telegram, this.#log);
+            try {
+                await this.#composer.start(ref);
+                this.#log(`Composer started, messageId=${this.#composer.messageId}`);
+            } catch (err) {
+                this.#log(`Composer start failed: ${err.message}`);
+            }
+        }
+
         // Update reaction: ⏳ → 👀 (now being processed)
         if (ref && messageId) {
             this.#telegram.setMessageReaction(ref.chatId, messageId, "👀").catch(() => {});
@@ -699,10 +732,13 @@ export class Bridge {
                             this.#sessionMgr.setActive(ref);
                         } catch (err) {
                             this.#log(`Session load failed for ${session.sessionId}: ${err.message}`);
-                            this.#transport.enqueueSend(ref,
-                                `⚠️ Could not load session. Use /new to start a fresh session.\n` +
-                                `Error: ${err.message}`
-                            );
+                            const msg = `⚠️ Could not load session. Use /new to start a fresh session.\nError: ${err.message}`;
+                            if (this.#composer?.active) {
+                                await this.#composer.abort(msg);
+                                this.#composer = null;
+                            } else {
+                                this.#transport.enqueueSend(ref, msg);
+                            }
                             this.#promptActive = false;
                             this.#activeRef = null;
                             return;
@@ -720,7 +756,13 @@ export class Bridge {
                         this.#preambleSent = false;
                     } catch (err) {
                         this.#log(`Auto-create session failed: ${err.message}`);
-                        this.#transport.enqueueSend(ref, `⚠️ Failed to create session: ${err.message}`);
+                        const msg = `⚠️ Failed to create session: ${err.message}`;
+                        if (this.#composer?.active) {
+                            await this.#composer.abort(msg);
+                            this.#composer = null;
+                        } else {
+                            this.#transport.enqueueSend(ref, msg);
+                        }
                         this.#promptActive = false;
                         this.#activeRef = null;
                         return;
@@ -732,9 +774,13 @@ export class Bridge {
             this.#log(`Prompt completed successfully: ${JSON.stringify(result)?.substring(0, 200)}`);
         } catch (err) {
             this.#log(`Prompt error: ${err.message}`);
-            this.#turnToolErrors++; // Count prompt failure for reaction
+            this.#turnToolErrors++;
             const userMsg = formatError(err);
-            if (ref) {
+            if (this.#composer?.active) {
+                // Show error in the composer message
+                await this.#composer.abort(userMsg);
+                this.#composer = null;
+            } else if (ref) {
                 this.#transport.enqueueSend(ref, userMsg);
             } else {
                 for (const cid of this.#allowedChatIds) {
@@ -746,12 +792,12 @@ export class Bridge {
         } finally {
             // Clear reaction on user's message — response delivered
             if (ref && messageId) {
-                this.#telegram.setMessageReaction(ref.chatId, messageId, null).catch(() => {});
+                const emoji = this.#turnToolErrors > 0 ? "❌" : null;
+                this.#telegram.setMessageReaction(ref.chatId, messageId, emoji).catch(() => {});
             }
 
-            // Flush remaining buffer BEFORE clearing activeRef
-            // so output goes to the correct conversation
-            this.#flushMessageBuffer();
+            // Finalize composer if still active (safety net)
+            await this.#finalizeComposer();
             this.#stopTyping();
             this.#dismissBubble();
 
@@ -1051,6 +1097,68 @@ export class Bridge {
         const fileInfo = await this.#telegram.getFile(fileId);
         const buffer = await this.#telegram.downloadFile(fileInfo.file_path);
         return { buffer, displayName, isImage, mimeType: message.document?.mime_type };
+    }
+
+    // --- Response Composer lifecycle ---
+
+    async #finalizeComposer() {
+        if (!this.#composer) {
+            // No composer — fall back to legacy buffer flush
+            this.#flushMessageBuffer();
+            return;
+        }
+
+        const composer = this.#composer;
+        this.#composer = null;
+
+        if (this.#messageFlushTimer) {
+            clearTimeout(this.#messageFlushTimer);
+            this.#messageFlushTimer = null;
+        }
+
+        const fullText = this.#messageBuffer.trim();
+        this.#messageBuffer = "";
+
+        if (!fullText && !composer.active) {
+            // Nothing to show
+            await composer.cleanup();
+            return;
+        }
+
+        // Track in history
+        if (fullText) {
+            this.#history.push({ role: "bot", text: fullText });
+        }
+
+        try {
+            // Finalize the composer — edits placeholder into final answer
+            const overflow = await composer.finalize(fullText);
+
+            // Track the composer's message as last bot message for reactions
+            if (composer.messageId) {
+                this.#lastBotMessageId = composer.messageId;
+            }
+
+            // Send any overflow chunks as separate messages
+            const ref = this.#activeRef;
+            if (overflow?.length > 0 && ref) {
+                for (const chunk of overflow) {
+                    this.#telegram.enqueue(() => this.#sendFormatted(ref, chunk));
+                }
+            }
+        } catch (err) {
+            this.#log(`Composer finalize error: ${err.message}`);
+            // Fallback: send as regular message
+            if (fullText) {
+                const ref = this.#activeRef;
+                if (ref) {
+                    const chunks = chunkMessage(fullText);
+                    for (const chunk of chunks) {
+                        this.#telegram.enqueue(() => this.#sendFormatted(ref, chunk));
+                    }
+                }
+            }
+        }
     }
 
     // --- Message buffer (accumulate chunks → send) ---

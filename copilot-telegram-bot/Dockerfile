@@ -16,7 +16,8 @@ WORKDIR /app
 COPY package.json ./
 RUN npm install --production
 
-# Copy source
+# Copy source (cache-bust: update this comment on each rebuild)
+# Build: 2026-05-24T14:53
 COPY src/ ./src/
 
 # Copy config.yaml for version reading
