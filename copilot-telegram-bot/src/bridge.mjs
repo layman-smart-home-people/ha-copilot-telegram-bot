@@ -1184,8 +1184,9 @@ export class Bridge {
             });
         } else {
             // Just show notification (no undo available)
+            const extra = ref?.threadId ? { message_thread_id: ref.threadId } : {};
             this.#telegram.enqueue(() =>
-                this.#telegram.sendMessage(chatId, text, ref?.threadId ? { message_thread_id: ref.threadId } : {})
+                this.#telegram.call("sendMessage", { chat_id: chatId, text, ...extra })
             );
         }
     }
