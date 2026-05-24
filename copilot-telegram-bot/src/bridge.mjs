@@ -611,6 +611,26 @@ export class Bridge {
             return;
         }
 
+        // If a state-changing command is triggered from the active status menu,
+        // immediately show transitional state before executing the command
+        const isFromStatusMenu = this.#statusMsg?.messageId === query.message?.message_id;
+        if (isFromStatusMenu && (data === "/session new" || data === "/session stop")) {
+            const label = data === "/session new" ? "⏳ Restarting Copilot..." : "⏳ Stopping Copilot...";
+            try {
+                await this.#telegram.call("editMessageText", {
+                    chat_id: chatId,
+                    message_id: query.message.message_id,
+                    text: label,
+                    reply_markup: { inline_keyboard: [[{ text: "✕ Dismiss", callback_data: "dismiss" }]] },
+                });
+            } catch {}
+            // Route command, then let event hooks refresh the status menu
+            const threadId = query.message?.message_thread_id || null;
+            const ref = makeRef(chatId, threadId);
+            await handleSlashCommand(this.#buildCommandContext(ref), data.slice(1).split(" ")[0], data.slice(1).split(" ").slice(1).join(" "));
+            return;
+        }
+
         // Clean up the button message after selection
         try {
             await this.#telegram.call("editMessageReplyMarkup", {
