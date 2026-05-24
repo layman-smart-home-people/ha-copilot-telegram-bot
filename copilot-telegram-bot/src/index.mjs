@@ -210,6 +210,7 @@ async function main() {
                 { command: "close", description: "Close current topic session" },
                 { command: "sessions", description: "List all sessions" },
                 { command: "pair", description: "Pairing & user management" },
+                { command: "allowall", description: "Toggle auto-approve all tools" },
             ],
         });
         log("Registered bot commands with Telegram");

@@ -90,6 +90,9 @@ export class Bridge {
     #availableCommands = [];  // Copilot slash commands from ACP
     #knownTools = new Map();  // MCP tool names seen → description
 
+    // Allow-all mode toggle (runtime, toggled via /allowall command)
+    #allowAll = false;
+
     // Turn-level tracking for tool call reactions
     #turnToolCount = 0;
     #turnToolErrors = 0;
@@ -111,6 +114,8 @@ export class Bridge {
 
     get allowedChatIds() { return this.#allowedChatIds; }
     get promptActive() { return this.#promptActive; }
+    get allowAll() { return this.#allowAll; }
+    set allowAll(v) { this.#allowAll = !!v; this.#log(`Allow-all mode: ${this.#allowAll}`); }
 
     // --- Setup event handlers ---
 
@@ -227,6 +232,13 @@ export class Bridge {
             const desc = entityId ? `${domain}.${service} → ${entityId}` :
                          toolTitle || "";
 
+            // Allow-all mode: skip all permission prompts
+            if (this.#allowAll) {
+                acp.respondPermission(requestId, "allow_always");
+                this.#log(`Permission auto-approved (allow-all mode): ${tool} (${desc})`);
+                return;
+            }
+
             // Policy: auto-approve read-only HA tools + standard copilot tools
             const readOnlyTools = new Set([
                 "ha_search_entities", "ha_get_state", "ha_get_history",
@@ -237,7 +249,7 @@ export class Bridge {
 
             // Session grants: user previously allowed this tool for the session
             if (isReadOnly || this.#sessionGrantedTools.has(tool)) {
-                acp.respondPermission(requestId, "allow_once");
+                acp.respondPermission(requestId, "allow_always");
                 this.#log(`Permission auto-approved: ${tool} (${desc})`);
                 return;
             }
@@ -367,6 +379,7 @@ export class Bridge {
             knownTools: this.#knownTools,
             pairing: this.#pairing,
             sessionMgr: this.#sessionMgr,
+            bridge: this,
         };
     }
 

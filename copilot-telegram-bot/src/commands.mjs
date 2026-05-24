@@ -14,7 +14,7 @@ export function parseSlashCommand(text, botUsername) {
 
 export async function handleSlashCommand(ctx, command, args) {
     const { acp, telegram, transport, chatId, chatIds, ref, log, buttons, models, modes, history,
-            currentModel, currentMode, availableCommands, knownTools, pairing, sessionMgr } = ctx;
+            currentModel, currentMode, availableCommands, knownTools, pairing, sessionMgr, bridge } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {
         for (const cid of chatIds) {
@@ -137,6 +137,9 @@ export async function handleSlashCommand(ctx, command, args) {
                     lines.push(`📊 Models available: ${models?.length || 0}`);
                 }
 
+                if (bridge?.allowAll) {
+                    lines.push(`\u{1F513} Allow-all: ON (all tools auto-approved)`);
+                }
                 lines.push(`📱 Telegram: connected`);
                 lines.push(`👥 Allowed chats: ${chatIds.length}`);
                 if (pairing) {
@@ -158,6 +161,10 @@ export async function handleSlashCommand(ctx, command, args) {
                         [
                             { text: "📊 Usage", callback_data: "/usage" },
                             { text: "🗜️ Compact", callback_data: "/compact" },
+                        ],
+                        [
+                            { text: bridge?.allowAll ? "\u{1F512} Allow-all OFF" : "\u{1F513} Allow-all ON",
+                              callback_data: bridge?.allowAll ? "/allowall off" : "/allowall on" },
                         ],
                         [
                             { text: "🔄 Restart", callback_data: "/session new" },
@@ -283,7 +290,8 @@ export async function handleSlashCommand(ctx, command, args) {
                             { text: "🛑 Cancel", callback_data: "/cancel" },
                         ],
                         [
-                            { text: "🔄 Restart Session", callback_data: "/session new" },
+                            { text: "🔓 Allow All", callback_data: "/allowall on" },
+                            { text: "🔄 Restart", callback_data: "/session new" },
                         ],
                     ],
                 };
@@ -305,6 +313,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     "  /close — close current topic\n" +
                     "  /sessions — list sessions\n" +
                     "  /pair — pairing info\n" +
+                    "  /allowall [on|off] — toggle tool auto-approve\n" +
                     "  /help\n\n" +
                     "💡 Reply to any message to give Copilot context.\n\n" +
                     "Or tap a button below:",
@@ -414,6 +423,17 @@ export async function handleSlashCommand(ctx, command, args) {
                     reply(`✅ Unpaired user ${targetId}`);
                 } else {
                     reply(`⚠️ Could not unpair user ${targetId} (admin or not found).`);
+                }
+                return true;
+            }
+            case "allowall": {
+                if (!bridge) { reply("⚠️ Not available"); return true; }
+                if (args === "off" || args === "false") {
+                    bridge.allowAll = false;
+                    broadcast("🔓 Allow-all OFF → interactive permissions");
+                } else {
+                    bridge.allowAll = true;
+                    broadcast("🔓 Allow-all ON → all tool calls auto-approved");
                 }
                 return true;
             }
