@@ -118,7 +118,11 @@ export class TelegramClient extends EventEmitter {
      */
     async callForm(method, form) {
         const url = `${TELEGRAM_API}/bot${this.#token}/${method}`;
-        const res = await fetch(url, { method: "POST", body: form });
+        const res = await fetch(url, {
+            method: "POST",
+            body: form,
+            signal: AbortSignal.timeout(this.#apiTimeout),
+        });
         if (!res.ok) {
             const body = await res.text().catch(() => "");
             throw new Error(`Telegram ${method} failed: ${res.status} ${body}`);

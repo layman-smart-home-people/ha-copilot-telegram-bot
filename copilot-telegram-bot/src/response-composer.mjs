@@ -67,6 +67,10 @@ export class ResponseComposer {
             this.#log(`Composer: placeholder sent (msg=${this.#messageId})`);
         } catch (err) {
             this.#log(`Composer: placeholder failed: ${err.message}`);
+            if (this.#elapsedTimer) {
+                clearInterval(this.#elapsedTimer);
+                this.#elapsedTimer = null;
+            }
         }
     }
 

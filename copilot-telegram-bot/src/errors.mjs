@@ -47,7 +47,7 @@ const MESSAGE_PATTERNS = [
         pattern: /auth|unauthorized|401|forbidden|403|not.*authenticated/i,
         emoji: "🔑",
         label: "Auth Error",
-        hint: "Authentication failed. Try /restart or re-login with /login.",
+        hint: "Authentication failed. Try /session new to restart.",
     },
     {
         pattern: /timeout|timed?\s*out|deadline/i,
@@ -59,7 +59,7 @@ const MESSAGE_PATTERNS = [
         pattern: /session.*(?:not found|expired|invalid)/i,
         emoji: "📋",
         label: "Session Lost",
-        hint: "The session expired. Use /restart to start a new one.",
+        hint: "The session expired. Use /session new to start a new one.",
     },
     {
         pattern: /model.*(?:not|unavailable|invalid|access)/i,
@@ -83,7 +83,7 @@ const MESSAGE_PATTERNS = [
         pattern: /process.*(?:exit|crash|died|killed|signal)/i,
         emoji: "💀",
         label: "Copilot Crashed",
-        hint: "The Copilot process died unexpectedly. Use /restart to recover.",
+        hint: "The Copilot process died unexpectedly. Use /session new to recover.",
     },
     {
         pattern: /vision|multimodal|image.*input/i,

@@ -11,9 +11,6 @@ import { ResponseComposer } from "./response-composer.mjs";
 import { ChatHistory } from "./history.mjs";
 import { formatError } from "./errors.mjs";
 import { MessageTransport, makeRef, refKey } from "./transport.mjs";
-import { basename } from "node:path";
-import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
 import { spawn } from "node:child_process";
 
 const TYPING_INTERVAL_MS = 4000;
@@ -49,8 +46,8 @@ export class Bridge {
     #messageFlushTimer = null;
     #messageFlushMs = 2000;
 
-    // Preamble
-    #preambleSent = false;
+    // Preamble (tracked per-chat so forum topics each get their own)
+    #preambleSentChats = new Set();
 
     // Pinned instructions per chat (chatId → text)
     #pinnedInstructions = new Map();
@@ -69,8 +66,6 @@ export class Bridge {
     #startPromise = null;
 
     // Temp dir
-    #tmpDir;
-
     // Button manager for inline keyboards
     #buttons;
 
@@ -107,7 +102,6 @@ export class Bridge {
         this.#config = config;
         this.#log = log;
         this.#allowedChatIds = (config.allowedChatIds || []).map(Number);
-        this.#tmpDir = join("/tmp", `copilot-tg-${process.pid}`);
         this.#buttons = new ButtonManager(telegram);
         this.#history = new ChatHistory(50);
         this.#transport = new MessageTransport(telegram);
@@ -119,7 +113,7 @@ export class Bridge {
     get promptActive() { return this.#promptActive; }
     get allowAll() { return this.#allowAll; }
     set allowAll(v) { this.#allowAll = !!v; this.#log(`Allow-all mode: ${this.#allowAll}`); }
-    resetPreamble() { this.#preambleSent = false; }
+    resetPreamble() { this.#preambleSentChats.clear(); }
 
     /** Best-effort notification before process exit. */
     async notifyShutdown() {
@@ -184,7 +178,7 @@ export class Bridge {
             this.#log("Status refresh: paused (restart in progress)");
             return;
         }
-        if (Date.now() - this.#statusMsg.createdAt > CopilotBridge.#STATUS_TTL_MS) {
+        if (Date.now() - this.#statusMsg.createdAt > Bridge.#STATUS_TTL_MS) {
             this.#log("Status refresh: expired");
             this.#statusMsg = null;
             return;
@@ -331,7 +325,7 @@ export class Bridge {
                 }
             }
             // Track tool for /skills discovery
-            if (toolName && !this.#knownTools.has(toolName)) {
+            if (toolName && !this.#knownTools.has(toolName) && this.#knownTools.size < 200) {
                 this.#knownTools.set(toolName, desc || toolName);
             }
         });
@@ -383,6 +377,13 @@ export class Bridge {
             }
             this.#activeTools.clear();
             this.#flushMessageBuffer();
+
+            // Resolve any pending ask-user prompt so it doesn't hang
+            if (this.#awaitingInput) {
+                clearTimeout(this.#awaitingInput.timer);
+                this.#awaitingInput.resolve(null);
+                this.#awaitingInput = null;
+            }
 
             // Crash recovery: reject any active prompt so the queue doesn't wedge
             if (this.#promptActive) {
@@ -677,9 +678,14 @@ export class Bridge {
             const ref = makeRef(chatId, threadId);
             try {
                 if (data === "/session new") {
-                    this.#statusRefreshPaused = true; // prevent exit event from showing "Stopped"
-                    await this.restartCopilot();
-                    this.#statusRefreshPaused = false;
+                    this.#statusRefreshPaused = true;
+                    const pauseGuard = setTimeout(() => { this.#statusRefreshPaused = false; }, 60000);
+                    try {
+                        await this.restartCopilot();
+                    } finally {
+                        clearTimeout(pauseGuard);
+                        this.#statusRefreshPaused = false;
+                    }
                 } else {
                     await this.stopCopilot();
                 }
@@ -722,22 +728,6 @@ export class Bridge {
 
         const message = update.message;
         if (!message) return;
-
-        // Handle pinned messages as agent instructions
-        if (message.pinned_message) {
-            const pinned = message.pinned_message;
-            const pinnedText = pinned.text || pinned.caption || "";
-            const chatId = message.chat.id;
-            if (pinnedText.trim()) {
-                this.#pinnedInstructions.set(chatId, pinnedText.trim());
-                this.#preambleSent = false; // force preamble refresh
-                this.#log(`Pinned instruction set for chat=${chatId}: ${pinnedText.substring(0, 100)}`);
-                this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(chatId, "📌 Noted! This pinned message will be included as context for all future messages in this chat.")
-                );
-            }
-            return;
-        }
 
         const chatId = message.chat.id;
         const userId = message.from?.id;
@@ -797,6 +787,26 @@ export class Bridge {
                 this.#log(`Ignoring message from unauthorized user: ${userId}`);
                 return;
             }
+        }
+
+        // Handle pinned messages as agent instructions (after auth check)
+        if (message.pinned_message) {
+            const pinned = message.pinned_message;
+            const pinnedText = (pinned.text || pinned.caption || "").trim().slice(0, 2000);
+            if (pinnedText) {
+                // Cap to 20 chats to prevent unbounded growth
+                if (this.#pinnedInstructions.size >= 20 && !this.#pinnedInstructions.has(chatId)) {
+                    const oldest = this.#pinnedInstructions.keys().next().value;
+                    this.#pinnedInstructions.delete(oldest);
+                }
+                this.#pinnedInstructions.set(chatId, pinnedText);
+                this.#preambleSentChats.clear(); // force preamble refresh
+                this.#log(`Pinned instruction set for chat=${chatId}: ${pinnedText.substring(0, 100)}`);
+                this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(chatId, "📌 Noted! This pinned message will be included as context for all future messages in this chat.")
+                );
+            }
+            return;
         }
 
         // Build ConversationRef
@@ -923,6 +933,10 @@ export class Bridge {
 
     async #queuePrompt(text, opts = {}, ref = null, messageId = null) {
         if (this.#promptActive) {
+            if (this.#promptQueue.length >= 10) {
+                this.#log("Prompt queue full (10), dropping oldest");
+                this.#promptQueue.shift();
+            }
             this.#promptQueue.push({ text, opts, ref, messageId });
             return;
         }
@@ -987,8 +1001,7 @@ export class Bridge {
                         });
                         ref.sessionId = result.sessionId;
                         this.#sessionMgr.register(ref, result.sessionId, `Topic ${ref.threadId}`, false);
-                        this.#preambleSent = false;
-                    } catch (err) {
+                        this.#preambleSentChats.clear();                    } catch (err) {
                         this.#log(`Auto-create session failed: ${err.message}`);
                         const msg = `⚠️ Failed to create session: ${err.message}`;
                         if (this.#composer?.active) {
@@ -1047,7 +1060,7 @@ export class Bridge {
             // Process queued prompts
             if (this.#promptQueue.length > 0) {
                 const next = this.#promptQueue.shift();
-                this.#queuePrompt(next.text, next.opts, next.ref, next.messageId);
+                await this.#queuePrompt(next.text, next.opts, next.ref, next.messageId);
             }
         }
     }
@@ -1056,8 +1069,9 @@ export class Bridge {
 
     #getPrefix(ref) {
         let prefix;
-        if (!this.#preambleSent) {
-            this.#preambleSent = true;
+        const key = ref ? refKey(ref) : "__default__";
+        if (!this.#preambleSentChats.has(key)) {
+            this.#preambleSentChats.add(key);
             const rules = this.#config.preamble;
             prefix = `[SYSTEM: ${rules}]\n`;
         } else {
@@ -1158,7 +1172,7 @@ export class Bridge {
             throw new Error(`Session creation failed: ${err.message}`);
         }
 
-        this.#preambleSent = false;
+        this.#preambleSentChats.clear();
         this.#log(`Copilot started, session: ${this.#acp.sessionId}`);
         this.#refreshStatusIfAlive().catch(() => {});
     }
@@ -1261,11 +1275,12 @@ export class Bridge {
 
     async stopCopilot() {
         await this.#acp.stop();
-        this.#preambleSent = false;
+        this.#preambleSentChats.clear();
     }
 
     async restartCopilot() {
         await this.stopCopilot();
+        this.#knownTools.clear();
         await this.startCopilot();
     }
 
@@ -1465,9 +1480,6 @@ export class Bridge {
 
         const content = this.#messageBuffer;
         this.#messageBuffer = "";
-
-        // Track bot response in history
-        this.#history.push({ role: "bot", text: content });
 
         const chunks = chunkMessage(content);
         const ref = this.#activeRef;
@@ -1689,6 +1701,5 @@ export class Bridge {
         this.#stopTyping();
         this.#activeTools.clear();
         if (this.#messageFlushTimer) clearTimeout(this.#messageFlushTimer);
-        try { rmSync(this.#tmpDir, { recursive: true, force: true }); } catch {}
     }
 }
