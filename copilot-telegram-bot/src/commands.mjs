@@ -120,66 +120,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 return true;
             }
             case "status": {
-                const alive = acp?.alive;
-                const hasSession = !!acp?.sessionId;
-                const ready = alive && hasSession;
-
-                const lines = [];
-                lines.push(ready ? "✅ Copilot Ready" : alive ? "⏳ Copilot Starting..." : "⏹️ Copilot Stopped");
-                if (config?.version) lines.push(`📦 Version: ${config.version}`);
-                lines.push("");
-
-                if (ready) {
-                    const modelName = models?.find(m => m.modelId === currentModel)?.name || currentModel || "unknown";
-                    const modeName = modes?.find(m => m.id === currentMode)?.name || currentMode || "unknown";
-                    lines.push(`🤖 Model: ${modelName}`);
-                    lines.push(`📋 Mode: ${modeName}`);
-                    lines.push(`🔗 Session: ${acp.sessionId.slice(0, 8)}…`);
-                    lines.push(`📊 Models available: ${models?.length || 0}`);
-                }
-
-                if (bridge?.allowAll) {
-                    lines.push(`🔓 Permissions: allow-all (tools auto-approved)`);
-                } else {
-                    lines.push(`🔐 Permissions: interactive (agent confirms before HA writes)`);
-                }
-                lines.push(`📱 Telegram: connected`);
-                lines.push(`👥 Allowed chats: ${chatIds.length}`);
-                if (pairing) {
-                    const paired = pairing.getPairedUsers();
-                    lines.push(`🔐 Paired users: ${paired.length}`);
-                }
-                if (sessionMgr?.forumChatId) {
-                    const sessions = sessionMgr.listActiveSessions();
-                    lines.push(`🗂️ Active sessions: ${sessions.length}`);
-                }
-                if (history) lines.push(`📜 History: ${history.length} messages`);
-
-                const statusButtons = {
-                    inline_keyboard: ready ? [
-                        [
-                            { text: "🤖 Model", callback_data: "/model" },
-                            { text: "📋 Mode", callback_data: "/mode" },
-                        ],
-                        [
-                            { text: "📊 Usage", callback_data: "/usage" },
-                            { text: "🗜️ Compact", callback_data: "/compact" },
-                        ],
-                        [
-                            { text: bridge?.allowAll ? "\u{1F512} Allow-all OFF" : "\u{1F513} Allow-all ON",
-                              callback_data: bridge?.allowAll ? "/allowall off" : "/allowall on" },
-                        ],
-                        [
-                            { text: "🔄 Restart", callback_data: "/session new" },
-                            { text: "⏹️ Stop", callback_data: "/session stop" },
-                        ],
-                        [{ text: "✕ Dismiss", callback_data: "dismiss" }],
-                    ] : [
-                        [{ text: "🚀 Start Copilot", callback_data: "/session new" }],
-                        [{ text: "✕ Dismiss", callback_data: "dismiss" }],
-                    ],
-                };
-                telegram.enqueue(() => telegram.sendMessage(chatId, lines.join("\n"), undefined, statusButtons));
+                await bridge.showStatusMenu(chatId);
                 return true;
             }
             case "start":

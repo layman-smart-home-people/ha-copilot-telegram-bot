@@ -89,6 +89,9 @@ export class Bridge {
     // Allow-all mode toggle (runtime, toggled via /allowall command)
     #allowAll = false;
 
+    // Active status menu (singleton — only one at a time)
+    #statusMsg = null; // { chatId, messageId, createdAt }
+
     // Turn-level tracking for tool call reactions
     #turnToolCount = 0;
     #turnToolErrors = 0;
@@ -120,6 +123,119 @@ export class Bridge {
     /** Re-submit a message as if the user sent it (for /retry) */
     submitRetry(ref, text) {
         this.#queuePrompt(this.#getPrefix(ref) + text, {}, ref);
+    }
+
+    // --- Status menu (singleton with auto-refresh) ---
+
+    static #STATUS_TTL_MS = 5 * 60 * 1000; // 5 min expiry
+
+    /** Send or refresh the status menu. Dismisses any previous one. */
+    async showStatusMenu(chatId) {
+        // Dismiss old status message if exists
+        await this.#dismissOldStatus(chatId);
+
+        const { text, buttons } = this.#buildStatusContent();
+        const sent = await this.#telegram.sendMessage(chatId, text, undefined, buttons);
+        if (sent?.message_id) {
+            this.#statusMsg = { chatId, messageId: sent.message_id, createdAt: Date.now() };
+        }
+    }
+
+    /** Edit the existing status menu if it's still fresh. Called on state changes. */
+    async #refreshStatusIfAlive() {
+        if (!this.#statusMsg) return;
+        if (Date.now() - this.#statusMsg.createdAt > CopilotBridge.#STATUS_TTL_MS) {
+            this.#statusMsg = null; // expired
+            return;
+        }
+        const { text, buttons } = this.#buildStatusContent();
+        try {
+            await this.#telegram.call("editMessageText", {
+                chat_id: this.#statusMsg.chatId,
+                message_id: this.#statusMsg.messageId,
+                text,
+                reply_markup: buttons,
+            });
+        } catch (err) {
+            if (/message is not modified/i.test(err?.message)) return;
+            this.#statusMsg = null; // message gone
+        }
+    }
+
+    async #dismissOldStatus(newChatId) {
+        if (!this.#statusMsg) return;
+        try {
+            await this.#telegram.call("deleteMessage", {
+                chat_id: this.#statusMsg.chatId,
+                message_id: this.#statusMsg.messageId,
+            });
+        } catch {}
+        this.#statusMsg = null;
+    }
+
+    #buildStatusContent() {
+        const alive = this.#acp?.alive;
+        const hasSession = !!this.#acp?.sessionId;
+        const ready = alive && hasSession;
+
+        const lines = [];
+        lines.push(ready ? "✅ Copilot Ready" : alive ? "⏳ Copilot Starting..." : "⏹️ Copilot Stopped");
+        if (this.#config?.version) lines.push(`📦 Version: ${this.#config.version}`);
+        lines.push("");
+
+        if (ready) {
+            const modelName = this.#models?.find(m => m.modelId === this.#currentModel)?.name || this.#currentModel || "unknown";
+            const modeName = this.#modes?.find(m => m.id === this.#currentMode)?.name || this.#currentMode || "unknown";
+            lines.push(`🤖 Model: ${modelName}`);
+            lines.push(`📋 Mode: ${modeName}`);
+            lines.push(`🔗 Session: ${this.#acp.sessionId.slice(0, 8)}…`);
+            lines.push(`📊 Models available: ${this.#models?.length || 0}`);
+        }
+
+        if (this.#allowAll) {
+            lines.push(`🔓 Permissions: allow-all`);
+        } else {
+            lines.push(`🔐 Permissions: interactive`);
+        }
+        lines.push(`📱 Telegram: connected`);
+        lines.push(`👥 Chats: ${this.#allowedChatIds.length}`);
+        if (this.#pairing) {
+            lines.push(`🔐 Paired users: ${this.#pairing.getPairedUsers().length}`);
+        }
+        if (this.#sessionMgr?.forumChatId) {
+            lines.push(`🗂️ Active sessions: ${this.#sessionMgr.listActiveSessions().length}`);
+        }
+        if (this.#history) lines.push(`📜 History: ${this.#history.length} messages`);
+
+        const statusButtons = {
+            inline_keyboard: ready ? [
+                [
+                    { text: "🤖 Model", callback_data: "/model" },
+                    { text: "📋 Mode", callback_data: "/mode" },
+                ],
+                [
+                    { text: "📊 Usage", callback_data: "/usage" },
+                    { text: "🗜️ Compact", callback_data: "/compact" },
+                ],
+                [
+                    { text: this.#allowAll ? "\u{1F512} Allow-all OFF" : "\u{1F513} Allow-all ON",
+                      callback_data: this.#allowAll ? "/allowall off" : "/allowall on" },
+                ],
+                [
+                    { text: "🔄 Restart", callback_data: "/session new" },
+                    { text: "⏹️ Stop", callback_data: "/session stop" },
+                ],
+                [{ text: "✕ Dismiss", callback_data: "dismiss" }],
+            ] : alive ? [
+                [{ text: "🔄 Refresh", callback_data: "/status" }],
+                [{ text: "✕ Dismiss", callback_data: "dismiss" }],
+            ] : [
+                [{ text: "🚀 Start Copilot", callback_data: "/session new" }],
+                [{ text: "✕ Dismiss", callback_data: "dismiss" }],
+            ],
+        };
+
+        return { text: lines.join("\n"), buttons: statusButtons };
     }
 
     // --- Setup event handlers ---
@@ -236,6 +352,7 @@ export class Bridge {
             if (code !== 0 && code !== null) {
                 this.#broadcastAdmin(`⚠️ Copilot process exited (code: ${code}). Send a message to restart.`);
             }
+            this.#refreshStatusIfAlive().catch(() => {});
         });
 
         acp.on("error", (err) => {
@@ -481,6 +598,16 @@ export class Bridge {
                     message_id: query.message.message_id,
                 });
             } catch {}
+            // Also clear status tracking if this was the active status
+            if (this.#statusMsg?.messageId === query.message.message_id) {
+                this.#statusMsg = null;
+            }
+            return;
+        }
+
+        // Handle /status refresh — edit in place instead of sending new
+        if (data === "/status") {
+            await this.showStatusMenu(chatId);
             return;
         }
 
@@ -952,6 +1079,7 @@ export class Bridge {
 
         this.#preambleSent = false;
         this.#log(`Copilot started, session: ${this.#acp.sessionId}`);
+        this.#refreshStatusIfAlive().catch(() => {});
     }
 
     async #runDeviceLogin() {
