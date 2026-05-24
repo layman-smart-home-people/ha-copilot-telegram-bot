@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.11.1] — 2025-07-18
+
+### Security
+- Shell injection fix: login flow no longer uses `sh -c` with config-supplied binary path
+- Callback button scoping: permission and undo buttons restricted to intended recipient in group chats
+- Undo prompt injection: domain/service/entity_id validated against strict allowlists
+- Pinned instruction framing: reframed as user context instead of `[SYSTEM:]`, injection patterns stripped
+
+### Changed
+- README.md comprehensively updated for v0.11.0 features
+- Removed duplicate root CHANGELOG.md (HA reads the one next to config.yaml)
+
 ## [0.11.0] — 2025-07-18
 
 ### Security
