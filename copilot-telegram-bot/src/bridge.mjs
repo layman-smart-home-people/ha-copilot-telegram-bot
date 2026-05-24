@@ -309,12 +309,18 @@ export class Bridge {
                     { text: "❌ Deny", value: rejectOnceId },
                 ],
             ];
-            const { value: selected, messageId: permMsgId } = await this.#buttons.prompt(
-                chatId,
-                `🔐 Permission request:\n${label}`,
-                rows,
-                { timeoutMs: 60000, timeoutText: "🔐 Permission denied (timeout)" }
-            );
+            if (this.#composer) this.#composer.setPermissionPending(true);
+            let selected, permMsgId;
+            try {
+                ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
+                    chatId,
+                    `🔐 Permission request:\n${label}`,
+                    rows,
+                    { timeoutMs: 60000, timeoutText: "🔐 Permission denied (timeout)" }
+                ));
+            } finally {
+                if (this.#composer) this.#composer.setPermissionPending(false);
+            }
 
             if (selected === allowOnceId || selected === allowAlwaysId) {
                 if (selected === allowAlwaysId) {

@@ -24,6 +24,9 @@ export class ResponseComposer {
     #editTimer = null;
     #finalized = false;
     #editRetries = 0;
+    #startTime = null;
+    #permissionPending = false;
+    #elapsedTimer = null;
     #log;
 
     constructor(telegram, log = () => {}) {
@@ -44,6 +47,11 @@ export class ResponseComposer {
         this.#lastEditedText = "";
         this.#lastEditTime = 0;
         this.#finalized = false;
+        this.#startTime = Date.now();
+        this.#permissionPending = false;
+
+        // Periodic elapsed time updates (every 5s)
+        this.#elapsedTimer = setInterval(() => this.#scheduleEdit(true), 5000);
 
         const params = {
             chat_id: ref.chatId,
@@ -88,6 +96,14 @@ export class ResponseComposer {
     }
 
     /**
+     * Signal that the agent is waiting for user permission.
+     */
+    setPermissionPending(pending = true) {
+        this.#permissionPending = pending;
+        this.#scheduleEdit();
+    }
+
+    /**
      * Finalize with the complete response text.
      * Returns any overflow chunks that don't fit in the edited message.
      */
@@ -95,6 +111,7 @@ export class ResponseComposer {
         if (this.#finalized) return [];
         this.#finalized = true;
         if (this.#editTimer) { clearTimeout(this.#editTimer); this.#editTimer = null; }
+        if (this.#elapsedTimer) { clearInterval(this.#elapsedTimer); this.#elapsedTimer = null; }
 
         this.#textBuffer = fullText || this.#textBuffer;
 
@@ -138,6 +155,7 @@ export class ResponseComposer {
      */
     async abort(errorMsg) {
         if (this.#editTimer) { clearTimeout(this.#editTimer); this.#editTimer = null; }
+        if (this.#elapsedTimer) { clearInterval(this.#elapsedTimer); this.#elapsedTimer = null; }
         this.#finalized = true;
 
         if (this.#messageId && errorMsg) {
@@ -162,14 +180,14 @@ export class ResponseComposer {
 
     // --- Internal ---
 
-    #scheduleEdit() {
+    #scheduleEdit(forceAfterDelay = false) {
         if (this.#finalized || !this.#messageId) return;
         if (this.#editTimer) return; // already scheduled
 
         const elapsed = Date.now() - this.#lastEditTime;
         const newChars = this.#textBuffer.length - this.#lastEditedText.length;
 
-        if (elapsed >= EDIT_MIN_INTERVAL_MS && newChars >= EDIT_MIN_CHARS) {
+        if (elapsed >= EDIT_MIN_INTERVAL_MS && (newChars >= EDIT_MIN_CHARS || forceAfterDelay)) {
             this.#doEdit();
         } else {
             const wait = Math.max(EDIT_MIN_INTERVAL_MS - elapsed, 300);
@@ -184,16 +202,25 @@ export class ResponseComposer {
         if (this.#finalized || !this.#messageId) return;
 
         const stepsHtml = this.#buildStepsHtml(false);
+        const elapsed = this.#startTime ? Math.round((Date.now() - this.#startTime) / 1000) : 0;
+        const timer = elapsed > 0 ? ` <i>(${elapsed}s)</i>` : "";
 
         let html;
-        if (stepsHtml) {
+        if (this.#permissionPending) {
+            // Waiting for user permission
+            html = stepsHtml
+                ? `🔐 <i>Awaiting permission...</i>${timer}\n${stepsHtml}`
+                : `🔐 <i>Awaiting permission...</i>${timer}`;
+        } else if (stepsHtml) {
             // Show thinking indicator + tool steps
-            html = `🤔 <i>Thinking...</i>\n${stepsHtml}`;
+            html = `🤔 <i>Thinking...</i>${timer}\n${stepsHtml}`;
         } else if (this.#textBuffer.trim()) {
-            // No tool steps but text is streaming — show typing indicator
-            html = "✍️ <i>Writing response...</i>";
+            // Text is streaming — show preview
+            const preview = this.#textBuffer.trim().slice(0, 120);
+            const truncated = this.#textBuffer.trim().length > 120 ? "..." : "";
+            html = `✍️ <i>Writing response...</i>${timer}\n<blockquote>${escapeHtml(preview)}${truncated}</blockquote>`;
         } else {
-            html = "🤔 <i>Thinking...</i>";
+            html = `🤔 <i>Thinking...</i>${timer}`;
         }
 
         // Truncate to Telegram limit
