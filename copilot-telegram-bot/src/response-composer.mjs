@@ -255,7 +255,7 @@ export class ResponseComposer {
             ? `🔧 <b>${count} step${count > 1 ? "s" : ""} completed</b>`
             : `🔧 <b>Steps:</b>`;
 
-        return `<blockquote expandable>${header}\n${lines.join("\n")}</blockquote>`;
+        return `<blockquote>${header}\n${lines.join("\n")}</blockquote>`;
     }
 
     #convertAnswer(markdown) {
