@@ -19,6 +19,9 @@ RUN npm install --production
 # Copy source
 COPY src/ ./src/
 
+# Copy config.yaml for version reading
+COPY config.yaml ./
+
 # Copy rootfs
 COPY rootfs /
 

@@ -42,7 +42,7 @@ async function loadConfig() {
         }
     }
 
-    // Read addon version from supervisor API
+    // Read addon version from supervisor API, fallback to config.yaml
     let addonVersion = "unknown";
     try {
         const supervisorToken = process.env.SUPERVISOR_TOKEN;
@@ -52,14 +52,20 @@ async function loadConfig() {
             });
             const data = await res.json();
             addonVersion = data?.data?.version || "unknown";
+            log(`Version from supervisor API: ${addonVersion}`);
         }
-    } catch {
-        // Fallback: try reading from local config.yaml (dev mode)
-        try {
-            const configYaml = readFileSync("/app/config.yaml", "utf8").toString();
-            const vMatch = configYaml.match(/^version:\s*(.+)/m);
-            if (vMatch) addonVersion = vMatch[1].trim();
-        } catch {}
+    } catch (err) {
+        log(`Supervisor API version fetch failed: ${err.message}`);
+    }
+    if (addonVersion === "unknown") {
+        // Fallback: read from config.yaml (copied into container by Dockerfile)
+        for (const p of ["/app/config.yaml", "/config.yaml", "/data/config.yaml"]) {
+            try {
+                const configYaml = readFileSync(p, "utf8").toString();
+                const vMatch = configYaml.match(/^version:\s*(.+)/m);
+                if (vMatch) { addonVersion = vMatch[1].trim(); log(`Version from ${p}: ${addonVersion}`); break; }
+            } catch {}
+        }
     }
 
     // Allow env overrides for development
