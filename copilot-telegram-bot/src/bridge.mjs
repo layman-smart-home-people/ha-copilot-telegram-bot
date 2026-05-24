@@ -313,16 +313,24 @@ export class Bridge {
                 acp.respondPermission(requestId, selected);
                 this.#log(`Permission granted (${selected}): ${tool}`);
                 if (permMsgId) {
-                    await this.#buttons.finalize(chatId, permMsgId, `✅ Allowed: ${desc || tool}`);
+                    try {
+                        await this.#buttons.finalize(chatId, permMsgId, `✅ Allowed: ${desc || tool}`);
+                    } catch (err) {
+                        this.#log(`Error finalizing allow message: ${err.message}`);
+                    }
                 }
             } else {
                 acp.respondPermission(requestId, rejectOnceId);
-                this.#log(`Permission denied: ${tool}`);
-                if (permMsgId) {
-                    this.#log(`Finalizing deny message: chat=${chatId} msg=${permMsgId}`);
-                    await this.#buttons.finalize(chatId, permMsgId, `❌ Denied: ${desc || tool}`);
-                } else {
-                    this.#log(`No permMsgId for deny feedback`);
+                this.#log(`Permission denied: ${tool} (permMsgId=${permMsgId})`);
+                try {
+                    if (permMsgId) {
+                        this.#log(`Finalizing deny message: chat=${chatId} msg=${permMsgId}`);
+                        await this.#buttons.finalize(chatId, permMsgId, `❌ Denied: ${desc || tool}`);
+                    } else {
+                        this.#log(`No permMsgId for deny feedback`);
+                    }
+                } catch (err) {
+                    this.#log(`Error finalizing deny message: ${err.message}`);
                 }
             }
         });
@@ -434,7 +442,7 @@ export class Bridge {
         if (!isAuthorized) return;
 
         // Try ButtonManager first (handles btn: prefix callbacks)
-        if (this.#buttons.handleCallback(query)) return;
+        if (await this.#buttons.handleCallback(query)) return;
 
         // Legacy callback handling — acknowledge the button press
         try {

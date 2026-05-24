@@ -103,7 +103,7 @@ export class ButtonManager {
     /**
      * Handle a callback_query. Returns true if handled (consumed).
      */
-    handleCallback(query) {
+    async handleCallback(query) {
         const data = query.data;
         if (!data?.startsWith("btn:")) return false;
 
@@ -133,12 +133,16 @@ export class ButtonManager {
             callback_query_id: query.id,
         }).catch(() => {});
 
-        // Clear buttons from the message
-        this.#telegram.call("editMessageReplyMarkup", {
-            chat_id: menu.chatId,
-            message_id: menu.messageId,
-            reply_markup: { inline_keyboard: [] },
-        }).catch(() => {});
+        // Clear buttons from the message — await to prevent race with finalize()
+        try {
+            await this.#telegram.call("editMessageReplyMarkup", {
+                chat_id: menu.chatId,
+                message_id: menu.messageId,
+                reply_markup: { inline_keyboard: [] },
+            });
+        } catch (err) {
+            // Non-fatal: finalize() will also clear buttons
+        }
 
         menu.resolve(value);
         return true;
@@ -146,20 +150,16 @@ export class ButtonManager {
 
     /**
      * Update the button message to show final state (clears buttons).
+     * Throws on failure so callers can handle/log errors.
      */
     async finalize(chatId, messageId, text, parseMode) {
-        try {
-            await this.#telegram.call("editMessageText", {
-                chat_id: chatId,
-                message_id: messageId,
-                text,
-                parse_mode: parseMode || undefined,
-                reply_markup: { inline_keyboard: [] },
-            });
-        } catch (err) {
-            // Log finalize failures for debugging
-            console.error(`[Buttons] finalize error: ${err.message} (chat=${chatId}, msg=${messageId})`);
-        }
+        await this.#telegram.call("editMessageText", {
+            chat_id: chatId,
+            message_id: messageId,
+            text,
+            parse_mode: parseMode || undefined,
+            reply_markup: { inline_keyboard: [] },
+        });
     }
 
     /**
