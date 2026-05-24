@@ -16,25 +16,44 @@ import { SessionManager } from "./sessions.mjs";
 // HA containers default to TZ=UTC — override with the actual HA system timezone
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
     const { get } = await import("node:http");
-    try {
-        const raw = await new Promise((resolve, reject) => {
-            const req = get("http://supervisor/info", {
-                headers: { Authorization: `Bearer ${process.env.SUPERVISOR_TOKEN}` },
-            }, (res) => {
-                let body = "";
-                res.on("data", (chunk) => { body += chunk; });
-                res.on("end", () => resolve(body));
+    const token = process.env.SUPERVISOR_TOKEN;
+    // Try multiple supervisor API endpoints (different ones have different access levels)
+    const endpoints = [
+        "http://supervisor/core/api/config",   // HA Core config (homeassistant_api)
+        "http://supervisor/supervisor/info",    // Supervisor info
+        "http://supervisor/info",              // System info
+    ];
+    for (const url of endpoints) {
+        try {
+            const raw = await new Promise((resolve, reject) => {
+                const req = get(url, {
+                    headers: { Authorization: `Bearer ${token}` },
+                }, (res) => {
+                    let body = "";
+                    res.on("data", (chunk) => { body += chunk; });
+                    res.on("end", () => {
+                        if (res.statusCode !== 200) {
+                            reject(new Error(`${res.statusCode} from ${url}`));
+                        } else {
+                            resolve(body);
+                        }
+                    });
+                });
+                req.on("error", reject);
+                req.setTimeout(5000, () => { req.destroy(); reject(new Error("timeout")); });
             });
-            req.on("error", reject);
-            req.setTimeout(5000, () => { req.destroy(); reject(new Error("timeout")); });
-        });
-        console.error(`[TZ] Raw supervisor response (${raw.length} bytes): ${raw.slice(0, 300)}`);
-        const data = JSON.parse(raw);
-        if (data?.data?.timezone) {
-            process.env.TZ = data.data.timezone;
+            const data = JSON.parse(raw);
+            // HA Core config: { time_zone: "Asia/Singapore", ... }
+            // Supervisor info: { result: "ok", data: { timezone: "...", ... } }
+            const tz = data?.time_zone || data?.data?.timezone;
+            if (tz) {
+                process.env.TZ = tz;
+                console.error(`[TZ] Set timezone to ${tz} from ${url}`);
+                break;
+            }
+        } catch {
+            // Try next endpoint
         }
-    } catch (e) {
-        console.error(`[TZ] Failed to fetch timezone: ${e.message}`);
     }
 }
 
