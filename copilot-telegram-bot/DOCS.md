@@ -1,40 +1,78 @@
 # Copilot Telegram Bot
 
-Talk to GitHub Copilot from your phone via Telegram. Version **0.11.0**.
+**Control your smart home with AI — right from Telegram.** Version **0.11.0**.
 
-## How It Works
+---
 
-This add-on runs a Telegram bot that connects to GitHub Copilot CLI using the Agent Client Protocol (ACP). When you send a message, Copilot wakes up, processes your request with full access to MCP tools (Home Assistant, GitHub, etc.), and sends the response back to Telegram with progressive streaming updates.
+## 🏠 What Is This?
 
-## Setup
+This is a Home Assistant add-on that gives you an AI assistant on Telegram. Just text your bot like you'd text a friend, and it can control your smart home, answer questions, and automate tasks — all from your phone.
 
-### 1. Create a Telegram Bot
+No coding required. Just type what you want in plain English.
 
-1. Open Telegram → search for **@BotFather**
-2. Send `/newbot` and follow the prompts
-3. Copy the **bot token** (looks like `123456789:ABC...xyz`)
+## 💬 What Can I Do With It?
 
-### 2. Get a GitHub Token
+Here are some things you can ask your bot:
+
+- **"Turn off all the lights"** — it controls your devices
+- **"What's the temperature in the bedroom?"** — it reads your sensors
+- **"Is the front door locked?"** — it checks device states
+- **"Set up an automation to turn on the porch light at sunset"** — it creates automations
+- **"What's on my calendar today?"** — it reads your HA calendars
+- **"Show me the status of all my devices"** — it generates reports
+
+You can also have natural conversations — ask follow-up questions, give it context by replying to messages, and pin instructions it should always follow.
+
+## 🚀 Getting Started
+
+You'll need three things: a Telegram bot, a GitHub account, and your Telegram user ID.
+
+### Step 1 — Create Your Bot
+
+1. Open Telegram and search for **@BotFather**
+2. Send `/newbot` and follow the prompts to name your bot
+3. BotFather gives you a **bot token** — copy it (looks like `123456789:ABC...xyz`)
+
+### Step 2 — Get a GitHub Token
 
 1. Go to [github.com/settings/tokens](https://github.com/settings/tokens)
 2. Create a **fine-grained personal access token**
 3. Grant it the permissions Copilot needs (repository access, etc.)
 
-### 3. Find Your Chat ID
+### Step 3 — Find Your User ID
 
-1. Open Telegram → search for **@userinfobot**
-2. Send it any message
-3. It replies with your numeric chat ID
+1. Open Telegram and search for **@userinfobot**
+2. Send it any message — it replies with your numeric ID (e.g., `123456789`)
 
-### 4. Configure This Add-on
+### Step 4 — Configure the Add-on
 
-- **bot_token**: Paste your token from BotFather
-- **allowed_chat_ids**: Add your chat ID number
-- **github_token**: Paste your fine-grained PAT
+In Home Assistant, go to the add-on configuration and fill in:
 
-### 5. Start the Add-on
+- **Bot token** — paste the token from Step 1
+- **Allowed chat IDs** — paste your numeric ID from Step 3
+- **GitHub token** — paste your token from Step 2
 
-Click Start on the Info tab, then send a message to your bot!
+### Step 5 — Start Chatting!
+
+Click **Start** on the add-on's Info tab, then open Telegram and send your bot a message. That's it! 🎉
+
+## 🎯 Handy Tips for Everyday Use
+
+- **Reply to a message** to give the AI context about what you're referring to
+- **Pin a message** in the chat to set a standing instruction (e.g., "Always respond in Bahasa")
+- Type `/help` to see all available commands as tappable buttons
+- Type `/status` to see a dashboard of what's running
+- Type `/stop` if something is taking too long
+
+---
+
+*The rest of this document covers commands, features, and configuration in detail.*
+
+---
+
+## How It Works (Technical Overview)
+
+This add-on runs a Telegram bot that connects to GitHub Copilot CLI using the Agent Client Protocol (ACP). When you send a message, Copilot processes your request with full access to MCP tools (Home Assistant, GitHub, etc.) and streams the response back to Telegram with progressive updates.
 
 ## Commands
 
