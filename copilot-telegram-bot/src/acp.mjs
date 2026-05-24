@@ -64,7 +64,7 @@ export class ACPClient extends EventEmitter {
         if (copilotHome) {
             spawnEnv.COPILOT_HOME = copilotHome;
         }
-        this.emit("log", `ACP spawn: COPILOT_HOME=${spawnEnv.COPILOT_HOME || "unset"}`);
+        this.emit("log", `ACP spawn: COPILOT_HOME=${spawnEnv.COPILOT_HOME || "unset"} args=[${args.join(" ")}]`);
         await new Promise((resolve, reject) => {
             this.#process = spawn(this.#config.binary, args, {
                 stdio: ["pipe", "pipe", "pipe"],
