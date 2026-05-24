@@ -840,7 +840,7 @@ export class Bridge {
         if (!this.#preambleSent) {
             this.#preambleSent = true;
             const rules = this.#config.preamble;
-            prefix = `[SYSTEM: This message arrived via Telegram. Follow these rules for your reply:\n• ${rules}]\n`;
+            prefix = `[SYSTEM: ${rules}]\n`;
         } else {
             prefix = "[Via Telegram]\n";
         }
