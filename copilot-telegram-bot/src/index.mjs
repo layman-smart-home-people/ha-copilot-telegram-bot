@@ -124,6 +124,11 @@ async function main() {
     try {
         const me = await telegram.getMe();
         log(`Telegram bot: @${me.username} (${me.first_name})`);
+        log(`Bot settings: can_join_groups=${me.can_join_groups} can_read_all_group_messages=${me.can_read_all_group_messages} supports_inline_queries=${me.supports_inline_queries}`);
+        if (!me.can_read_all_group_messages) {
+            log(`WARNING: Bot privacy mode is ON. In groups, the bot can only see @mentions, replies, and /commands.`);
+            log(`To receive all group messages, disable privacy mode in BotFather: /mybots → Bot Settings → Group Privacy → Turn off`);
+        }
     } catch (err) {
         log(`ERROR: Invalid bot token: ${err.message}`);
         process.exit(1);
