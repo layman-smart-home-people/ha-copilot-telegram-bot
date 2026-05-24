@@ -716,6 +716,7 @@ export class Bridge {
             scopeMgr: this.#scopeMgr,
             bridge: this,
             config: this.#config,
+            promptActive: this.#promptActive,
         };
     }
 

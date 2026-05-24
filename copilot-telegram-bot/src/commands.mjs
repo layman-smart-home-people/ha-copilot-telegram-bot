@@ -14,7 +14,7 @@ export function parseSlashCommand(text, botUsername) {
 
 export async function handleSlashCommand(ctx, command, args) {
     const { acp, telegram, transport, chatId, chatIds, ref, scope, scopeMgr, log, buttons, models, modes, history,
-            currentModel, currentMode, availableCommands, knownTools, pairing, sessionMgr, bridge, config } = ctx;
+            currentModel, currentMode, availableCommands, knownTools, pairing, sessionMgr, bridge, config, promptActive } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {
         for (const cid of chatIds) {
@@ -54,6 +54,7 @@ export async function handleSlashCommand(ctx, command, args) {
         switch (command) {
             case "autopilot": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
+                if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
                 if (args === "off" || args === "false") {
                     await acp.setMode("interactive");
@@ -68,6 +69,7 @@ export async function handleSlashCommand(ctx, command, args) {
             }
             case "plan": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
+                if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
                 if (args === "off" || args === "false") {
                     await acp.setMode("interactive");
@@ -82,6 +84,7 @@ export async function handleSlashCommand(ctx, command, args) {
             }
             case "mode": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
+                if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
                 if (buttons && modes?.length > 0) {
                     const rows = modes.map(m => [{ text: m.name || m.id, value: m.id }]);
@@ -101,6 +104,7 @@ export async function handleSlashCommand(ctx, command, args) {
             }
             case "compact": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
+                if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 if (!await activateScopeSession()) {
                     reply("⚠️ No session yet in this conversation.");
                     return true;
@@ -111,6 +115,7 @@ export async function handleSlashCommand(ctx, command, args) {
             }
             case "model": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
+                if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
                 if (args) {
                     await acp.setModel(args);
@@ -143,6 +148,10 @@ export async function handleSlashCommand(ctx, command, args) {
             case "usage":
             case "context": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
+                if (promptActive) {
+                    reply("⏳ Copilot is busy with another request. Try again shortly.");
+                    return true;
+                }
                 if (!await activateScopeSession()) {
                     reply("⚠️ No session yet in this conversation.");
                     return true;
@@ -175,6 +184,7 @@ export async function handleSlashCommand(ctx, command, args) {
             case "session": {
                 if (args === "new" || args === "restart") {
                     if (!scope) { reply("⚠️ Scope not available"); return true; }
+                    if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                     scope.reset();
                     scope.sessionId = null;
                     scope.model = "";
