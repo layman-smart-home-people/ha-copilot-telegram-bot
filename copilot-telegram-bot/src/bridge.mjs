@@ -60,6 +60,9 @@ export class Bridge {
     // Preamble
     #preambleSent = false;
 
+    // Pinned instructions per chat (chatId → text)
+    #pinnedInstructions = new Map();
+
     // Prompt lock (one prompt at a time)
     #promptActive = false;
     #promptQueue = [];
@@ -501,6 +504,22 @@ export class Bridge {
         const message = update.message;
         if (!message) return;
 
+        // Handle pinned messages as agent instructions
+        if (message.pinned_message) {
+            const pinned = message.pinned_message;
+            const pinnedText = pinned.text || pinned.caption || "";
+            const chatId = message.chat.id;
+            if (pinnedText.trim()) {
+                this.#pinnedInstructions.set(chatId, pinnedText.trim());
+                this.#preambleSent = false; // force preamble refresh
+                this.#log(`Pinned instruction set for chat=${chatId}: ${pinnedText.substring(0, 100)}`);
+                this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(chatId, "📌 Noted! This pinned message will be included as context for all future messages in this chat.")
+                );
+            }
+            return;
+        }
+
         const chatId = message.chat.id;
         const userId = message.from?.id;
         const username = message.from?.username || message.from?.first_name || null;
@@ -654,7 +673,7 @@ export class Bridge {
         }
 
         // Build prompt
-        const prefix = this.#getPrefix();
+        const prefix = this.#getPrefix(ref);
         const replyContext = this.#extractReplyContext(message);
         let promptText = prefix + (replyContext ? replyContext + "\n" : "") + (text || "");
 
@@ -820,13 +839,23 @@ export class Bridge {
 
     // --- Preamble ---
 
-    #getPrefix() {
+    #getPrefix(ref) {
+        let prefix;
         if (!this.#preambleSent) {
             this.#preambleSent = true;
             const rules = this.#config.preamble;
-            return `[SYSTEM: This message arrived via Telegram. Follow these rules for your reply:\n• ${rules}]\n`;
+            prefix = `[SYSTEM: This message arrived via Telegram. Follow these rules for your reply:\n• ${rules}]\n`;
+        } else {
+            prefix = "[Via Telegram]\n";
         }
-        return "[Via Telegram]\n";
+
+        // Append pinned instructions if any
+        const chatId = ref?.chatId || this.#activeRef?.chatId;
+        if (chatId && this.#pinnedInstructions.has(chatId)) {
+            prefix += `[📌 Pinned instructions: ${this.#pinnedInstructions.get(chatId)}]\n`;
+        }
+
+        return prefix;
     }
 
     // --- Copilot lifecycle ---
@@ -1032,42 +1061,58 @@ export class Bridge {
         const reply = message.reply_to_message;
         if (!reply) return "";
 
-        const isBotReply = reply.from?.is_bot;
-        const MAX_QUOTE = 500;
+        // Walk the reply chain to collect thread context
+        const chain = [];
+        const MAX_CHAIN = 5;
+        const MAX_TOTAL_CHARS = 2000;
+        let totalChars = 0;
 
-        // Determine the quoted content
-        let quotedText = reply.text || reply.caption || "";
+        let current = reply;
+        while (current && chain.length < MAX_CHAIN) {
+            const isBotMsg = current.from?.is_bot;
+            let text = current.text || current.caption || "";
 
-        if (!quotedText) {
-            // Non-text messages — describe the content type
-            if (reply.photo) quotedText = "<photo>";
-            else if (reply.sticker) quotedText = `<sticker: ${reply.sticker.emoji || "🎴"}>`;
-            else if (reply.voice) quotedText = "<voice message>";
-            else if (reply.video) quotedText = "<video>";
-            else if (reply.video_note) quotedText = "<video note>";
-            else if (reply.audio) quotedText = `<audio: ${reply.audio.title || "audio"}>`;
-            else if (reply.document) quotedText = `<file: ${reply.document.file_name || "document"}>`;
-            else if (reply.animation) quotedText = "<GIF>";
-            else if (reply.location) quotedText = `<location: ${reply.location.latitude}, ${reply.location.longitude}>`;
-            else if (reply.poll) quotedText = `<poll: ${reply.poll.question}>`;
-            else if (reply.contact) quotedText = `<contact: ${reply.contact.first_name}>`;
-            else quotedText = "<message>";
+            // Check our history for richer context
+            const historyEntry = this.#history.findByMessageId(current.message_id);
+            if (historyEntry && historyEntry.text.length > text.length) {
+                text = historyEntry.text;
+            }
+
+            if (!text) {
+                if (current.photo) text = "<photo>";
+                else if (current.sticker) text = `<sticker: ${current.sticker.emoji || "🎴"}>`;
+                else if (current.voice) text = "<voice message>";
+                else if (current.video) text = "<video>";
+                else if (current.document) text = `<file: ${current.document.file_name || "document"}>`;
+                else text = "<message>";
+            }
+
+            // Truncate if adding would exceed budget
+            const maxForThis = Math.min(500, MAX_TOTAL_CHARS - totalChars);
+            if (maxForThis <= 50) break;
+            if (text.length > maxForThis) text = text.substring(0, maxForThis) + "…";
+
+            chain.unshift({ role: isBotMsg ? "bot" : "user", text });
+            totalChars += text.length;
+
+            // Walk up the chain
+            current = current.reply_to_message || null;
         }
 
-        // Truncate long quotes
-        if (quotedText.length > MAX_QUOTE) {
-            quotedText = quotedText.substring(0, MAX_QUOTE) + "…";
+        if (chain.length === 0) return "";
+
+        if (chain.length === 1) {
+            const c = chain[0];
+            const source = c.role === "bot" ? "Replying to bot" : "Replying to user";
+            return `[${source}: "${c.text}"]`;
         }
 
-        // Also check our history for the original message (may have richer context)
-        const historyEntry = this.#history.findByMessageId(reply.message_id);
-        if (historyEntry && historyEntry.text.length > quotedText.length) {
-            quotedText = historyEntry.text.substring(0, MAX_QUOTE);
-            if (historyEntry.text.length > MAX_QUOTE) quotedText += "…";
-        }
-
-        const source = isBotReply ? "Replying to bot" : "Replying to";
-        return `[${source}: "${quotedText}"]`;
+        // Multi-message thread
+        const formatted = chain.map(c => {
+            const who = c.role === "bot" ? "🤖" : "👤";
+            return `${who} ${c.text}`;
+        }).join("\n");
+        return `[Reply thread (${chain.length} messages):\n${formatted}]`;
     }
 
     // --- File handling ---
@@ -1201,6 +1246,8 @@ export class Bridge {
         }
         if (sent?.message_id) {
             this.#lastBotMessageId = sent.message_id;
+            // Track bot message in history with messageId for reply chain lookups
+            this.#history.push({ role: "bot", text: markdown, messageId: sent.message_id });
         }
         return sent;
     }
