@@ -50,7 +50,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
                 if (buttons && modes?.length > 0) {
                     const rows = modes.map(m => [{ text: m.name || m.id, value: m.id }]);
-                    const selected = await buttons.prompt(chatId, "📋 Select a mode:", rows, {
+                    const { value: selected } = await buttons.prompt(chatId, "📋 Select a mode:", rows, {
                         timeoutText: "📋 Mode selection expired",
                     });
                     if (selected) {
@@ -84,7 +84,7 @@ export async function handleSlashCommand(ctx, command, args) {
                         }
                         rows.push(row);
                     }
-                    const selected = await buttons.prompt(chatId, "🤖 Select a model:", rows, {
+                    const { value: selected } = await buttons.prompt(chatId, "🤖 Select a model:", rows, {
                         timeoutText: "🤖 Model selection expired",
                     });
                     if (selected) {

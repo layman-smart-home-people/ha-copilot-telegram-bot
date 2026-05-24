@@ -299,7 +299,7 @@ export class Bridge {
                     { text: "❌ Deny", value: rejectOnceId },
                 ],
             ];
-            const selected = await this.#buttons.prompt(
+            const { value: selected, messageId: permMsgId } = await this.#buttons.prompt(
                 chatId,
                 `🔐 Permission request:\n${label}`,
                 rows,
@@ -312,9 +312,15 @@ export class Bridge {
                 }
                 acp.respondPermission(requestId, selected);
                 this.#log(`Permission granted (${selected}): ${tool}`);
+                if (permMsgId) {
+                    this.#buttons.finalize(chatId, permMsgId, `✅ Allowed: ${desc || tool}`);
+                }
             } else {
                 acp.respondPermission(requestId, rejectOnceId);
                 this.#log(`Permission denied: ${tool}`);
+                if (permMsgId) {
+                    this.#buttons.finalize(chatId, permMsgId, `❌ Denied: ${desc || tool}`);
+                }
             }
         });
 
@@ -1167,7 +1173,7 @@ export class Bridge {
             this.#buttons.prompt(chatId, text, rows, {
                 timeoutMs: 30000,
                 timeoutText: null, // silently expire
-            }).then(selected => {
+            }).then(({ value: selected }) => {
                 if (selected && selected.startsWith("/undo ")) {
                     const parts = selected.replace("/undo ", "").split(" ");
                     const [svc, eid] = [parts[0], parts.slice(1).join(" ")];

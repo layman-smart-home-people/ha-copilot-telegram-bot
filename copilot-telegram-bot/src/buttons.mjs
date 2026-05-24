@@ -41,9 +41,9 @@ export class ButtonManager {
             chatId, text, undefined, { inline_keyboard }
         );
         const messageId = sent?.message_id;
-        if (!messageId) return null;
+        if (!messageId) return { value: null, messageId: null };
 
-        return new Promise((resolve) => {
+        const value = await new Promise((resolve) => {
             const timer = setTimeout(() => {
                 this.#expire(menuId, opts.timeoutText);
             }, timeout);
@@ -56,6 +56,8 @@ export class ButtonManager {
                 consumed: false,
             });
         });
+
+        return { value, messageId };
     }
 
     /**
@@ -81,7 +83,7 @@ export class ButtonManager {
             reply_markup: { inline_keyboard },
         });
 
-        return new Promise((resolve) => {
+        const value = await new Promise((resolve) => {
             const timer = setTimeout(() => {
                 this.#expire(menuId, opts.timeoutText);
             }, timeout);
@@ -94,6 +96,8 @@ export class ButtonManager {
                 consumed: false,
             });
         });
+
+        return { value, messageId };
     }
 
     /**
