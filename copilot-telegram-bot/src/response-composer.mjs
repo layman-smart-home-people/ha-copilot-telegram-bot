@@ -7,7 +7,7 @@
 // 3. Streaming answer text (throttled edits)
 // 4. Final answer with collapsed tool steps
 
-import { escapeHtml, markdownToTelegramHtml, chunkMessage } from "./formatter.mjs";
+import { escapeHtml, markdownToTelegramHtml, chunkMessage, stripHtmlKeepStructure } from "./formatter.mjs";
 
 const EDIT_MIN_CHARS = 50;          // min new chars before editing (private chat)
 const EDIT_MIN_INTERVAL_MS = 1500;  // min time between edits
@@ -251,7 +251,7 @@ export class ResponseComposer {
                     await this.#telegram.call("editMessageText", {
                         chat_id: this.#ref.chatId,
                         message_id: this.#messageId,
-                        text: html.replace(/<[^>]+>/g, ""), // strip HTML
+                        text: stripHtmlKeepStructure(html),
                     });
                 } catch {}
             } else if (/429|retry/i.test(err?.message)) {

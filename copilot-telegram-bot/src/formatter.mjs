@@ -6,6 +6,22 @@ export function escapeHtml(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Strip HTML tags but preserve readable structure (for fallback when Telegram rejects HTML) */
+export function stripHtmlKeepStructure(html) {
+    let t = html;
+    // Preserve line breaks from block elements
+    t = t.replace(/<br\s*\/?>/gi, "\n");
+    t = t.replace(/<\/(p|div|blockquote|pre)>/gi, "\n");
+    t = t.replace(/<(p|div|blockquote|pre)[^>]*>/gi, "");
+    // Strip remaining tags
+    t = t.replace(/<[^>]+>/g, "");
+    // Decode HTML entities back
+    t = t.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"');
+    // Collapse excessive blank lines
+    t = t.replace(/\n{3,}/g, "\n\n");
+    return t.trim();
+}
+
 export function markdownToTelegramHtml(md) {
     const holds = [];
 
@@ -62,6 +78,21 @@ export function markdownToTelegramHtml(md) {
         return `<blockquote>${content}</blockquote>\n`;
     });
 
+    // Unordered lists: - item, * item, + item (with optional nesting)
+    t = t.replace(/^([ \t]*)[-*+][ \t]+(.+)$/gm, (_, indent, content) => {
+        const depth = Math.floor(indent.replace(/\t/g, "    ").length / 2);
+        const bullet = depth === 0 ? "•" : depth === 1 ? "◦" : "▪";
+        const pad = "  ".repeat(depth);
+        return `${pad}${bullet} ${content}`;
+    });
+
+    // Ordered lists: 1. item, 2. item (preserve numbers)
+    t = t.replace(/^([ \t]*)\d+\.[ \t]+(.+)$/gm, (_, indent, content) => {
+        const depth = Math.floor(indent.replace(/\t/g, "    ").length / 2);
+        const pad = "  ".repeat(depth);
+        return `${pad}▸ ${content}`;
+    });
+
     // Horizontal rules
     t = t.replace(/^-{3,}$/gm, "\u2500".repeat(20));
     t = t.replace(/^\*{3,}$/gm, "\u2500".repeat(20));
@@ -80,8 +111,20 @@ export function chunkMessage(text, maxLen = 4096) {
         let splitAt = remaining.lastIndexOf("\n\n", maxLen);
         if (splitAt <= 0) splitAt = remaining.lastIndexOf("\n", maxLen);
         if (splitAt <= 0) splitAt = maxLen;
-        chunks.push(remaining.slice(0, splitAt));
+
+        let chunk = remaining.slice(0, splitAt);
         remaining = remaining.slice(splitAt).replace(/^\n+/, "");
+
+        // Check for unclosed code fences in this chunk
+        const fenceMatches = chunk.match(/```/g);
+        if (fenceMatches && fenceMatches.length % 2 !== 0) {
+            // Odd number of ``` means an unclosed fence — close it
+            chunk += "\n```";
+            // Re-open the fence in the next chunk
+            remaining = "```\n" + remaining;
+        }
+
+        chunks.push(chunk);
     }
     if (remaining.length > 0) chunks.push(remaining);
     return chunks;
