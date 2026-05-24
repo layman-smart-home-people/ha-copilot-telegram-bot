@@ -16,19 +16,44 @@ fi
 if [ -z "${SUPERVISOR_TOKEN}" ] && [ -f /run/s6/container_environment/SUPERVISOR_TOKEN ]; then
     SUPERVISOR_TOKEN="$(cat /run/s6/container_environment/SUPERVISOR_TOKEN)"
     export SUPERVISOR_TOKEN
+    echo "[$(date -Iseconds)] INFO: Loaded SUPERVISOR_TOKEN from s6 env"
+fi
+
+# Also check HASSIO_TOKEN (legacy)
+if [ -z "${SUPERVISOR_TOKEN}" ] && [ -n "${HASSIO_TOKEN}" ]; then
+    SUPERVISOR_TOKEN="${HASSIO_TOKEN}"
+    export SUPERVISOR_TOKEN
+    echo "[$(date -Iseconds)] INFO: Using HASSIO_TOKEN as SUPERVISOR_TOKEN"
 fi
 
 # Set timezone from Home Assistant
 if [ -z "${TZ}" ] || [ "${TZ}" = "UTC" ] || [ "${TZ}" = "Etc/UTC" ]; then
     if [ -n "${SUPERVISOR_TOKEN}" ]; then
-        # Try HA Core API config (most reliable)
-        HA_TZ="$(wget -qO- --header="Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-            "http://supervisor/core/api/config" 2>/dev/null | jq -r '.time_zone // empty')"
-        if [ -z "${HA_TZ}" ]; then
-            # Fallback to supervisor info
-            HA_TZ="$(wget -qO- --header="Authorization: Bearer ${SUPERVISOR_TOKEN}" \
-                "http://supervisor/info" 2>/dev/null | jq -r '.data.timezone // empty')"
+        # Debug: test API access
+        echo "[$(date -Iseconds)] INFO: Token starts with: ${SUPERVISOR_TOKEN:0:10}..."
+        
+        # Try HA Core API config
+        WGET_OUT="$(wget -qO- --header="Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            "http://supervisor/core/api/config" 2>&1)"
+        WGET_RC=$?
+        if [ ${WGET_RC} -eq 0 ] && [ -n "${WGET_OUT}" ]; then
+            HA_TZ="$(echo "${WGET_OUT}" | jq -r '.time_zone // empty' 2>/dev/null)"
+        else
+            echo "[$(date -Iseconds)] INFO: core/api/config failed (rc=${WGET_RC}): ${WGET_OUT:0:200}"
         fi
+        
+        # Fallback to supervisor info
+        if [ -z "${HA_TZ}" ]; then
+            WGET_OUT="$(wget -qO- --header="Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+                "http://supervisor/info" 2>&1)"
+            WGET_RC=$?
+            if [ ${WGET_RC} -eq 0 ] && [ -n "${WGET_OUT}" ]; then
+                HA_TZ="$(echo "${WGET_OUT}" | jq -r '.data.timezone // empty' 2>/dev/null)"
+            else
+                echo "[$(date -Iseconds)] INFO: /info failed (rc=${WGET_RC}): ${WGET_OUT:0:200}"
+            fi
+        fi
+        
         if [ -n "${HA_TZ}" ]; then
             export TZ="${HA_TZ}"
             echo "[$(date -Iseconds)] INFO: Timezone set to ${TZ}"
@@ -37,6 +62,7 @@ if [ -z "${TZ}" ] || [ "${TZ}" = "UTC" ] || [ "${TZ}" = "Etc/UTC" ]; then
         fi
     else
         echo "[$(date -Iseconds)] WARNING: SUPERVISOR_TOKEN not available for TZ lookup"
+        echo "[$(date -Iseconds)] INFO: s6 env dir contents: $(ls /run/s6/container_environment/ 2>/dev/null | tr '\n' ' ')"
     fi
 fi
 
