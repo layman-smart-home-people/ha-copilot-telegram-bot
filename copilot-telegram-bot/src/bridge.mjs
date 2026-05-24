@@ -1250,6 +1250,17 @@ export class Bridge {
                 this.#promptQueue.shift();
             }
             this.#promptQueue.push({ text, opts, ref, messageId, scopeKey });
+            // Notify the waiting user
+            const pos = this.#promptQueue.length;
+            if (ref && pos > 0) {
+                const activeScopeKey = this.#activeScope?.key;
+                const isSameScope = activeScopeKey === scopeKey;
+                if (!isSameScope) {
+                    this.#telegram.enqueue(() =>
+                        this.#transport.send(ref, `⏳ Queued (#${pos}) — another conversation is in progress. You'll get a response shortly.`)
+                    );
+                }
+            }
             return;
         }
         this.#promptActive = true;
