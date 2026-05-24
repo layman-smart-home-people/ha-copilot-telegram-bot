@@ -1177,10 +1177,24 @@ export class Bridge {
             }
 
             // Send any overflow chunks as separate messages
+            // (answer already tracked in history above — don't double-track)
             const ref = this.#activeRef;
             if (overflow?.length > 0 && ref) {
                 for (const chunk of overflow) {
-                    this.#telegram.enqueue(() => this.#sendFormatted(ref, chunk));
+                    this.#telegram.enqueue(async () => {
+                        const html = markdownToTelegramHtml(chunk);
+                        let sent;
+                        try {
+                            sent = await this.#transport.send(ref, html, "HTML");
+                        } catch (err) {
+                            if (err.message && /can.t parse|entit/i.test(err.message)) {
+                                sent = await this.#transport.send(ref, chunk);
+                            } else { throw err; }
+                        }
+                        if (sent?.message_id) {
+                            this.#lastBotMessageId = sent.message_id;
+                        }
+                    });
                 }
             }
         } catch (err) {
