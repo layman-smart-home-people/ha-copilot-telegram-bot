@@ -37,14 +37,13 @@ export class ACPClient extends EventEmitter {
         this.#initialized = false;
 
         const args = ["--acp", "--stdio"];
-        // ACP is non-interactive: --allow-all-tools is required so the CLI
-        // doesn't auto-reject tool calls. We handle permission prompting
-        // via session/request_permission in the bridge layer.
+        // Permission strategy depends on runtime allowAll flag (can be toggled):
+        // - allow_all config: pass --allow-all (CLI auto-approves everything)
+        // - interactive config: pass --allow-all-tools (we handle permission UI
+        //   at the bridge level since CLI doesn't wait for async responses)
         if (this.#config.permissionPolicy === "allow_all") {
             args.push("--allow-all");
         } else {
-            // Interactive mode: allow tools to run (we handle permission UI)
-            // but keep path/URL verification
             args.push("--allow-all-tools");
         }
         if (this.#config.model) args.push("--model", this.#config.model);

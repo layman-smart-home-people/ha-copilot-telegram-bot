@@ -183,6 +183,11 @@ export class Bridge {
             this.#activeTools.delete(toolCallId);
             this.#scheduleBubbleUpdate();
 
+            // Interactive mode: show notification + undo for HA write tools
+            if (!this.#allowAll && status === "completed" && completed?.name) {
+                this.#showToolNotification(completed.name, result);
+            }
+
             // Relay images from tool results
             this.#relayToolImages(result);
         });
@@ -1080,6 +1085,86 @@ export class Bridge {
             this.#lastBotMessageId = sent.message_id;
         }
         return sent;
+    }
+
+    // --- Tool notifications for interactive mode ---
+
+    #showToolNotification(toolName, result) {
+        // Only notify for HA write tools
+        const writeTools = new Set([
+            "ha-mcp-ha_call_service", "ha-mcp-ha_call_event",
+            "ha-mcp-ha_bulk_control", "ha-mcp-ha_backup_create",
+            "ha-mcp-ha_backup_restore", "ha-mcp-ha_remove_entity",
+            "ha-mcp-ha_config_set_automation",
+        ]);
+        if (!writeTools.has(toolName)) return;
+
+        // Parse result to build notification
+        let content;
+        try {
+            const raw = typeof result === "string" ? result :
+                        result?.content ? result.content :
+                        JSON.stringify(result);
+            content = typeof raw === "string" ? JSON.parse(raw) : raw;
+        } catch { content = {}; }
+
+        const domain = content?.domain || "";
+        const service = content?.service || "";
+        const entityId = content?.entity_id || "";
+        const success = content?.success !== false;
+
+        if (!domain && !service) return;
+
+        const emoji = success ? "⚡" : "❌";
+        const action = `${domain}.${service}`;
+        const target = entityId ? ` → ${entityId}` : "";
+        const text = `${emoji} ${action}${target}`;
+
+        // Determine undo action (reversible services)
+        const reverseMap = {
+            "turn_on": "turn_off",
+            "turn_off": "turn_on",
+            "open_cover": "close_cover",
+            "close_cover": "open_cover",
+            "lock": "unlock",
+            "unlock": "lock",
+            "activate": "deactivate",
+        };
+        const reverseService = reverseMap[service];
+
+        const ref = this.#activeRef;
+        const chatId = ref?.chatId || this.#allowedChatIds?.[0];
+        if (!chatId) return;
+
+        if (reverseService && entityId && success) {
+            // Show with undo button
+            const undoCmd = `/undo ${domain}.${reverseService} ${entityId}`;
+            const rows = [[
+                { text: "↩️ Undo", value: undoCmd },
+                { text: "✅ OK", value: "dismiss" },
+            ]];
+            this.#buttons.prompt(chatId, text, rows, {
+                timeoutMs: 30000,
+                timeoutText: null, // silently expire
+            }).then(selected => {
+                if (selected && selected.startsWith("/undo ")) {
+                    const parts = selected.replace("/undo ", "").split(" ");
+                    const [svc, eid] = [parts[0], parts.slice(1).join(" ")];
+                    const [d, s] = svc.split(".");
+                    this.#log(`Undo: ${d}.${s} → ${eid}`);
+                    // Send undo command via prompt
+                    this.#queuePrompt(
+                        `Please call service ${d}.${s} on entity ${eid} to undo the previous action. Do it immediately without asking.`,
+                        {}, ref, null
+                    );
+                }
+            }).catch(() => {});
+        } else {
+            // Just show notification (no undo available)
+            this.#telegram.enqueue(() =>
+                this.#telegram.sendMessage(chatId, text, ref?.threadId ? { message_thread_id: ref.threadId } : {})
+            );
+        }
     }
 
     // --- Relay images from tool results ---
