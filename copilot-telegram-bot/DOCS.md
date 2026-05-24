@@ -259,5 +259,5 @@ The directory Copilot works in. Default: `/config` (your Home Assistant configur
 
 ## More Info
 
-Full documentation and source code:
+Issues and PRs welcome at:
 https://github.com/layman-smart-home-people/ha-copilot-telegram-bot
