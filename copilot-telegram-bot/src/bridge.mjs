@@ -963,6 +963,8 @@ export class Bridge {
         const username = message.from?.username || message.from?.first_name || null;
         if (userId == null) return;
 
+        this.#log(`Incoming message: chatId=${chatId} userId=${userId} chatType=${message.chat.type} text="${(message.text || "").substring(0, 50)}"`);
+
         const threadId = message.message_thread_id || null;
         const isForum = message.chat.is_forum === true;
         let text = message.text || message.caption || "";
@@ -1039,7 +1041,10 @@ export class Bridge {
             const commandForBot = text.startsWith("/") &&
                 text.toLowerCase().includes(`@${botUsername?.toLowerCase()}`);
 
+            this.#log(`Group filter: botUsername=${botUsername} botId=${botId} mentioned=${mentioned} repliedToBot=${repliedToBot} commandForBot=${commandForBot} entities=${JSON.stringify(entities)}`);
+
             if (!mentioned && !repliedToBot && !commandForBot) {
+                this.#log(`Group message ignored — not addressed to bot`);
                 return; // Not addressed to us — silently ignore
             }
 
