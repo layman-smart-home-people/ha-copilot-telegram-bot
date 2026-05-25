@@ -13,11 +13,13 @@ export class ScopeManager {
     #maxDmScopes = 30;
     #maxGroupScopes = 20;
     #activeKey = null;
+    #protectedKeys = new Set();
 
-    constructor({ persistPath, defaultAllowAll = false, log }) {
+    constructor({ persistPath, defaultAllowAll = false, log, protectedKeys = [] }) {
         this.#persistPath = persistPath;
         this.#defaultAllowAll = !!defaultAllowAll;
         this.#log = typeof log === "function" ? log : console.log;
+        for (const k of protectedKeys) this.#protectedKeys.add(k);
         this.#load();
     }
 
@@ -186,7 +188,7 @@ export class ScopeManager {
         let oldestTime = Infinity;
         for (const [key, scope] of this.#scopes) {
             const inPool = pool === "dm" ? key.startsWith("dm:") : !key.startsWith("dm:");
-            if (!inPool || key === this.#activeKey) continue;
+            if (!inPool || key === this.#activeKey || this.#protectedKeys.has(key)) continue;
             if (scope.lastActivity < oldestTime) {
                 oldest = key;
                 oldestTime = scope.lastActivity;

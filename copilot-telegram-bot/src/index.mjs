@@ -186,9 +186,14 @@ async function main() {
         log,
     });
 
+    // Owner scope key(s) — never evicted from LRU cache
+    const ownerChatId = config.allowedChatIds?.[0];
+    const ownerProtectedKeys = ownerChatId ? [`dm:${ownerChatId}`] : [];
+
     const scopeMgr = new ScopeManager({
         persistPath: "/data/scopes.json",
         defaultAllowAll: config.permissionPolicy === "allow_all",
+        protectedKeys: ownerProtectedKeys,
         log,
     });
 
