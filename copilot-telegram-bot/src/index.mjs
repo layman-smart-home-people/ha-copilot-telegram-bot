@@ -145,6 +145,7 @@ async function main() {
                 { command: "status", description: "Bot & Copilot status" },
                 { command: "autopilot", description: "Toggle autopilot mode" },
                 { command: "plan", description: "Toggle plan mode" },
+                { command: "fleet", description: "Autopilot with parallel agents" },
                 { command: "model", description: "Switch AI model" },
                 { command: "compact", description: "Compact conversation history" },
                 { command: "usage", description: "Show usage metrics" },

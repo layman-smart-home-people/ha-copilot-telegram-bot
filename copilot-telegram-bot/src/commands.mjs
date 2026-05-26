@@ -36,7 +36,8 @@ export async function handleSlashCommand(ctx, command, args) {
         if (!acp?.alive || !scope) return false;
         if (scope.sessionId) {
             if (acp.sessionId !== scope.sessionId) {
-                await acp.loadSession(scope.sessionId);
+                const result = await acp.loadSession(scope.sessionId);
+                updateScopeSettings(result);
             }
         } else {
             if (!createIfMissing) return false;
@@ -119,8 +120,8 @@ export async function handleSlashCommand(ctx, command, args) {
                     reply("⚠️ No session yet in this conversation.");
                     return true;
                 }
-                await acp.compact();
-                reply(`🗜️ History compacted for ${scopeLabel}`);
+                // Route through bridge queue so response is properly composited
+                bridge.submitRetry(ref, "/compact");
                 return true;
             }
             case "model": {
@@ -166,23 +167,8 @@ export async function handleSlashCommand(ctx, command, args) {
                     reply("⚠️ No session yet in this conversation.");
                     return true;
                 }
-                try {
-                    const metrics = await acp.getUsage();
-                    const lines = ["📊 Usage Metrics:"];
-                    if (metrics?.contextWindow) {
-                        const cw = metrics.contextWindow;
-                        lines.push(`  Context: ${cw.used?.toLocaleString() || "?"} / ${cw.total?.toLocaleString() || "?"} tokens`);
-                    }
-                    if (metrics?.session) {
-                        const s = metrics.session;
-                        if (s.turns != null) lines.push(`  Turns: ${s.turns}`);
-                        if (s.inputTokens != null) lines.push(`  Input: ${s.inputTokens.toLocaleString()} tokens`);
-                        if (s.outputTokens != null) lines.push(`  Output: ${s.outputTokens.toLocaleString()} tokens`);
-                    }
-                    reply(lines.join("\n"));
-                } catch {
-                    reply("📊 Usage metrics not available");
-                }
+                // Route through bridge queue so response is properly composited
+                bridge.submitRetry(ref, "/usage");
                 return true;
             }
             case "status": {

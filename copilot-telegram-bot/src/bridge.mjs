@@ -535,6 +535,12 @@ export class Bridge {
             if (code !== 0 && code !== null) {
                 this.#broadcastAdmin(`⚠️ Copilot process exited (code: ${code}). Send a message to restart.`);
             }
+            // Clear stale mode/model from active scope
+            const exitScope = this.#activeScope;
+            if (exitScope) {
+                exitScope.mode = "";
+                exitScope.model = "";
+            }
             this.#refreshStatusIfAlive().catch(() => {});
         });
 
@@ -745,6 +751,7 @@ export class Bridge {
             if (modeOpt?.currentValue && scope) {
                 scope.mode = modeOpt.currentValue;
             }
+            this.#refreshStatusIfAlive();
         });
 
         // Capture available commands (copilot slash commands)
@@ -926,7 +933,7 @@ export class Bridge {
                 inline_keyboard: [
                     ...(navButtons.length > 0 ? [navButtons] : []),
                     [
-                        { text: "⬅️ Back", callback_data: "/status" },
+                        { text: "⬅️ Back", callback_data: "status:back" },
                         { text: "✕ Dismiss", callback_data: "dismiss" },
                     ],
                 ],
@@ -940,6 +947,31 @@ export class Bridge {
                 });
             } catch (err) {
                 this.#log(`Changelog display failed: ${err.message}`);
+            }
+            return;
+        }
+
+        if (data === "status:back") {
+            const threadId = query.message?.message_thread_id || null;
+            const ref = makeRef(chatId, threadId, null, query.message?.chat?.type || null);
+            ref.userId = userId;
+            const scope = this.#buildCommandContext(ref).scope;
+            const { text, buttons } = this.#buildStatusContent(scope);
+            try {
+                await this.#telegram.call("editMessageText", {
+                    chat_id: chatId,
+                    message_id: query.message.message_id,
+                    text,
+                    reply_markup: buttons,
+                });
+                this.#statusMsg = {
+                    chatId,
+                    messageId: query.message.message_id,
+                    createdAt: Date.now(),
+                    scopeKey: scope?.key || null,
+                };
+            } catch (err) {
+                this.#log(`Status back failed: ${err.message}`);
             }
             return;
         }
