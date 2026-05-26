@@ -426,8 +426,11 @@ export class Bridge {
             this.#resetTypingDebounce();
 
             // Add newline separator when thoughts resume after tool calls
-            if (scope._toolJustEndedThought && scope.composer?.active) {
-                scope.composer.appendThought("\n");
+            if (scope._toolJustEndedThought) {
+                this.#log(`Thought after tool: inserting newline (flag=${scope._toolJustEndedThought})`);
+                if (scope.composer?.active) {
+                    scope.composer.appendThought("\n");
+                }
             }
             scope._toolJustEndedThought = false;
 
@@ -497,6 +500,7 @@ export class Bridge {
             scope.activeTools.delete(toolCallId);
             scope._toolJustEnded = true;  // signal next text_chunk to add newline
             scope._toolJustEndedThought = true;  // signal next thought_chunk to add newline
+            this.#log(`Tool ended — flags set: _toolJustEnded=true, _toolJustEndedThought=true`);
             if (scope.composer?.active && completed?.description) {
                 scope.composer.addToolStep(toolCallId, completed.description, status === "failed" ? "failed" : "completed");
             }
