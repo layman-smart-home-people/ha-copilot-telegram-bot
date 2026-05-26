@@ -30,6 +30,7 @@ export class ResponseComposer {
     #log;
     #thoughtBuffer = "";
     #thoughtActive = true;
+    #trailingHtml = null;
 
     constructor(telegram, log = () => {}) {
         this.#telegram = telegram;
@@ -38,6 +39,7 @@ export class ResponseComposer {
 
     get active() { return this.#messageId !== null && !this.#finalized; }
     get messageId() { return this.#messageId; }
+    get trailingHtml() { return this.#trailingHtml; }
 
     /**
      * Send initial placeholder message.
@@ -128,7 +130,9 @@ export class ResponseComposer {
 
     /**
      * Finalize with the complete response text.
-     * Returns any overflow chunks that don't fit in the edited message.
+     * Edits the placeholder into the answer.
+     * Stores collapsible reasoning+steps in trailingHtml for the bridge to send.
+     * Returns any overflow answer chunks that don't fit in the edited message.
      */
     async finalize(fullText) {
         if (this.#finalized) return [];
@@ -142,33 +146,14 @@ export class ResponseComposer {
             return fullText ? chunkMessage(fullText) : [];
         }
 
-        const stepsHtml = this.#buildStepsHtml(true);
-        const thoughtHtml = this.#buildThoughtHtml();
-        let headerHtml = [thoughtHtml, stepsHtml].filter(Boolean).join("\n");
-        // Safety: truncate header to fit Telegram message limit
-        if (headerHtml.length > MAX_MSG_LEN - 50) {
-            headerHtml = headerHtml.slice(0, MAX_MSG_LEN - 50) + "\n<i>…</i>";
-        }
-        const hasHeader = !!headerHtml;
+        // Build collapsible details (reasoning + steps) for trailing message
+        const detailsHtml = this.#buildCombinedDetailsHtml();
+        if (detailsHtml) this.#trailingHtml = detailsHtml;
+
         const hasAnswer = this.#textBuffer.trim().length > 0;
 
-        if (hasHeader && hasAnswer) {
-            // Try to combine header + answer into one message
-            const answerHtml = this.#convertAnswer(this.#textBuffer);
-            const combined = `${headerHtml}\n\n${answerHtml}`;
-            if (combined.length <= MAX_MSG_LEN) {
-                await this.#editMessage(combined);
-                return [];
-            }
-            // Won't fit — split: header in placeholder, answer as new message(s)
-            await this.#editMessage(headerHtml);
-            return chunkMessage(this.#textBuffer);
-        } else if (hasHeader && !hasAnswer) {
-            // Only steps/thinking, no text answer
-            await this.#editMessage(headerHtml);
-            return [];
-        } else if (!hasHeader && hasAnswer) {
-            // No tool steps or thinking — edit placeholder into the answer directly
+        if (hasAnswer) {
+            // Edit placeholder → answer
             const answerHtml = this.#convertAnswer(this.#textBuffer);
             if (answerHtml.length <= MAX_MSG_LEN) {
                 await this.#editMessage(answerHtml);
@@ -178,8 +163,13 @@ export class ResponseComposer {
             const chunks = chunkMessage(this.#textBuffer);
             await this.#editMessage(this.#convertAnswer(chunks[0]));
             return chunks.slice(1);
+        } else if (detailsHtml) {
+            // No answer text, only details — put details in the placeholder directly
+            this.#trailingHtml = null;
+            await this.#editMessage(detailsHtml);
+            return [];
         } else {
-            // Nothing — delete placeholder
+            // Nothing at all — delete placeholder
             await this.cleanup();
             return [];
         }
@@ -313,6 +303,54 @@ export class ResponseComposer {
             ? escaped.slice(0, 2000) + "…"
             : escaped;
         return `<blockquote expandable>🧠 <b>Reasoning</b>\n${display}</blockquote>`;
+    }
+
+    /** Build a single collapsible blockquote combining reasoning + steps */
+    #buildCombinedDetailsHtml() {
+        const hasThought = this.#thoughtBuffer.trim().length > 0;
+        const hasSteps = this.#toolSteps.length > 0;
+        if (!hasThought && !hasSteps) return "";
+
+        const parts = [];
+
+        // Collapsed header line: "🧠 Reasoning · 🔧 N steps"
+        const headerParts = [];
+        if (hasThought) headerParts.push("🧠 Reasoning");
+        if (hasSteps) {
+            const count = this.#toolSteps.length;
+            const failedCount = this.#toolSteps.filter(s => s.status === "failed").length;
+            const suffix = failedCount > 0 ? ` (${failedCount} failed)` : "";
+            headerParts.push(`🔧 ${count} step${count > 1 ? "s" : ""}${suffix}`);
+        }
+        parts.push(`<b>${headerParts.join(" · ")}</b>`);
+
+        // Reasoning content
+        if (hasThought) {
+            const escaped = escapeHtml(this.#thoughtBuffer.trim());
+            const display = escaped.length > 2000
+                ? escaped.slice(0, 2000) + "…"
+                : escaped;
+            parts.push(display);
+        }
+
+        // Steps list
+        if (hasSteps) {
+            const lines = this.#toolSteps.map(s => {
+                const icon = s.status === "completed" ? "✅"
+                           : s.status === "failed" ? "❌"
+                           : "🔄";
+                return `${icon} ${escapeHtml(s.description || s.id)}`;
+            });
+            if (hasThought) parts.push("");  // blank line separator
+            parts.push(`<b>Steps:</b>\n${lines.join("\n")}`);
+        }
+
+        let html = `<blockquote expandable>${parts.join("\n")}</blockquote>`;
+        // Safety: truncate to Telegram limit
+        if (html.length > MAX_MSG_LEN) {
+            html = html.slice(0, MAX_MSG_LEN - 30) + "\n…</blockquote>";
+        }
+        return html;
     }
 
     #convertAnswer(markdown) {

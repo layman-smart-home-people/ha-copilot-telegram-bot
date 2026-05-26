@@ -2028,6 +2028,21 @@ export class Bridge {
             } else if (botHistoryEntry && composer.messageId) {
                 botHistoryEntry.messageId = composer.messageId;
             }
+
+            // Send collapsible details (reasoning + steps) as trailing message
+            if (composer.trailingHtml) {
+                const ref = this.#activeRef;
+                if (ref) {
+                    const detailsHtml = composer.trailingHtml;
+                    this.#telegram.enqueue(async () => {
+                        try {
+                            await this.#transport.send(ref, detailsHtml, "HTML");
+                        } catch (err) {
+                            this.#log(`Trailing details send failed: ${err.message}`);
+                        }
+                    });
+                }
+            }
         } catch (err) {
             this.#log(`Composer finalize error: ${err.message}`);
             if (fullText) {
