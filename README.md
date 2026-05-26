@@ -1,6 +1,6 @@
 # 🤖 Copilot Telegram Bot — Home Assistant Add-on
 
-**Version 0.12.0**
+**Version 0.13.5**
 
 Talk to [GitHub Copilot CLI](https://githubnext.com/projects/copilot-cli/) directly from Telegram. This Home Assistant add-on gives you an always-on Telegram bot that starts Copilot on demand, streams progress back to chat, and lets you work from your phone without opening a terminal.
 
@@ -24,9 +24,13 @@ Send a message to your private Telegram bot → it wakes up Copilot CLI → Copi
 - 👥 **User pairing** — add extra users with 6-character pairing codes that expire after 15 minutes
 - 📊 **Live status menu** — singleton dashboard with auto-refresh, action buttons, and 5-minute TTL
 - 💬 **Progressive responses** — thinking, tool activity, and answer text stream into Telegram as work happens
+- 🧠 **Collapsible reasoning** — full AI reasoning shown in a tap-to-expand blockquote below the answer
+- ⚡ **Emoji reactions** — messages show ⚡ (processing), ⏳ (queued), ✅ (done), or ⚠️ (errors)
+- ✏️ **Edit support** — edit a message to cancel and resubmit with corrected text
+- 📎 **File attachments** — send text files and they're read into the prompt as context
 - 🛑 **Recovery controls** — `/stop`, `/retry`, `/history`, `/sessions`, `/new`, `/close`, `/delete`, and more
 - 🔔 **Graceful shutdown notices** — users are told if the add-on stops mid-response
-- ⏸️ **Resource-friendly** — optional idle timeout, LRU eviction, rate limiting
+- ⏸️ **Resource-friendly** — optional idle timeout, LRU eviction, rate limiting, owner scope protection
 
 ---
 
@@ -204,15 +208,35 @@ The status message auto-refreshes when state changes and expires after **5 minut
 
 Responses are streamed into Telegram progressively:
 
-- 💭 thinking indicator
+- 🤔 thinking indicator while Copilot reasons
+- 🧠 live reasoning line displayed after 3 seconds
 - 🔧 tool-step updates as tools run
-- 📝 answer text streamed into the same message
+- ✍️ answer text preview during streaming
+- ✅ final answer replaces the placeholder; reasoning + steps collapse into a tappable blockquote below
 
-This makes long-running tasks feel much more transparent on mobile.
+Emoji reactions track status: ⚡ (processing) → ✅ (done) or ⚠️ (errors). Queued messages show ⏳.
 
-### Graceful Shutdown Notifications
+### Message Editing
 
-If the add-on stops during an active response, the bot updates the user instead of silently disappearing. Open status menus are also updated to show that Copilot stopped.
+Edit a message to correct a typo or change your request:
+
+- **While queued** — the queue entry is silently updated
+- **While processing** — the current operation is cancelled and resubmitted with your corrected text
+- **After completion** — a correction prompt is sent so Copilot adjusts without re-executing actions
+
+### File Attachments
+
+Send text files (`.yaml`, `.json`, `.py`, `.log`, `.txt`, etc.) and they're read as UTF-8 and injected into the prompt as a fenced code block. Files up to 50 KB are supported. Photos and images are sent to Copilot directly.
+
+### Unsupported Media
+
+The bot handles unsupported media gracefully:
+
+- **Voice/audio** — suggests using keyboard speech-to-text instead
+- **Video/GIF** — suggests sending a photo or screenshot
+- **Stickers** — extracts the emoji and sends it as context
+- **Locations** — sends coordinates (useful for Home Assistant location context)
+- **Contacts** — friendly rejection
 
 ---
 
@@ -232,6 +256,9 @@ If the add-on stops during an active response, the bot updates the user instead 
 | `model` | `auto` | Default Copilot model |
 | `working_directory` | `/config` | Copilot working directory |
 | `permission_policy` | `interactive` | Startup permission mode: `interactive` or `allow_all` |
+| `group_mode` | `mention` | How the bot responds in groups: `mention` (only @mentions) or `all` |
+| `allowed_groups` | `[]` | Whitelist of group chat IDs the bot may join (empty = any group) |
+| `max_group_members` | `50` | Maximum group size for the bot to operate in (1–1000) |
 
 ---
 
@@ -310,18 +337,21 @@ Check whether allow-all mode is active:
 | File | Role |
 |------|------|
 | `src/index.mjs` | Entry point: config loading, validation, startup, shutdown, service wiring |
-| `src/acp.mjs` | Copilot ACP client: process management, JSON-RPC, sessions, models, modes, usage |
-| `src/telegram.mjs` | Telegram Bot API client: polling, queueing, retries, rate limiting |
-| `src/bridge.mjs` | Main orchestrator: auth, prompt flow, permissions, status menu, streaming, shutdown handling |
+| `src/acp.mjs` | Copilot ACP client: process management, JSON-RPC, sessions, models, modes, thinking events |
+| `src/telegram.mjs` | Telegram Bot API client: polling, queueing, retries, rate limiting, reactions |
+| `src/bridge.mjs` | Main orchestrator: auth, prompt flow, permissions, status menu, streaming, edit handling, file attachments, message types, queue management |
 | `src/commands.mjs` | Slash command parsing and command handlers |
 | `src/formatter.mjs` | Markdown/HTML conversion, escaping, chunking, Telegram-safe formatting |
-| `src/response-composer.mjs` | Progressive single-message response display for thinking, tools, and streamed text |
+| `src/response-composer.mjs` | Progressive single-message display for thinking, tools, and answer with collapsible finalize |
 | `src/transport.mjs` | Conversation routing layer for chats/topics, message edits, files, and topic management |
 | `src/pairing.mjs` | User pairing, admin tracking, persistence, and expiring 6-character pairing codes |
 | `src/sessions.mjs` | Forum-topic to Copilot-session mapping, active session tracking, persistence |
 | `src/history.mjs` | Recent-message buffer, reply-chain lookup, `/history`, and `/retry` support |
 | `src/buttons.mjs` | Inline button menus, interactive pickers, permission prompts, timeout cleanup |
 | `src/errors.mjs` | Human-friendly ACP and runtime error formatting with retry hints |
+| `src/scope-manager.mjs` | Session scope resolution, LRU eviction with owner protection, persistence |
+| `src/scope-state.mjs` | Per-scope state (history, permissions, tool tracking, composer) |
+| `src/config.mjs` | Configuration loading and validation from HA options.json |
 
 ### Message Flow
 

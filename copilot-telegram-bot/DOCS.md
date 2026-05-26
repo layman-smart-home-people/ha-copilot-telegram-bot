@@ -1,6 +1,6 @@
 # Copilot Telegram Bot
 
-**Control your smart home with AI — right from Telegram.** Version **0.12.0**.
+**Control your smart home with AI — right from Telegram.** Version **0.13.5**.
 
 ---
 
@@ -142,7 +142,7 @@ Each conversation gets its own independent Copilot session:
 
 Sessions are automatically created on first message. The bot handles session switching transparently — you never need to manage this manually. Use `/sessions` to see all active scopes.
 
-Resource limits: 30 DM slots + 20 group/forum slots. Least-recently-used sessions are evicted when limits are reached.
+Resource limits: 30 DM slots + 20 group/forum slots. Least-recently-used sessions are evicted when limits are reached. The server owner (first `allowed_chat_ids` entry) is never evicted.
 
 ### Group Chat Support
 
@@ -199,10 +199,44 @@ The status menu is a singleton — only one exists at a time. It auto-refreshes 
 
 Responses stream progressively into a single Telegram message:
 
-- 💭 **Thinking** indicator while Copilot reasons
-- 🔧 **Tool steps** shown as they execute (e.g., "🔧 ha_get_state ✓")
-- 📝 **Text** streams in as Copilot generates it
-- The message is edited in-place as new content arrives
+- 🤔 **Thinking** indicator while Copilot reasons
+- 🧠 **Live reasoning** line shown after 3 seconds (avoids flicker on fast responses)
+- 🔧 **Tool steps** shown as they execute
+- ✍️ **Answer preview** streams as Copilot generates text
+
+On completion, the placeholder becomes the final answer. If reasoning or tool steps were involved, they appear in a **collapsible blockquote** below the answer — tap to expand.
+
+### Emoji Reactions
+
+Messages get automatic emoji reactions showing status:
+
+- ⚡ Processing — your message is being handled
+- ⏳ Queued — another conversation is active, you're next
+- ✅ Done — response delivered successfully
+- ⚠️ Errors — response delivered but some tool calls failed
+- ✏️ Edited — you edited a message and it's being reprocessed
+
+### Message Editing
+
+You can edit messages after sending:
+
+- **While queued**: the queue entry is silently updated with your corrected text
+- **While processing**: the current operation is cancelled and resubmitted with the corrected text
+- **After completion**: a correction prompt is sent so Copilot adjusts its answer without re-executing actions
+
+### File Attachments
+
+Send text files (`.yaml`, `.json`, `.py`, `.log`, `.txt`, `.csv`, `.xml`, `.md`, and more) and they're read as UTF-8 and injected into the prompt as context. Maximum file size: 50 KB. Photos and images are sent to Copilot directly for visual analysis.
+
+### Unsupported Media
+
+The bot handles unsupported message types gracefully with helpful suggestions:
+
+- 🎤 **Voice/audio** — suggests keyboard speech-to-text
+- 🎬 **Video/GIF** — suggests sending a screenshot instead
+- 🎭 **Stickers** — emoji is extracted and sent as context
+- 📍 **Locations** — coordinates are forwarded (useful for Home Assistant)
+- 👤 **Contacts** — friendly rejection
 
 ### Graceful Shutdown
 

@@ -2,6 +2,77 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.13.5] — 2026-05-26
+
+### Changed
+- **Answer-first finalize layout**: the placeholder message is now edited into the answer itself, with reasoning and tool steps sent as a collapsible trailing message below
+- Combined reasoning + tool steps into a single `<blockquote expandable>` — tap to expand
+- Collapsed header shows "🧠 Reasoning · 🔧 N steps"
+- No trailing message when there are no reasoning or tools (simple answers stay clean)
+
+## [0.13.4] — 2026-05-26
+
+### Fixed
+- **Edit→cancel resubmit**: edited messages now include `triggerMessageId` and `firstName` so re-edits during reprocessing match correctly
+- **Cancel-as-error suppressed**: intentional edit cancellations no longer increment error counters or show error messages to the user
+- **`/new` command guarded**: `/new` now checks `promptActive` before calling ACP, preventing crashes when Copilot is busy
+- **HTML entity safety**: `escapeHtml` is now applied before truncation in thought display, preventing broken entities
+- **Steps header accuracy**: finalized steps header shows "(N failed)" when some steps failed instead of always saying "completed"
+- **Reaction ordering**: already-processed edit reactions (✏️) are now set before queueing to prevent immediate overwrite by ✅
+
+## [0.13.3] — 2026-05-26
+
+### Added
+- **Edit cancels active prompt**: editing a message that's currently being processed cancels the ACP turn and resubmits the corrected text
+- Composer shows "✏️ Message edited — reprocessing..." on cancel
+- Corrected text pushed to front of queue for immediate processing
+- Correction prompt for already-completed messages includes explicit "do not re-execute" instruction
+
+### Changed
+- Header + answer combined into a single message when they fit (< 4096 chars)
+- Thinking display suppressed for first 3 seconds to avoid flicker on fast responses
+
+## [0.13.2] — 2026-05-26
+
+### Added
+- **Collapsible reasoning**: full reasoning displayed in `<blockquote expandable>` on finalize (tap to expand)
+- Anti-flicker: live reasoning only shown after 3 seconds of processing
+
+## [0.13.1] — 2026-05-26
+
+### Fixed
+- Thinking step display shows only the last meaningful line (max 200 chars) instead of raw multi-line content that ran together
+
+## [0.13.0] — 2026-05-26
+
+### Added
+- **Emoji reactions lifecycle**: messages get ⚡ (processing) → ✅ (success) / ⚠️ (errors); queued messages get ⏳ first
+- **Thinking tokens streaming**: ACP `agent_thought_chunk` events are now captured and displayed live during reasoning
+- **File attachment support**: text files (< 50KB) are read as UTF-8 and injected into the prompt as fenced code blocks
+- **Message type handlers**: stickers (emoji extracted), locations (coordinates sent), voice/video/GIF/contact (friendly rejection with suggestions)
+- **Edited message support**: edits to queued messages update the queue entry; edits to already-processed messages send a correction prompt
+- **Permission timeout loop prevention**: after 2 consecutive permission timeouts within 2 minutes, auto-denies silently and suggests `/allowall`
+- Bot no longer self-reacts (👍/👎 on own messages removed)
+
+### Changed
+- **Queue overflow**: rejects new messages when queue is full instead of dropping the oldest (punished users who waited longest)
+- Unknown ACP session update types are now logged for debugging
+
+## [0.12.7] — 2026-05-26
+
+### Added
+- **Owner scope protection**: the first `allowed_chat_id` (server owner) is never evicted from LRU scope cache
+
+## [0.12.6] — 2026-05-26
+
+### Fixed
+- **Graceful busy handling**: all ACP-interacting commands (`/usage`, `/model`, `/autopilot`, `/compact`, `/mode`, `/plan`, `/session new`) now check `promptActive` and reply "⏳ Copilot is busy" instead of crashing with "Invalid params"
+
+## [0.12.5] — 2026-05-26
+
+### Added
+- **Queue feedback**: users now see "⏳ Queued (#N) — another conversation is in progress" when their message is queued behind another scope
+
 ## [0.12.0] — 2025-07-18
 
 ### Added
@@ -58,7 +129,7 @@ All notable changes to the Copilot Telegram Bot add-on.
 - `#preambleSent` was global — now per-chat so forum topics each get their preamble
 
 ### Added
-- Prompt queue capped at 10 (drops oldest on overflow)
+- Prompt queue capped at 10 (drops oldest on overflow; changed to reject-new in v0.13.0)
 - Safety timeout (60s) for status refresh pause flag
 - Timeout/abort signal on Telegram file uploads (`callForm`)
 
