@@ -33,12 +33,6 @@ profile copilot-telegram-bot flags=(attach_disconnected,mediate_deleted) {
   /share/copilot-tools/copilot rix,
   /share/copilot-tools/** rw,
 
-  # Python / ha-mcp
-  /opt/ha-mcp/** rix,
-  /opt/ha-mcp/lib/** mr,
-  /usr/lib/python3/** mr,
-  /usr/lib/python3.*/** mr,
-
   # Persistent data
   /data/** rw,
   /data/copilot/** rwk,

@@ -133,7 +133,7 @@ export async function loadConfig(log = () => {}) {
         }
     }
     if (config.mcpServers.length === 0) {
-        log("No MCP servers configured — ha-mcp will not be available");
+        log("No MCP servers configured");
     }
 
     // Parse changelog for /status viewer

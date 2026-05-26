@@ -80,46 +80,12 @@ elif ! jq -e '.trustedFolders | index("/config")' "${CONFIG_FILE}" >/dev/null 2>
         && mv "${CONFIG_FILE}.tmp" "${CONFIG_FILE}"
 fi
 
-# --- 3. Generate ha-mcp wrapper and MCP config (only if ha-mcp is available) ---
-HA_MCP_BIN=""
-if [ -x "/opt/ha-mcp/bin/ha-mcp" ]; then
-    HA_MCP_BIN="/opt/ha-mcp/bin/ha-mcp"
-elif command -v ha-mcp >/dev/null 2>&1; then
-    HA_MCP_BIN="$(command -v ha-mcp)"
-fi
-
+# --- 3. Preserve existing MCP config if present ---
 MCP_CONFIG="${COPILOT_CONFIG_DIR}/mcp-config.json"
-if [ -n "${HA_MCP_BIN}" ]; then
-    HA_MCP_WRAPPER="${AUTO_DIR}/ha-mcp-wrapper.sh"
-    mkdir -p "${AUTO_DIR}"
-
-    cat > "${HA_MCP_WRAPPER}" << WRAPPER
-#!/bin/bash
-export HOMEASSISTANT_URL="http://supervisor/core"
-export HOMEASSISTANT_TOKEN="\${SUPERVISOR_TOKEN}"
-export LOG_LEVEL="WARNING"
-exec ${HA_MCP_BIN} "\$@"
-WRAPPER
-    chmod +x "${HA_MCP_WRAPPER}"
-
-    if [ ! -f "${MCP_CONFIG}" ]; then
-        log "Creating MCP config with ha-mcp at ${HA_MCP_BIN}"
-        cat > "${MCP_CONFIG}" << EOF
-{
-  "mcpServers": {
-    "ha-mcp": {
-      "command": "${HA_MCP_WRAPPER}",
-      "args": []
-    }
-  }
-}
-EOF
-    else
-        log "MCP config already exists at ${MCP_CONFIG} — keeping existing"
-    fi
+if [ -f "${MCP_CONFIG}" ]; then
+    log "MCP config exists at ${MCP_CONFIG}"
 else
-    log "ha-mcp not found — skipping MCP config (HA tools won't be available)"
-    log "Install ha-mcp separately if you want Home Assistant entity access"
+    log "No MCP config found — Copilot will work without MCP tools"
 fi
 
 # --- 4. Symlink ~/.copilot ---

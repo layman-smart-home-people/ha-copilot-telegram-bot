@@ -17,7 +17,6 @@ All notable changes to the Copilot Telegram Bot add-on.
 
 ### Added
 - **All-in-one bootstrapping**: Copilot CLI is automatically downloaded on first start — no manual installation required
-- **Bundled ha-mcp**: Home Assistant MCP server is included in the Docker image
 - **Auto-configuration**: MCP config, Copilot settings, and trusted folders are generated automatically
 - New `init-copilot` s6 oneshot bootstrap service runs before the bot to ensure everything is ready
 
