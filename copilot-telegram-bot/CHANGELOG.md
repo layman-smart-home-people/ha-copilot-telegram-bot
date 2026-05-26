@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.14.3] — 2026-05-26
+
+### Fixed
+- Force rebuild to pick up rootfs changes (buildx cache was stale)
+
 ## [0.14.2] — 2026-05-26
 
 ### Fixed
