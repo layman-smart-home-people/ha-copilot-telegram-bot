@@ -3,15 +3,11 @@ FROM ${BUILD_FROM}
 
 # Install Node.js 22 (LTS) from NodeSource and jq
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gnupg jq python3-venv \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg jq \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
-RUN python3 -m venv /opt/ha-mcp \
-    && /opt/ha-mcp/bin/pip install --no-cache-dir ha-mcp \
-    && test -x /opt/ha-mcp/bin/ha-mcp
 
 # Create app directory
 WORKDIR /app
@@ -21,7 +17,7 @@ COPY package.json ./
 RUN npm install --production
 
 # Copy source (cache-bust: update this comment on each rebuild)
-# Build: 2026-05-26T10:17
+# Build: 2026-05-26T18:55
 COPY src/ ./src/
 
 # Copy config.yaml and CHANGELOG.md for runtime access
