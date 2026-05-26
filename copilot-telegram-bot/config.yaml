@@ -2,7 +2,7 @@ name: Copilot Telegram Bot
 description: Always-on Telegram bot connected to GitHub Copilot CLI via ACP
 slug: copilot-telegram-bot
 url: https://github.com/layman-smart-home-people/ha-copilot-telegram-bot
-version: 0.14.4
+version: 0.15.0
 init: false
 arch:
   - aarch64
@@ -11,6 +11,7 @@ startup: application
 boot: auto
 stage: experimental
 hassio_api: true
+hassio_role: manager
 homeassistant_api: true
 map:
   - share:rw
@@ -28,6 +29,8 @@ options:
     This message arrived via Telegram. Be concise and mobile-friendly.
     Use markdown (bold, lists, code blocks) — it's auto-converted to Telegram HTML.
     Never use tables. For complex data, save an HTML report to /config/www/ and share the URL.
+    You have direct HA access: curl -s http://supervisor/core/api/... -H "Authorization: Bearer $SUPERVISOR_TOKEN".
+    If ha-mcp MCP tools are available, prefer those for dashboards.
   auto_start: true
   idle_timeout_minutes: 0
   model: auto

@@ -321,6 +321,17 @@ export class Bridge {
         } else {
             lines.push(`🔐 Permissions: interactive`);
         }
+
+        // HA integration status
+        if (this.#config?.haConnected) {
+            lines.push(`🏠 HA API: ✅ ${this.#config.haVersion || "connected"}`);
+        } else {
+            lines.push(`🏠 HA API: ❌ unavailable`);
+        }
+        if (this.#config?.mcpServers?.length > 0) {
+            lines.push(`🔌 MCP: ${this.#config.mcpServers.length} server(s)`);
+        }
+
         lines.push(`📱 Telegram: connected`);
         lines.push(`👥 Chats: ${this.#allowedChatIds.length}`);
         if (this.#pairing) {

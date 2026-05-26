@@ -133,7 +133,40 @@ export async function loadConfig(log = () => {}) {
         }
     }
     if (config.mcpServers.length === 0) {
-        log("No MCP servers configured");
+        log("No MCP servers configured (ha-mcp add-on not detected — using direct API)");
+    }
+
+    // Check HA API connectivity
+    config.haConnected = false;
+    config.haVersion = null;
+    config.haRole = null;
+    try {
+        const supervisorToken = process.env.SUPERVISOR_TOKEN;
+        if (supervisorToken) {
+            const res = await fetch("http://supervisor/core/api/config", {
+                headers: { Authorization: `Bearer ${supervisorToken}` },
+            });
+            if (res.ok) {
+                const data = await res.json();
+                config.haConnected = true;
+                config.haVersion = data.version || null;
+                log(`HA API OK: Home Assistant ${data.version}`);
+            } else {
+                log(`HA API check failed: HTTP ${res.status}`);
+            }
+            // Check supervisor role
+            const roleRes = await fetch("http://supervisor/addons/self/info", {
+                headers: { Authorization: `Bearer ${supervisorToken}` },
+            });
+            if (roleRes.ok) {
+                const roleData = await roleRes.json();
+                config.haRole = roleData?.data?.hassio_role || "default";
+            }
+        } else {
+            log("No SUPERVISOR_TOKEN — HA API unavailable");
+        }
+    } catch (err) {
+        log(`HA API check error: ${err.message}`);
     }
 
     // Parse changelog for /status viewer

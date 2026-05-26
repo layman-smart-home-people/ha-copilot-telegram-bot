@@ -2,6 +2,23 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.15.0] — 2026-05-26
+
+### Added
+- **Direct HA API access** — Copilot can query entities, call services, and manage add-ons without ha-mcp
+- **Supervisor `manager` role** — enables add-on management (start/stop/restart), system diagnostics
+- **HA API status in /status menu** — shows HA version and connectivity
+- **Startup HA API validation** — logs HA version and API access level on boot
+
+### Changed
+- `copilot-instructions.md` rewritten with REST API endpoint reference (ha-mcp now optional)
+- Default preamble includes HA API access hint for Copilot
+- MCP servers shown in /status menu when configured
+
+### Fixed
+- Removed custom AppArmor profile that caused startup failure (v0.14.2–0.14.4)
+- Reverted to v0.13.5 rootfs structure (removed init-copilot oneshot service)
+
 ## [0.14.4] — 2026-05-26
 
 ### Fixed
