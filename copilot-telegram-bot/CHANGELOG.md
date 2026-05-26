@@ -2,6 +2,16 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.15.1] — 2026-05-26
+
+### Fixed
+- **Changelog Back button** — now edits message in-place instead of deleting and recreating
+- **`/usage` and `/compact`** — route through bridge queue for proper response compositing (was bypassing composer, causing misrouted text chunks)
+- **Scope sync on session load** — mode/model now sync after `loadSession()` preventing stale values on scope switch
+- **Status auto-refresh** — status message refreshes when Copilot changes mode or model
+- **Scope cleanup on exit** — mode/model cleared when Copilot stops, preventing stale status display
+- **BotFather registration** — `/fleet` now appears in Telegram autocomplete
+
 ## [0.15.0] — 2026-05-26
 
 ### Added
