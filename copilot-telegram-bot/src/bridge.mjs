@@ -1034,9 +1034,37 @@ export class Bridge {
                 return;
             }
 
-            // Check if currently being processed (same message)
+            // Check if currently being processed (same message) — cancel and resubmit
             if (this.#activeRef && messageId === this.#activeRef.triggerMessageId) {
-                this.#log(`Ignoring edit to currently processing message msg=${messageId}`);
+                this.#log(`Edit to active message msg=${messageId} — cancelling current prompt`);
+                try {
+                    // Cancel the ACP turn
+                    if (this.#acp?.alive) await this.#acp.cancel();
+                } catch (err) {
+                    this.#log(`Cancel during edit failed: ${err.message}`);
+                }
+                // Abort composer with notice
+                const scope = this.#activeScope;
+                if (scope?.composer?.active) {
+                    await scope.composer.abort("✏️ Message edited — reprocessing...");
+                    scope.composer = null;
+                }
+                // Queue the edited text as a fresh prompt (will run after finally block clears promptActive)
+                const editRef = makeRef(chatId, edited.message_thread_id || null, null, edited.chat.type);
+                editRef.userId = edited.from?.id;
+                editRef.username = edited.from?.username || edited.from?.first_name;
+                if (this.#scopeMgr) editRef.scopeKey = this.#scopeMgr.resolveKey(editRef);
+                const editPrefix = this.#getPrefix(editRef);
+                this.#promptQueue.unshift({
+                    text: editPrefix + editedText,
+                    opts: {},
+                    ref: editRef,
+                    messageId,
+                    scopeKey: editRef.scopeKey,
+                });
+                this.#telegram.enqueue(() =>
+                    this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
+                );
                 return;
             }
 
