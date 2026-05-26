@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.15.2] — 2026-05-26
+
+### Fixed
+- **Missing line breaks in responses** — text chunks after tool calls now separated by newlines, preventing sentences from running together (e.g. "entity.Found it" → "entity.\nFound it")
+
 ## [0.15.1] — 2026-05-26
 
 ### Fixed

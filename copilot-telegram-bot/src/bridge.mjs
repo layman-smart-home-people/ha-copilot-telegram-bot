@@ -400,6 +400,14 @@ export class Bridge {
             const scope = this.#activeScope;
             if (!scope) return;
             this.#resetTypingDebounce();
+
+            // Add newline separator when text resumes after tool calls
+            if (scope._toolJustEnded && scope.messageBuffer && !scope.messageBuffer.endsWith("\n")) {
+                scope.messageBuffer += "\n";
+                if (scope.composer?.active) scope.composer.appendText("\n");
+            }
+            scope._toolJustEnded = false;
+
             scope.messageBuffer += text;
             if (scope.composer?.active) {
                 scope.composer.appendText(text);
@@ -426,7 +434,10 @@ export class Bridge {
             this.#log("Agent message_start");
             if (this.#switching) return;
             const scope = this.#activeScope;
-            if (scope) scope.messageBuffer = "";
+            if (scope) {
+                scope.messageBuffer = "";
+                scope._toolJustEnded = false;
+            }
         });
 
         acp.on("message_end", () => {
@@ -476,6 +487,7 @@ export class Bridge {
             }
             this.#resetTypingDebounce();
             scope.activeTools.delete(toolCallId);
+            scope._toolJustEnded = true;  // signal next text_chunk to add newline
             if (scope.composer?.active && completed?.description) {
                 scope.composer.addToolStep(toolCallId, completed.description, status === "failed" ? "failed" : "completed");
             }
