@@ -235,11 +235,15 @@ export class ResponseComposer {
                 ? `🔐 <i>Awaiting permission...</i>${timer}\n${stepsHtml}`
                 : `🔐 <i>Awaiting permission...</i>${timer}`;
         } else if (this.#thoughtActive && this.#thoughtBuffer) {
-            // Live reasoning display — show last ~300 chars
-            const thought = this.#thoughtBuffer.length > 300
-                ? "…" + this.#thoughtBuffer.slice(-300)
-                : this.#thoughtBuffer;
-            const thoughtHtml = `🧠 <i>${escapeHtml(thought)}</i>${timer}`;
+            // Live reasoning display — show last meaningful line, trimmed
+            const lines = this.#thoughtBuffer.split("\n").filter(l => l.trim());
+            const lastLine = lines.length > 0 ? lines[lines.length - 1].trim() : "";
+            const display = lastLine.length > 200
+                ? "…" + lastLine.slice(-200)
+                : lastLine;
+            const thoughtHtml = display
+                ? `🧠 <i>${escapeHtml(display)}</i>${timer}`
+                : `🤔 <i>Thinking...</i>${timer}`;
             html = stepsHtml ? `${thoughtHtml}\n${stepsHtml}` : thoughtHtml;
         } else if (stepsHtml) {
             // Show thinking indicator + tool steps
