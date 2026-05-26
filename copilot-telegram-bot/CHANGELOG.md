@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.14.2] — 2026-05-26
+
+### Fixed
+- Reverted to v0.13.5 rootfs structure — removed init-copilot oneshot service that caused startup failure
+- Restored telegram-bot/run with config symlink and binary validation
+- Restored simple finish script (no container halt on error)
+- Removed bundled ha-mcp server from Docker image (external ha-mcp add-on still supported)
+- Cleaned up Dockerfile (removed CACHE_BUST workarounds)
+
 ## [0.14.1] — 2026-05-26
 
 ### Added
