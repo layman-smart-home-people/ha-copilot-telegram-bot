@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.15.3] — 2026-05-26
+
+### Fixed
+- **Missing line breaks in reasoning** — thought chunks between tool calls now separated by newlines (same fix as v0.15.2 but for the reasoning/thinking buffer)
+
 ## [0.15.2] — 2026-05-26
 
 ### Fixed

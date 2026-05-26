@@ -424,6 +424,13 @@ export class Bridge {
             const scope = this.#activeScope;
             if (!scope) return;
             this.#resetTypingDebounce();
+
+            // Add newline separator when thoughts resume after tool calls
+            if (scope._toolJustEndedThought && scope.composer?.active) {
+                scope.composer.appendThought("\n");
+            }
+            scope._toolJustEndedThought = false;
+
             if (scope.composer?.active) {
                 scope.composer.appendThought(text);
             }
@@ -437,6 +444,7 @@ export class Bridge {
             if (scope) {
                 scope.messageBuffer = "";
                 scope._toolJustEnded = false;
+                scope._toolJustEndedThought = false;
             }
         });
 
@@ -488,6 +496,7 @@ export class Bridge {
             this.#resetTypingDebounce();
             scope.activeTools.delete(toolCallId);
             scope._toolJustEnded = true;  // signal next text_chunk to add newline
+            scope._toolJustEndedThought = true;  // signal next thought_chunk to add newline
             if (scope.composer?.active && completed?.description) {
                 scope.composer.addToolStep(toolCallId, completed.description, status === "failed" ? "failed" : "completed");
             }
