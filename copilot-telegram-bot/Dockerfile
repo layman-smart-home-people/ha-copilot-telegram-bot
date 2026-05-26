@@ -1,8 +1,11 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base-debian:bookworm
 FROM ${BUILD_FROM}
 
+# Cache-bust ARG — change to force full rebuild
+ARG CACHE_BUST=2026-05-26-v2
+
 # Install Node.js 22 (LTS) from NodeSource and jq
-RUN apt-get update \
+RUN echo "build: ${CACHE_BUST}" && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg jq \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
