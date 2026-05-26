@@ -54,6 +54,36 @@ export async function loadConfig(log = () => {}) {
         }
     }
 
+    // Resolve "auto" copilot paths
+    const autoDir = "/data/copilot";
+    const legacyBin = "/share/copilot-tools/copilot";
+    const legacyConfig = "/share/copilot-tools/.copilot";
+
+    let copilotBinary = process.env.COPILOT_BINARY || options.copilot_binary || "auto";
+    if (copilotBinary === "auto" || copilotBinary === "") {
+        // Prefer auto-installed location; fall back to legacy shared path
+        if (existsSync(`${autoDir}/bin/copilot`)) {
+            copilotBinary = `${autoDir}/bin/copilot`;
+        } else if (existsSync(legacyBin)) {
+            copilotBinary = legacyBin;
+            log(`Using legacy Copilot binary at ${legacyBin}`);
+        } else {
+            copilotBinary = `${autoDir}/bin/copilot`; // expected after bootstrap
+        }
+    }
+
+    let copilotConfigDir = options.copilot_config_dir || "auto";
+    if (copilotConfigDir === "auto" || copilotConfigDir === "") {
+        if (existsSync(`${autoDir}/.copilot`)) {
+            copilotConfigDir = `${autoDir}/.copilot`;
+        } else if (existsSync(legacyConfig)) {
+            copilotConfigDir = legacyConfig;
+            log(`Using legacy Copilot config at ${legacyConfig}`);
+        } else {
+            copilotConfigDir = `${autoDir}/.copilot`;
+        }
+    }
+
     // Allow env overrides for development
     const config = {
         botToken: process.env.TELEGRAM_BOT_TOKEN || options.bot_token || "",
@@ -61,8 +91,8 @@ export async function loadConfig(log = () => {}) {
         groupMode: normalizeGroupMode(options.group_mode),
         allowedGroups: Array.isArray(options.allowed_groups) ? options.allowed_groups.map(String) : [],
         maxGroupMembers: normalizeMaxGroupMembers(options.max_group_members),
-        copilotBinary: process.env.COPILOT_BINARY || options.copilot_binary || "/share/copilot-tools/copilot",
-        copilotConfigDir: options.copilot_config_dir || "/share/copilot-tools/.copilot",
+        copilotBinary,
+        copilotConfigDir,
         copilotExtraArgs: options.copilot_extra_args || "",
         githubToken: process.env.COPILOT_GITHUB_TOKEN || options.github_token || "",
         preamble: options.preamble || "Be concise, mobile-first, Telegram-friendly PLAIN TEXT only.",

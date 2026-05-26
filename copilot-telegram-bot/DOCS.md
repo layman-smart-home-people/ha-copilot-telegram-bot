@@ -1,6 +1,6 @@
 # Copilot Telegram Bot
 
-**Control your smart home with AI — right from Telegram.** Version **0.13.5**.
+**Control your smart home with AI — right from Telegram.** Version **0.14.0**.
 
 ---
 
@@ -25,7 +25,7 @@ You can also have natural conversations — ask follow-up questions, give it con
 
 ## 🚀 Getting Started
 
-You'll need three things: a Telegram bot, a GitHub account, and your Telegram user ID.
+You'll need three things: a Telegram bot, a GitHub account with Copilot access, and your Telegram user ID.
 
 ### Step 1 — Create Your Bot
 
@@ -33,26 +33,23 @@ You'll need three things: a Telegram bot, a GitHub account, and your Telegram us
 2. Send `/newbot` and follow the prompts to name your bot
 3. BotFather gives you a **bot token** — copy it (looks like `123456789:ABC...xyz`)
 
-### Step 2 — Get a GitHub Token
-
-1. Go to [github.com/settings/tokens](https://github.com/settings/tokens)
-2. Create a **fine-grained personal access token**
-3. Grant it the permissions Copilot needs (repository access, etc.)
-
-### Step 3 — Find Your User ID
+### Step 2 — Find Your User ID
 
 1. Open Telegram and search for **@userinfobot**
 2. Send it any message — it replies with your numeric ID (e.g., `123456789`)
 
-### Step 4 — Configure the Add-on
+### Step 3 — Configure the Add-on
 
 In Home Assistant, go to the add-on configuration and fill in:
 
 - **Bot token** — paste the token from Step 1
-- **Allowed chat IDs** — paste your numeric ID from Step 3
-- **GitHub token** — paste your token from Step 2
+- **Allowed chat IDs** — paste your numeric ID from Step 2
 
-### Step 5 — Start Chatting!
+Optional:
+
+- **GitHub token** — use this for GitHub-backed Copilot features, or authenticate later via the Telegram device flow
+
+### Step 4 — Start Chatting!
 
 Click **Start** on the add-on's Info tab, then open Telegram and send your bot a message. That's it! 🎉
 
@@ -255,7 +252,7 @@ List of Telegram user/chat IDs allowed to use the bot. Get yours from @userinfob
 ### Authentication
 
 **github_token**
-A GitHub fine-grained personal access token (PAT). Used by Copilot for GitHub API access.
+Optional GitHub fine-grained personal access token (PAT). Used by Copilot for GitHub-backed features. If not set, authenticate through the Telegram device flow.
 
 ### Copilot Settings
 
@@ -271,10 +268,10 @@ Default permission mode on startup. Options:
 - `allow_all` — auto-approves all tool calls
 
 **copilot_binary**
-Path to the Copilot CLI binary. Default: `/share/copilot-tools/copilot`
+Path to the Copilot CLI binary. Default: `auto` — the add-on downloads and manages Copilot CLI automatically on first start. Set a custom path to use your own installation.
 
 **copilot_config_dir**
-Where Copilot's login credentials live. Default: `/share/copilot-tools/.copilot`
+Where Copilot's login credentials live. Default: `auto` — the add-on manages this directory automatically. Set a custom path to use your own config.
 
 **copilot_extra_args**
 Additional command-line flags passed to Copilot CLI.
@@ -309,10 +306,10 @@ Maximum number of members a group can have for the bot to operate. Default: 50. 
 → Check the Log tab. Most likely: wrong bot token or your chat ID isn't in the allowed list.
 
 **"Copilot binary not found"**
-→ Copilot CLI isn't installed. Install it via the VS Code Server add-on or manually to `/share/copilot-tools/copilot`.
+→ If `copilot_binary` is `auto`, check internet connectivity and the add-on logs for bootstrap errors from `init-copilot`. If you set a custom path, verify that path exists.
 
 **"ACP test failed"**
-→ Copilot isn't logged in. Open a terminal and run: `/share/copilot-tools/copilot login`
+→ Copilot needs GitHub authentication. Authenticate through the Telegram device flow when prompted — no terminal is needed.
 
 **"Another process is polling"**
 → Another bot instance is running with the same token. Wait 30 seconds, then restart this add-on.
@@ -328,9 +325,8 @@ Maximum number of members a group can have for the bot to operate. Default: 50. 
 
 ## Prerequisites
 
-- Copilot CLI must be installed and authenticated (usually via the VS Code Server add-on)
-- The binary must be on a shared volume accessible to this add-on (default: `/share/copilot-tools/copilot`)
-- A GitHub fine-grained PAT for full functionality
+- The add-on automatically downloads and configures Copilot CLI on first start
+- A GitHub account with Copilot access is required
 
 ## More Info
 

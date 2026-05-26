@@ -2,6 +2,25 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.14.0] — 2026-05-26
+
+### Added
+- **All-in-one bootstrapping**: Copilot CLI is automatically downloaded on first start — no manual installation required
+- **Bundled ha-mcp**: Home Assistant MCP server is included in the Docker image
+- **Auto-configuration**: MCP config, Copilot settings, and trusted folders are generated automatically
+- New `init-copilot` s6 oneshot bootstrap service runs before the bot to ensure everything is ready
+
+### Changed
+- Default `copilot_binary` changed from `/share/copilot-tools/copilot` to `auto` (auto-download and manage)
+- Default `copilot_config_dir` changed from `/share/copilot-tools/.copilot` to `auto` (auto-manage)
+- Simplified startup: `telegram-bot/run` script delegates setup to bootstrap service
+- `github_token` is now optional — users can authenticate via Telegram device flow instead
+- Prerequisites reduced: only a Telegram account and GitHub account with Copilot access needed
+
+### Backwards Compatible
+- Existing users with custom paths in their configuration are unaffected
+- The `auto` resolver checks `/share/copilot-tools/` as a fallback before downloading
+
 ## [0.13.5] — 2026-05-26
 
 ### Changed

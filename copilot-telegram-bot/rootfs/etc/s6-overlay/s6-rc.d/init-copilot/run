@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Bootstrap: Install Copilot CLI & configure MCP (runs once before telegram-bot)
+# ==============================================================================
+OPTIONS="/data/options.json"
+LOG_PREFIX="[init-copilot]"
+
+log() { echo "$(date -Iseconds) ${LOG_PREFIX} $*"; }
+
+# --- Read config (graceful if options.json missing) ---
+COPILOT_BINARY="$(jq -r '.copilot_binary // "auto"' "${OPTIONS}" 2>/dev/null || echo "auto")"
+COPILOT_CONFIG_DIR="$(jq -r '.copilot_config_dir // "auto"' "${OPTIONS}" 2>/dev/null || echo "auto")"
+MODEL="$(jq -r '.model // "auto"' "${OPTIONS}" 2>/dev/null || echo "auto")"
+
+# Resolve "auto" to managed paths
+AUTO_DIR="/data/copilot"
+AUTO_BIN="${AUTO_DIR}/bin/copilot"
+AUTO_CONFIG="${AUTO_DIR}/.copilot"
+
+if [ "${COPILOT_BINARY}" = "auto" ] || [ -z "${COPILOT_BINARY}" ]; then
+    COPILOT_BINARY="${AUTO_BIN}"
+    log "Copilot binary: auto → ${COPILOT_BINARY}"
+fi
+
+if [ "${COPILOT_CONFIG_DIR}" = "auto" ] || [ -z "${COPILOT_CONFIG_DIR}" ]; then
+    COPILOT_CONFIG_DIR="${AUTO_CONFIG}"
+    log "Copilot config: auto → ${COPILOT_CONFIG_DIR}"
+fi
+
+# --- 1. Install Copilot CLI if missing ---
+if [ ! -x "${COPILOT_BINARY}" ]; then
+    # Check legacy location as fallback
+    if [ -x "/share/copilot-tools/copilot" ]; then
+        log "Copilot binary found at legacy path /share/copilot-tools/copilot"
+        # Don't download — the config.mjs fallback will handle this
+    else
+        log "Copilot CLI not found — downloading from GitHub..."
+        mkdir -p "$(dirname "${COPILOT_BINARY}")"
+
+        # Use the official install script
+        export PREFIX="${AUTO_DIR}"
+        if curl -fsSL https://gh.io/copilot-install | bash; then
+            log "Copilot CLI installed successfully"
+            # The install script puts it in ${PREFIX}/bin/copilot
+            if [ -x "${AUTO_BIN}" ]; then
+                ${AUTO_BIN} version 2>/dev/null || true
+            fi
+        else
+            log "WARNING: Failed to download Copilot CLI. The bot will start but Copilot won't work."
+            log "You can install manually or check your internet connection."
+        fi
+    fi
+else
+    log "Copilot CLI found at ${COPILOT_BINARY}"
+    ${COPILOT_BINARY} version 2>/dev/null || true
+fi
+
+# --- 2. Set up Copilot config directory ---
+mkdir -p "${COPILOT_CONFIG_DIR}"
+
+# Create settings.json if not exists
+SETTINGS_FILE="${COPILOT_CONFIG_DIR}/settings.json"
+if [ ! -f "${SETTINGS_FILE}" ]; then
+    log "Creating default settings.json"
+    if [ "${MODEL}" = "auto" ] || [ -z "${MODEL}" ]; then
+        echo '{}' > "${SETTINGS_FILE}"
+    else
+        jq -n --arg model "${MODEL}" '{"model": $model}' > "${SETTINGS_FILE}"
+    fi
+fi
+
+# Trust /config folder (HA configuration)
+CONFIG_FILE="${COPILOT_CONFIG_DIR}/config.json"
+if [ ! -f "${CONFIG_FILE}" ]; then
+    log "Creating initial config.json with trusted folders"
+    jq -n '{"trustedFolders": ["/config"]}' > "${CONFIG_FILE}"
+elif ! jq -e '.trustedFolders | index("/config")' "${CONFIG_FILE}" >/dev/null 2>&1; then
+    log "Adding /config to trusted folders"
+    jq '.trustedFolders = (.trustedFolders // []) + ["/config"] | .trustedFolders |= unique' "${CONFIG_FILE}" > "${CONFIG_FILE}.tmp" \
+        && mv "${CONFIG_FILE}.tmp" "${CONFIG_FILE}"
+fi
+
+# --- 3. Generate ha-mcp wrapper and MCP config ---
+HA_MCP_WRAPPER="${AUTO_DIR}/ha-mcp-wrapper.sh"
+mkdir -p "${AUTO_DIR}"
+
+cat > "${HA_MCP_WRAPPER}" << 'WRAPPER'
+#!/bin/bash
+export HOMEASSISTANT_URL="http://supervisor/core"
+export HOMEASSISTANT_TOKEN="${SUPERVISOR_TOKEN}"
+export LOG_LEVEL="WARNING"
+exec /opt/ha-mcp/bin/ha-mcp "$@"
+WRAPPER
+chmod +x "${HA_MCP_WRAPPER}"
+
+# Generate MCP config pointing to bundled ha-mcp
+MCP_CONFIG="${COPILOT_CONFIG_DIR}/mcp-config.json"
+if [ ! -f "${MCP_CONFIG}" ]; then
+    log "Creating MCP config with bundled ha-mcp"
+    cat > "${MCP_CONFIG}" << EOF
+{
+  "mcpServers": {
+    "ha-mcp": {
+      "command": "${HA_MCP_WRAPPER}",
+      "args": []
+    }
+  }
+}
+EOF
+else
+    log "MCP config already exists at ${MCP_CONFIG} — keeping existing"
+fi
+
+# --- 4. Symlink ~/.copilot ---
+ln -sfn "${COPILOT_CONFIG_DIR}" "${HOME}/.copilot"
+log "Linked ~/.copilot → ${COPILOT_CONFIG_DIR}"
+
+log "Bootstrap complete"

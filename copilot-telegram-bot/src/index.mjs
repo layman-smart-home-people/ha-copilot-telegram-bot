@@ -60,8 +60,9 @@ async function validate(config) {
     // Validate copilot binary
     if (!existsSync(config.copilotBinary)) {
         log(`WARNING: Copilot binary not found at ${config.copilotBinary}`);
+        log("If copilot_binary is set to 'auto', the bootstrap script should have installed it.");
+        log("Check the add-on logs for init-copilot bootstrap errors.");
         log("The bot will start but Copilot won't work until the binary is available.");
-        log("Make sure the Copilot CLI is installed at the configured path.");
         return; // Don't exit — let the bot start anyway
     }
 
@@ -100,6 +101,8 @@ async function validate(config) {
 async function main() {
 
     const config = await loadConfig(log);
+    log(`Copilot binary: ${config.copilotBinary}`);
+    log(`Copilot config: ${config.copilotConfigDir}`);
 
     // Inject github_token into env BEFORE validation so the ACP test has it
     if (config.githubToken) {
