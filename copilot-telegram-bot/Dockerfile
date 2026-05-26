@@ -5,7 +5,7 @@ FROM ${BUILD_FROM}
 ARG CACHE_BUST=2026-05-26-v2
 
 # Install Node.js 22 (LTS) from NodeSource and jq
-RUN echo "build: ${CACHE_BUST}" && apt-get update \
+RUN echo "force-rebuild-20260526-1905" > /dev/null && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl gnupg jq \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
