@@ -104,7 +104,28 @@ export class ResponseComposer {
      */
     appendThought(text) {
         if (!this.active || !this.#thoughtActive) return;
-        this.#thoughtBuffer += text;
+        if (!text) return;
+        if (!this.#thoughtBuffer) {
+            this.#thoughtBuffer = text;
+            this.#scheduleEdit();
+            return;
+        }
+
+        // Some ACP providers emit cumulative thought chunks (full-so-far text),
+        // while others emit deltas. Merge with overlap to avoid duplication.
+        if (this.#thoughtBuffer.endsWith(text)) {
+            this.#scheduleEdit();
+            return;
+        }
+        let overlap = 0;
+        const max = Math.min(this.#thoughtBuffer.length, text.length);
+        for (let i = max; i > 0; i--) {
+            if (this.#thoughtBuffer.endsWith(text.slice(0, i))) {
+                overlap = i;
+                break;
+            }
+        }
+        this.#thoughtBuffer += text.slice(overlap);
         this.#scheduleEdit();
     }
 

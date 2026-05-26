@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.15.5] — 2026-05-26
+
+### Fixed
+- **Duplicated streamed thinking text** — reasoning/thought chunks now merge by overlap to handle both delta and cumulative chunk formats without repeated phrases
+
 ## [0.15.3] — 2026-05-26
 
 ### Fixed
