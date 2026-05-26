@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.14.4] — 2026-05-26
+
+### Fixed
+- Removed custom AppArmor profile that was blocking /init execution (v0.13.5 had none)
+
 ## [0.14.3] — 2026-05-26
 
 ### Fixed
