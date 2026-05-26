@@ -368,6 +368,7 @@ export async function handleSlashCommand(ctx, command, args) {
             case "new": {
                 // Create new session (and optionally a forum topic)
                 if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
+                if (promptActive) { reply("⏳ Copilot is busy — wait for it to finish before creating a new session."); return true; }
                 const title = args || `Session ${new Date().toLocaleString("en-SG", { timeZone: process.env.TZ || "UTC" })}`;
 
                 if (sessionMgr?.forumChatId && ref?.chatId === sessionMgr.forumChatId) {

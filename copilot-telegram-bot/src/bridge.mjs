@@ -59,6 +59,9 @@ export class Bridge {
     // Session switch guard — true while loading a different ACP session
     #switching = false;
 
+    // Set when the active prompt was cancelled due to message edit
+    #editCancelled = false;
+
     // Typing state
     #typingInterval = null;
     #typingDebounce = null;
@@ -1037,6 +1040,7 @@ export class Bridge {
             // Check if currently being processed (same message) — cancel and resubmit
             if (this.#activeRef && messageId === this.#activeRef.triggerMessageId) {
                 this.#log(`Edit to active message msg=${messageId} — cancelling current prompt`);
+                this.#editCancelled = true;
                 try {
                     // Cancel the ACP turn
                     if (this.#acp?.alive) await this.#acp.cancel();
@@ -1053,6 +1057,8 @@ export class Bridge {
                 const editRef = makeRef(chatId, edited.message_thread_id || null, null, edited.chat.type);
                 editRef.userId = edited.from?.id;
                 editRef.username = edited.from?.username || edited.from?.first_name;
+                editRef.firstName = edited.from?.first_name || null;
+                editRef.triggerMessageId = messageId;
                 if (this.#scopeMgr) editRef.scopeKey = this.#scopeMgr.resolveKey(editRef);
                 const editPrefix = this.#getPrefix(editRef);
                 this.#promptQueue.unshift({
@@ -1097,10 +1103,11 @@ export class Bridge {
             const prefix = this.#getPrefix(ref);
             const correctionPrompt = prefix + `[CORRECTION — The user edited their previous message. This is NOT a new request. Do NOT re-execute any actions already taken. Just acknowledge the correction or adjust your previous response if needed.]\nCorrected message: ${editedText}`;
 
-            await this.#queuePrompt(correctionPrompt, {}, ref, messageId);
+            // Set reaction before queueing so it doesn't get overwritten by the queue's final ✅
             this.#telegram.enqueue(() =>
                 this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
             );
+            await this.#queuePrompt(correctionPrompt, {}, ref, messageId);
             return;
         }
 
@@ -1571,27 +1578,34 @@ export class Bridge {
             const result = await this.#acp.prompt(text, opts);
             this.#log(`Prompt completed successfully: ${JSON.stringify(result)?.substring(0, 200)}`);
         } catch (err) {
-            this.#log(`Prompt error: ${err.message}`);
-            if (scope) scope.turnToolErrors++;
-            const userMsg = formatError(err);
-            if (scope?.composer?.active) {
-                await scope.composer.abort(userMsg);
-                scope.composer = null;
-            } else if (ref) {
-                this.#transport.enqueueSend(ref, userMsg);
+            // Skip error handling if this prompt was cancelled due to a message edit
+            if (this.#editCancelled) {
+                this.#log(`Prompt cancelled (edit): ${err.message}`);
             } else {
-                for (const cid of this.#allowedChatIds) {
-                    this.#telegram.enqueue(() =>
-                        this.#telegram.sendMessage(cid, userMsg)
-                    );
+                this.#log(`Prompt error: ${err.message}`);
+                if (scope) scope.turnToolErrors++;
+                const userMsg = formatError(err);
+                if (scope?.composer?.active) {
+                    await scope.composer.abort(userMsg);
+                    scope.composer = null;
+                } else if (ref) {
+                    this.#transport.enqueueSend(ref, userMsg);
+                } else {
+                    for (const cid of this.#allowedChatIds) {
+                        this.#telegram.enqueue(() =>
+                            this.#telegram.sendMessage(cid, userMsg)
+                        );
+                    }
                 }
             }
         } finally {
             // Set reaction on user's message — response delivered
-            if (ref && messageId) {
+            // Skip if this prompt was cancelled due to an edit (the resubmitted prompt will set it)
+            if (ref && messageId && !this.#editCancelled) {
                 const emoji = scope?.turnToolErrors > 0 ? "⚠️" : "✅";
                 this.#telegram.setMessageReaction(ref.chatId, messageId, emoji).catch(() => {});
             }
+            this.#editCancelled = false;
 
             // Finalize composer if still active (safety net)
             await this.#finalizeComposer();

@@ -296,8 +296,9 @@ export class ResponseComposer {
         });
 
         const count = this.#toolSteps.length;
+        const failedCount = this.#toolSteps.filter(s => s.status === "failed").length;
         const header = isFinal
-            ? `🔧 <b>${count} step${count > 1 ? "s" : ""} completed</b>`
+            ? `🔧 <b>${count} step${count > 1 ? "s" : ""}${failedCount > 0 ? ` (${failedCount} failed)` : ""}</b>`
             : `🔧 <b>Steps:</b>`;
 
         return `<blockquote>${header}\n${lines.join("\n")}</blockquote>`;
@@ -306,11 +307,12 @@ export class ResponseComposer {
     #buildThoughtHtml() {
         if (!this.#thoughtBuffer.trim()) return "";
         const thought = this.#thoughtBuffer.trim();
-        // Cap at 1500 chars to leave room for steps within the 4096 message limit
-        const display = thought.length > 1500
-            ? thought.slice(0, 1500) + "…"
-            : thought;
-        return `<blockquote expandable>🧠 <b>Reasoning</b>\n${escapeHtml(display)}</blockquote>`;
+        // Escape first, then truncate to avoid cutting HTML entities
+        const escaped = escapeHtml(thought);
+        const display = escaped.length > 2000
+            ? escaped.slice(0, 2000) + "…"
+            : escaped;
+        return `<blockquote expandable>🧠 <b>Reasoning</b>\n${display}</blockquote>`;
     }
 
     #convertAnswer(markdown) {
