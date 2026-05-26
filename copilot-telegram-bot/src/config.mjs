@@ -136,5 +136,32 @@ export async function loadConfig(log = () => {}) {
         log("No MCP servers configured — ha-mcp will not be available");
     }
 
+    // Parse changelog for /status viewer
+    let changelog = [];
+    for (const clPath of ["/app/CHANGELOG.md", "/config/CHANGELOG.md"]) {
+        if (existsSync(clPath)) {
+            try {
+                const raw = readFileSync(clPath, "utf-8");
+                const entries = raw.split(/^## /m).slice(1); // split by ## headers, skip preamble
+                for (const entry of entries) {
+                    const headerEnd = entry.indexOf("\n");
+                    const header = entry.slice(0, headerEnd).trim();
+                    const body = entry.slice(headerEnd + 1).trim();
+                    const vMatch = header.match(/\[([^\]]+)\]/);
+                    changelog.push({
+                        version: vMatch ? vMatch[1] : header,
+                        header,
+                        body,
+                    });
+                }
+                log(`Parsed changelog: ${changelog.length} entries from ${clPath}`);
+            } catch (err) {
+                log(`Failed to parse changelog: ${err.message}`);
+            }
+            break;
+        }
+    }
+    config.changelog = changelog;
+
     return config;
 }

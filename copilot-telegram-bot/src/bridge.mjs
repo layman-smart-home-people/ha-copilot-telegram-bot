@@ -308,8 +308,9 @@ export class Bridge {
             const currentMode = scope?.mode || "";
             const modelName = this.#models?.find(m => m.modelId === currentModel)?.name || currentModel || "unknown";
             const modeName = this.#modes?.find(m => m.id === currentMode)?.name || currentMode || "unknown";
+            const modeIcon = currentMode === "autopilot" ? "🟢" : currentMode === "plan" ? "📝" : "💬";
             lines.push(`🤖 Model: ${modelName}`);
-            lines.push(`📋 Mode: ${modeName}`);
+            lines.push(`${modeIcon} Mode: ${modeName}`);
             lines.push(`🔗 Session: ${scopeSessionId ? `${scopeSessionId.slice(0, 8)}…` : "none"}`);
             lines.push(`📊 Models available: ${this.#models?.length || 0}`);
         }
@@ -331,11 +332,17 @@ export class Bridge {
         }
         if (scope?.history) lines.push(`📜 History: ${scope.history.length} messages`);
 
+        const currentMode = scope?.mode || "";
+        const modeButtonIcon = currentMode === "autopilot" ? "🟢" : currentMode === "plan" ? "📝" : "💬";
+        const modeButtonLabel = currentMode && currentMode !== "interactive"
+            ? `${modeButtonIcon} ${currentMode.charAt(0).toUpperCase() + currentMode.slice(1)}`
+            : `${modeButtonIcon} Mode`;
+
         const statusButtons = {
             inline_keyboard: ready ? [
                 [
                     { text: "🤖 Model", callback_data: "/model" },
-                    { text: "📋 Mode", callback_data: "/mode" },
+                    { text: modeButtonLabel, callback_data: "/mode" },
                 ],
                 [
                     { text: "📊 Usage", callback_data: "/usage" },
@@ -349,13 +356,22 @@ export class Bridge {
                     { text: "🔄 Restart", callback_data: "/session new" },
                     { text: "⏹️ Stop", callback_data: "/session stop" },
                 ],
-                [{ text: "✕ Dismiss", callback_data: "dismiss" }],
+                [
+                    { text: "📋 Changelog", callback_data: "changelog" },
+                    { text: "✕ Dismiss", callback_data: "dismiss" },
+                ],
             ] : alive ? [
                 [{ text: "🔄 Refresh", callback_data: "/status" }],
-                [{ text: "✕ Dismiss", callback_data: "dismiss" }],
+                [
+                    { text: "📋 Changelog", callback_data: "changelog" },
+                    { text: "✕ Dismiss", callback_data: "dismiss" },
+                ],
             ] : [
                 [{ text: "🚀 Start Copilot", callback_data: "/session new" }],
-                [{ text: "✕ Dismiss", callback_data: "dismiss" }],
+                [
+                    { text: "📋 Changelog", callback_data: "changelog" },
+                    { text: "✕ Dismiss", callback_data: "dismiss" },
+                ],
             ],
         };
 
@@ -853,6 +869,66 @@ export class Bridge {
             // Also clear status tracking if this was the active status
             if (this.#statusMsg?.messageId === query.message.message_id) {
                 this.#statusMsg = null;
+            }
+            return;
+        }
+
+        // Handle changelog viewer
+        if (data === "changelog" || data.startsWith("changelog:")) {
+            const entries = this.#config?.changelog || [];
+            if (entries.length === 0) {
+                try {
+                    await this.#telegram.call("answerCallbackQuery", {
+                        callback_query_id: query.id,
+                        text: "No changelog available",
+                        show_alert: true,
+                    });
+                } catch {}
+                return;
+            }
+            const page = data === "changelog" ? 0 : parseInt(data.split(":")[1]) || 0;
+            const entry = entries[page];
+            if (!entry) return;
+
+            // Format changelog entry as plain text
+            let text = `📋 Changelog — v${entry.version}\n\n`;
+            // Convert markdown to readable plain text
+            let body = entry.body
+                .replace(/^### (.+)/gm, "⸻ $1 ⸻")
+                .replace(/^- \*\*(.+?)\*\*:?\s*/gm, "• $1: ")
+                .replace(/^- /gm, "• ")
+                .replace(/\*\*(.+?)\*\*/g, "$1");
+            // Truncate to fit Telegram limit (leave room for nav)
+            if (text.length + body.length > 3800) {
+                body = body.slice(0, 3800 - text.length) + "\n\n…(truncated)";
+            }
+            text += body;
+
+            const navButtons = [];
+            if (page > 0) {
+                navButtons.push({ text: "⬅️ Newer", callback_data: `changelog:${page - 1}` });
+            }
+            if (page < entries.length - 1) {
+                navButtons.push({ text: "Older ➡️", callback_data: `changelog:${page + 1}` });
+            }
+            const buttons = {
+                inline_keyboard: [
+                    ...(navButtons.length > 0 ? [navButtons] : []),
+                    [
+                        { text: "⬅️ Back", callback_data: "/status" },
+                        { text: "✕ Dismiss", callback_data: "dismiss" },
+                    ],
+                ],
+            };
+            try {
+                await this.#telegram.call("editMessageText", {
+                    chat_id: chatId,
+                    message_id: query.message.message_id,
+                    text,
+                    reply_markup: buttons,
+                });
+            } catch (err) {
+                this.#log(`Changelog display failed: ${err.message}`);
             }
             return;
         }

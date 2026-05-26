@@ -24,8 +24,8 @@ RUN npm install --production
 # Build: 2026-05-26T14:53
 COPY src/ ./src/
 
-# Copy config.yaml for version reading
-COPY config.yaml ./
+# Copy config.yaml and CHANGELOG.md for runtime access
+COPY config.yaml CHANGELOG.md ./
 
 # Copy rootfs
 COPY rootfs /

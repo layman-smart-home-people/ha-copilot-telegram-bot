@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.14.1] — 2026-05-26
+
+### Added
+- **Changelog viewer**: tap "📋 Changelog" in the status menu to browse version history with pagination
+- **`/fleet` command**: enables autopilot and hints Copilot to use parallel multi-agent execution
+- **Mode icons**: status menu shows emoji-coded mode indicator (🟢 Autopilot, 📝 Plan, 💬 Interactive)
+
+### Changed
+- Mode button in status menu now shows current mode name instead of generic "Mode" label
+- Changelog button replaces standalone dismiss row — now paired with dismiss for space efficiency
+
 ## [0.14.0] — 2026-05-26
 
 ### Added

@@ -82,6 +82,16 @@ export async function handleSlashCommand(ctx, command, args) {
                 }
                 return true;
             }
+            case "fleet": {
+                if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
+                if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
+                await activateScopeSession({ createIfMissing: true });
+                // Fleet is autopilot with a hint to use parallel agents
+                await acp.setMode("autopilot");
+                if (scope) scope.mode = "autopilot";
+                reply(`🚀 Fleet mode ON for ${scopeLabel}\n\n💡 Copilot is in autopilot. Send your task and ask it to "use /autopilot_fleet" or "parallelize with fleet mode" for multi-agent execution.`);
+                return true;
+            }
             case "mode": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
                 if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
@@ -301,7 +311,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 lines.push("📱 Bot Commands:");
                 lines.push("  /help /status /model /mode");
                 lines.push("  /skills /history /compact");
-                lines.push("  /autopilot /plan /stop /retry");
+                lines.push("  /autopilot /plan /fleet /stop /retry");
                 lines.push("  /usage /session");
 
                 if (!knownTools?.size && !availableCommands?.length) {
@@ -322,6 +332,7 @@ export async function handleSlashCommand(ctx, command, args) {
                         [
                             { text: "🤖 Autopilot", callback_data: "/autopilot on" },
                             { text: "📋 Plan", callback_data: "/plan on" },
+                            { text: "🚀 Fleet", callback_data: "/fleet" },
                         ],
                         [
                             { text: "🗜️ Compact", callback_data: "/compact" },
@@ -342,6 +353,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     "📋 Available commands:\n" +
                     "  /autopilot [on|off]\n" +
                     "  /plan [on|off]\n" +
+                    "  /fleet — parallel agent mode\n" +
                     "  /model [name]\n" +
                     "  /mode\n" +
                     "  /skills — show available tools\n" +
