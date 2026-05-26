@@ -1,0 +1,75 @@
+configuration:
+  bot_token:
+    name: Telegram Bot Token
+    description: >-
+      Bot token from @BotFather. Create a bot via /newbot in Telegram and paste
+      the token here.
+  allowed_chat_ids:
+    name: Allowed Chat IDs
+    description: >-
+      List of Telegram user or chat IDs allowed to use the bot. Get yours from
+      @userinfobot. These users are also admins for pairing.
+  github_token:
+    name: GitHub Token (optional)
+    description: >-
+      Fine-grained GitHub personal access token. Optional — if not set, the bot
+      will prompt you to authenticate via Telegram using a device code.
+  copilot_binary:
+    name: Copilot Binary Path
+    description: >-
+      Set to "auto" (default) to let the add-on download and manage the Copilot
+      CLI automatically. Set a custom path to use your own installation.
+  copilot_config_dir:
+    name: Copilot Config Directory
+    description: >-
+      Set to "auto" (default) to let the add-on manage the Copilot configuration
+      directory automatically. Set a custom path to use your own.
+  copilot_extra_args:
+    name: Extra Copilot Arguments
+    description: >-
+      Additional command-line flags passed to the Copilot CLI process.
+  preamble:
+    name: System Preamble
+    description: >-
+      System prompt prefix injected at the start of each Copilot session.
+      Instructs the AI how to format responses for Telegram.
+  auto_start:
+    name: Auto-start Copilot
+    description: >-
+      Start the Copilot CLI process when the add-on boots. If disabled, Copilot
+      starts on demand when you send your first message.
+  idle_timeout_minutes:
+    name: Idle Timeout (minutes)
+    description: >-
+      Automatically stop Copilot after this many minutes of inactivity. Set to 0
+      to keep it running indefinitely. Maximum 1440 (24 hours).
+  model:
+    name: AI Model
+    description: >-
+      Default AI model. Set to "auto" for automatic selection, or specify a model
+      name like "claude-sonnet-4-5" or "gpt-4.1".
+  working_directory:
+    name: Working Directory
+    description: >-
+      The directory Copilot works in. Default is /config (your Home Assistant
+      configuration directory).
+  permission_policy:
+    name: Permission Policy
+    description: >-
+      How the bot handles tool calls. "interactive" prompts for write actions
+      with Allow/Deny buttons. "allow_all" auto-approves everything.
+  group_mode:
+    name: Group Response Mode
+    description: >-
+      How the bot responds in group chats. "mention" responds only to @mentions
+      and replies. "all" responds to every message.
+  allowed_groups:
+    name: Allowed Groups
+    description: >-
+      List of group chat IDs the bot is allowed to join. Leave empty to allow
+      all groups.
+  max_group_members:
+    name: Max Group Members
+    description: >-
+      Maximum number of members a group can have for the bot to operate in.
+      The bot auto-leaves groups that exceed this limit.

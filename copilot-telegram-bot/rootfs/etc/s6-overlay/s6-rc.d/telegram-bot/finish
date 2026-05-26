@@ -1,2 +1,14 @@
 #!/usr/bin/env bash
-echo "[$(date -Iseconds)] INFO: Telegram bot service stopped"
+# ==============================================================================
+# Handle Telegram bot service exit
+# ==============================================================================
+
+declare APP_EXIT_CODE=${1}
+
+if [[ "${APP_EXIT_CODE}" -ne 0 ]] && [[ "${APP_EXIT_CODE}" -ne 256 ]]; then
+    echo "[$(date -Iseconds)] WARNING: Telegram bot exited with code ${APP_EXIT_CODE}"
+    echo "${APP_EXIT_CODE}" > /run/s6-linux-init-container-results/exitcode
+    exec /run/s6/basedir/bin/halt
+fi
+
+echo "[$(date -Iseconds)] INFO: Telegram bot service stopped (code ${APP_EXIT_CODE})"

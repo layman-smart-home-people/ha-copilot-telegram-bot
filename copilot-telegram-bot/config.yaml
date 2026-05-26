@@ -9,6 +9,7 @@ arch:
   - amd64
 startup: application
 boot: auto
+stage: experimental
 hassio_api: true
 homeassistant_api: true
 map:
@@ -36,10 +37,10 @@ options:
   allowed_groups: []
   max_group_members: 50
 schema:
-  bot_token: str
+  bot_token: password
   allowed_chat_ids:
     - str
-  github_token: str?
+  github_token: password?
   copilot_binary: str
   copilot_config_dir: str
   copilot_extra_args: str

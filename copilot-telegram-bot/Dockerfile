@@ -35,4 +35,8 @@ LABEL \
     io.hass.name="Copilot Telegram Bot" \
     io.hass.description="Always-on Telegram bot for GitHub Copilot CLI" \
     io.hass.type="addon" \
-    io.hass.version="${BUILD_VERSION}"
+    io.hass.version="${BUILD_VERSION}" \
+    org.opencontainers.image.title="Copilot Telegram Bot" \
+    org.opencontainers.image.description="Always-on Telegram bot connected to GitHub Copilot CLI via ACP" \
+    org.opencontainers.image.source="https://github.com/layman-smart-home-people/ha-copilot-telegram-bot" \
+    org.opencontainers.image.licenses="MIT"
