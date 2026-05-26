@@ -143,20 +143,32 @@ export class ResponseComposer {
         }
 
         const stepsHtml = this.#buildStepsHtml(true);
-        const hasSteps = this.#toolSteps.length > 0;
+        const thoughtHtml = this.#buildThoughtHtml();
+        let headerHtml = [thoughtHtml, stepsHtml].filter(Boolean).join("\n");
+        // Safety: truncate header to fit Telegram message limit
+        if (headerHtml.length > MAX_MSG_LEN - 50) {
+            headerHtml = headerHtml.slice(0, MAX_MSG_LEN - 50) + "\n<i>…</i>";
+        }
+        const hasHeader = !!headerHtml;
         const hasAnswer = this.#textBuffer.trim().length > 0;
 
-        if (hasSteps && hasAnswer) {
-            // Edit placeholder → collapsed steps summary
-            await this.#editMessage(stepsHtml);
-            // Return answer as separate message(s)
+        if (hasHeader && hasAnswer) {
+            // Try to combine header + answer into one message
+            const answerHtml = this.#convertAnswer(this.#textBuffer);
+            const combined = `${headerHtml}\n\n${answerHtml}`;
+            if (combined.length <= MAX_MSG_LEN) {
+                await this.#editMessage(combined);
+                return [];
+            }
+            // Won't fit — split: header in placeholder, answer as new message(s)
+            await this.#editMessage(headerHtml);
             return chunkMessage(this.#textBuffer);
-        } else if (hasSteps && !hasAnswer) {
-            // Only steps, no text answer — edit to show steps
-            await this.#editMessage(stepsHtml);
+        } else if (hasHeader && !hasAnswer) {
+            // Only steps/thinking, no text answer
+            await this.#editMessage(headerHtml);
             return [];
-        } else if (!hasSteps && hasAnswer) {
-            // No tool steps — edit placeholder into the answer directly
+        } else if (!hasHeader && hasAnswer) {
+            // No tool steps or thinking — edit placeholder into the answer directly
             const answerHtml = this.#convertAnswer(this.#textBuffer);
             if (answerHtml.length <= MAX_MSG_LEN) {
                 await this.#editMessage(answerHtml);
@@ -235,16 +247,22 @@ export class ResponseComposer {
                 ? `🔐 <i>Awaiting permission...</i>${timer}\n${stepsHtml}`
                 : `🔐 <i>Awaiting permission...</i>${timer}`;
         } else if (this.#thoughtActive && this.#thoughtBuffer) {
-            // Live reasoning display — show last meaningful line, trimmed
-            const lines = this.#thoughtBuffer.split("\n").filter(l => l.trim());
-            const lastLine = lines.length > 0 ? lines[lines.length - 1].trim() : "";
-            const display = lastLine.length > 200
-                ? "…" + lastLine.slice(-200)
-                : lastLine;
-            const thoughtHtml = display
-                ? `🧠 <i>${escapeHtml(display)}</i>${timer}`
-                : `🤔 <i>Thinking...</i>${timer}`;
-            html = stepsHtml ? `${thoughtHtml}\n${stepsHtml}` : thoughtHtml;
+            // Live reasoning — only show after 3s to avoid flicker on fast responses
+            if (elapsed >= 3) {
+                const lines = this.#thoughtBuffer.split("\n").filter(l => l.trim());
+                const lastLine = lines.length > 0 ? lines[lines.length - 1].trim() : "";
+                const display = lastLine.length > 200
+                    ? "…" + lastLine.slice(-200)
+                    : lastLine;
+                const thoughtHtml = display
+                    ? `🧠 <i>${escapeHtml(display)}</i>${timer}`
+                    : `🤔 <i>Thinking...</i>${timer}`;
+                html = stepsHtml ? `${thoughtHtml}\n${stepsHtml}` : thoughtHtml;
+            } else {
+                html = stepsHtml
+                    ? `🤔 <i>Thinking...</i>${timer}\n${stepsHtml}`
+                    : `🤔 <i>Thinking...</i>${timer}`;
+            }
         } else if (stepsHtml) {
             // Show thinking indicator + tool steps
             html = `🤔 <i>Thinking...</i>${timer}\n${stepsHtml}`;
@@ -283,6 +301,16 @@ export class ResponseComposer {
             : `🔧 <b>Steps:</b>`;
 
         return `<blockquote>${header}\n${lines.join("\n")}</blockquote>`;
+    }
+
+    #buildThoughtHtml() {
+        if (!this.#thoughtBuffer.trim()) return "";
+        const thought = this.#thoughtBuffer.trim();
+        // Cap at 1500 chars to leave room for steps within the 4096 message limit
+        const display = thought.length > 1500
+            ? thought.slice(0, 1500) + "…"
+            : thought;
+        return `<blockquote expandable>🧠 <b>Reasoning</b>\n${escapeHtml(display)}</blockquote>`;
     }
 
     #convertAnswer(markdown) {

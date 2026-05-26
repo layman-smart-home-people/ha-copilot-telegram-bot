@@ -1067,7 +1067,7 @@ export class Bridge {
             }
 
             const prefix = this.#getPrefix(ref);
-            const correctionPrompt = prefix + `[User corrected their previous message to:] ${editedText}`;
+            const correctionPrompt = prefix + `[CORRECTION — The user edited their previous message. This is NOT a new request. Do NOT re-execute any actions already taken. Just acknowledge the correction or adjust your previous response if needed.]\nCorrected message: ${editedText}`;
 
             await this.#queuePrompt(correctionPrompt, {}, ref, messageId);
             this.#telegram.enqueue(() =>
