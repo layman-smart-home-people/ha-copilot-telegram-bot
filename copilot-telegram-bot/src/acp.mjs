@@ -470,8 +470,14 @@ export class ACPClient extends EventEmitter {
                 case "config_option_update":
                     this.emit("config_options", update.configOptions);
                     break;
+                case "agent_thought_chunk":
+                    if (update.content?.type === "text") {
+                        this.emit("thought_chunk", update.content.text);
+                    }
+                    break;
                 default:
                     this.emit("update", update);
+                    this.emit("log", `Unknown session update: ${update.sessionUpdate}`);
             }
         } else {
             this.emit("notification", msg);

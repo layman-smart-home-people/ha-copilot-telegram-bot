@@ -76,6 +76,9 @@ export class Bridge {
     #lastProcessedAt = 0;
     #userMessageTimes = new Map(); // userId → [timestamps]
 
+    // Permission timeout tracker (toolName → { count, lastTimeout })
+    #permissionTimeouts = new Map();
+
     // Login lock — prevents multiple concurrent login flows
     #loginPromise = null;
 
@@ -377,6 +380,17 @@ export class Bridge {
             }
         });
 
+        // Thought chunks → feed to composer for live reasoning display
+        acp.on("thought_chunk", (text) => {
+            if (this.#switching) return;
+            const scope = this.#activeScope;
+            if (!scope) return;
+            this.#resetTypingDebounce();
+            if (scope.composer?.active) {
+                scope.composer.appendThought(text);
+            }
+        });
+
         // Message boundaries
         acp.on("message_start", () => {
             this.#log("Agent message_start");
@@ -554,6 +568,29 @@ export class Bridge {
                 return;
             }
 
+            // Clean stale permission timeout entries (older than 5 minutes)
+            const now = Date.now();
+            for (const [t, entry] of this.#permissionTimeouts) {
+                if (now - entry.lastTimeout > 300000) this.#permissionTimeouts.delete(t);
+            }
+
+            // Check for recently timed-out tools to prevent retry loops
+            const timeoutEntry = this.#permissionTimeouts.get(tool);
+            if (timeoutEntry) {
+                const elapsed = Date.now() - timeoutEntry.lastTimeout;
+                if (elapsed < 120000) { // within 2 minutes
+                    if (timeoutEntry.count >= 2) {
+                        // Auto-deny silently after 2+ consecutive timeouts
+                        acp.respondPermission(requestId, rejectOnceId);
+                        this.#log(`Permission auto-denied (repeated timeout): ${tool}`);
+                        return;
+                    }
+                } else {
+                    // Stale entry, remove it
+                    this.#permissionTimeouts.delete(tool);
+                }
+            }
+
             // Ask user via inline buttons
             const targetRef = this.#activeRef;
             const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
@@ -593,6 +630,7 @@ export class Bridge {
                 if (selectedOption === allowAlwaysId && userId) {
                     scope.grantTool(userId, tool);
                 }
+                this.#permissionTimeouts.delete(tool);
                 acp.respondPermission(requestId, selectedOption);
                 this.#log(`Permission granted (${selectedOption}): ${tool}`);
                 if (permMsgId) {
@@ -603,6 +641,20 @@ export class Bridge {
                     }
                 }
             } else {
+                // Track timeouts (selected is null/falsy when timed out)
+                if (!selected) {
+                    const existing = this.#permissionTimeouts.get(tool) || { count: 0, lastTimeout: 0 };
+                    this.#permissionTimeouts.set(tool, {
+                        count: existing.count + 1,
+                        lastTimeout: Date.now()
+                    });
+
+                    if (existing.count + 1 >= 2) {
+                        this.#telegram.enqueue(() =>
+                            this.#telegram.sendMessage(chatId, `🔐 Auto-denying repeated requests for "${tool}". Use /allowall to approve all tools.`)
+                        );
+                    }
+                }
                 acp.respondPermission(requestId, rejectOnceId);
                 this.#log(`Permission denied: ${tool} (permMsgId=${permMsgId})`);
                 try {
@@ -956,6 +1008,74 @@ export class Bridge {
             return;
         }
 
+        // Handle edited messages
+        if (update.edited_message) {
+            const edited = update.edited_message;
+            const editedText = edited.text || edited.caption || "";
+            const messageId = edited.message_id;
+            const chatId = edited.chat.id;
+
+            if (!editedText.trim()) return; // ignore non-text edits
+
+            this.#log(`Edited message: chat=${chatId} msg=${messageId} text="${editedText.substring(0, 50)}"`);
+
+            // Check if this message is still in the prompt queue (not yet processing)
+            const queueIdx = this.#promptQueue.findIndex(p => p.messageId === messageId);
+            if (queueIdx !== -1) {
+                // Update the queued entry's text
+                const entry = this.#promptQueue[queueIdx];
+                const ref = entry.ref;
+                const prefix = this.#getPrefix(ref);
+                entry.text = prefix + editedText;
+                this.#log(`Updated queued prompt with edited text for msg=${messageId}`);
+                this.#telegram.enqueue(() =>
+                    this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
+                );
+                return;
+            }
+
+            // Check if currently being processed (same message)
+            if (this.#activeRef && messageId === this.#activeRef.triggerMessageId) {
+                this.#log(`Ignoring edit to currently processing message msg=${messageId}`);
+                return;
+            }
+
+            // Message was already processed — send correction as new prompt
+            const userId = edited.from?.id;
+            const threadId = edited.message_thread_id || null;
+            if (userId == null) return;
+
+            // Auth check
+            if (this.#pairing) {
+                if (!this.#pairing.isPaired(userId)) {
+                    this.#log(`Ignoring edit from unpaired user: ${userId}`);
+                    return;
+                }
+            } else {
+                if (!this.#allowedChatIds.includes(userId)) {
+                    this.#log(`Ignoring edit from unauthorized user: ${userId}`);
+                    return;
+                }
+            }
+
+            const ref = makeRef(chatId, threadId, null, edited.chat.type);
+            ref.userId = userId;
+            ref.username = edited.from?.username || edited.from?.first_name;
+
+            if (this.#scopeMgr) {
+                ref.scopeKey = this.#scopeMgr.resolveKey(ref);
+            }
+
+            const prefix = this.#getPrefix(ref);
+            const correctionPrompt = prefix + `[User corrected their previous message to:] ${editedText}`;
+
+            await this.#queuePrompt(correctionPrompt, {}, ref, messageId);
+            this.#telegram.enqueue(() =>
+                this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
+            );
+            return;
+        }
+
         const message = update.message;
         if (!message) return;
 
@@ -1119,15 +1239,11 @@ export class Bridge {
             // Management topic: commands only, no ACP routing
             if (this.#scopeMgr.isManagementTopic(ref)) {
                 if (scope) scope.history.push({ role: "user", text, messageId: message.message_id, replyToMessageId: message.reply_to_message?.message_id });
-                this.#telegram.enqueue(() =>
-                    this.#telegram.setMessageReaction(chatId, message.message_id, "⏳").catch(() => {})
-                );
 
                 if (message.text?.startsWith("/")) {
                     const parsed = parseSlashCommand(message.text, this.#telegram.botInfo?.username);
                     if (parsed) {
                         await handleSlashCommand(this.#buildCommandContext(ref), parsed.command, parsed.args);
-                        this.#telegram.setMessageReaction(chatId, message.message_id, null).catch(() => {});
                         return;
                     }
                 }
@@ -1136,7 +1252,6 @@ export class Bridge {
                 this.#telegram.enqueue(() =>
                     this.#transport.send(ref, "💡 This is the management topic. Use commands like /new, /status, /sessions, /help.")
                 );
-                this.#telegram.setMessageReaction(chatId, message.message_id, null).catch(() => {});
                 return;
             }
         }
@@ -1152,11 +1267,6 @@ export class Bridge {
             resolve(text);
             return;
         }
-
-        // Ack reaction — ⏳ means queued/waiting
-        this.#telegram.enqueue(() =>
-            this.#telegram.setMessageReaction(chatId, message.message_id, "⏳").catch(() => {})
-        );
 
         // Handle slash commands BEFORE typing
         if (message.text?.startsWith("/")) {
@@ -1199,18 +1309,77 @@ export class Bridge {
             try {
                 const attachment = await this.#handleFileAttachment(message);
                 if (attachment) {
-                    await this.#queuePrompt(promptText || prefix + "User sent a file.", {
-                        images: attachment.isImage ? [{
-                            data: attachment.buffer.toString("base64"),
-                            mimeType: attachment.mimeType || "image/png",
-                        }] : undefined,
-                    }, ref, message.message_id);
+                    if (attachment.isImage) {
+                        await this.#queuePrompt(promptText || prefix + "User sent a file.", {
+                            images: [{
+                                data: attachment.buffer.toString("base64"),
+                                mimeType: attachment.mimeType || "image/png",
+                            }],
+                        }, ref, message.message_id);
+                        return;
+                    }
+                    if (attachment.textContent) {
+                        const fileContext = `User attached file '${attachment.displayName}':\n\`\`\`\n${attachment.textContent}\n\`\`\``;
+                        promptText = promptText ? `${fileContext}\n\n${promptText}` : prefix + fileContext;
+                        await this.#queuePrompt(promptText, {}, ref, message.message_id);
+                        return;
+                    }
+                    // Non-image, non-text file — let the model know
+                    const sizeKB = Math.round(attachment.buffer.length / 1024);
+                    const notice = `User attached a file '${attachment.displayName}' (${attachment.mimeType || 'unknown type'}, ${sizeKB}KB) but it's too large or not a text format I can read.`;
+                    promptText = promptText ? `${notice}\n\n${promptText}` : prefix + notice;
+                    await this.#queuePrompt(promptText, {}, ref, message.message_id);
                     return;
                 }
             } catch (err) {
                 this.#transport.enqueueSend(ref, formatError(err));
                 return;
             }
+        }
+
+        // Handle stickers — extract emoji and send as context
+        if (message.sticker) {
+            const emoji = message.sticker.emoji || "🎭";
+            const stickerText = `User sent a sticker: ${emoji}`;
+            await this.#queuePrompt(prefix + stickerText, {}, ref, message.message_id);
+            return;
+        }
+
+        // Handle location — valuable for Home Assistant context
+        if (message.location) {
+            const { latitude, longitude } = message.location;
+            const locationText = `User shared their location: ${latitude}°, ${longitude}°`;
+            await this.#queuePrompt(prefix + locationText, {}, ref, message.message_id);
+            return;
+        }
+
+        // Handle voice messages — friendly rejection with suggestion
+        if (message.voice || message.audio) {
+            this.#transport.enqueueSend(ref, "🎤 Voice/audio messages aren't supported yet. Please type your message or use your keyboard's speech-to-text button.");
+            return;
+        }
+
+        // Handle video — friendly rejection with suggestion
+        if (message.video || message.video_note) {
+            this.#transport.enqueueSend(ref, "🎬 I can't process videos yet. Try sending a screenshot or photo instead!");
+            return;
+        }
+
+        // Handle animations/GIFs — friendly rejection
+        if (message.animation) {
+            this.#transport.enqueueSend(ref, "🎞️ I can't process GIFs. Try sending a photo instead!");
+            return;
+        }
+
+        // Handle contact — friendly rejection
+        if (message.contact) {
+            this.#transport.enqueueSend(ref, "👤 I can't process contact cards. How can I help you?");
+            return;
+        }
+
+        // Silently ignore polls (not directed at bot)
+        if (message.poll) {
+            return;
         }
 
         if (promptText.trim()) {
@@ -1247,10 +1416,19 @@ export class Bridge {
                 return;
             }
             if (this.#promptQueue.length >= 10) {
-                this.#log("Prompt queue full (10), dropping oldest");
-                this.#promptQueue.shift();
+                this.#log("Prompt queue full (10), rejecting new message");
+                if (ref) {
+                    this.#telegram.enqueue(() =>
+                        this.#transport.send(ref, "❌ Queue is full — your message couldn't be processed. Please try again in a minute.")
+                    );
+                }
+                return;
             }
             this.#promptQueue.push({ text, opts, ref, messageId, scopeKey });
+            // Set ⏳ on the user's message to indicate it's queued
+            if (ref && messageId) {
+                this.#telegram.setMessageReaction(ref.chatId, messageId, "⏳").catch(() => {});
+            }
             // Notify the waiting user
             const pos = this.#promptQueue.length;
             if (ref && pos > 0) {
@@ -1294,9 +1472,9 @@ export class Bridge {
             }
         }
 
-        // Update reaction: ⏳ → 👀 (now being processed)
+        // Set reaction: ⚡ (now being processed)
         if (ref && messageId) {
-            this.#telegram.setMessageReaction(ref.chatId, messageId, "👀").catch(() => {});
+            this.#telegram.setMessageReaction(ref.chatId, messageId, "⚡").catch(() => {});
         }
 
         try {
@@ -1381,9 +1559,9 @@ export class Bridge {
                 }
             }
         } finally {
-            // Clear reaction on user's message — response delivered
+            // Set reaction on user's message — response delivered
             if (ref && messageId) {
-                const emoji = scope?.turnToolErrors > 0 ? "❌" : null;
+                const emoji = scope?.turnToolErrors > 0 ? "⚠️" : "✅";
                 this.#telegram.setMessageReaction(ref.chatId, messageId, emoji).catch(() => {});
             }
 
@@ -1391,12 +1569,6 @@ export class Bridge {
             await this.#finalizeComposer();
             this.#stopTyping();
             if (scope) scope.activeTools.clear();
-
-            // React on bot's last response if tools were called
-            if (ref && scope?.lastBotMessageId && scope.turnToolCount > 0) {
-                const emoji = scope.turnToolErrors > 0 ? "👎" : "👍";
-                this.#telegram.setMessageReaction(ref.chatId, scope.lastBotMessageId, emoji).catch(() => {});
-            }
 
             this.#promptActive = false;
             this.#activeRef = null;
@@ -1702,6 +1874,17 @@ export class Bridge {
 
     // --- File handling ---
 
+    static #TEXT_MIMES = new Set([
+        'text/plain', 'text/csv', 'text/html', 'text/xml', 'text/yaml', 'text/markdown',
+        'application/json', 'application/yaml', 'application/x-yaml', 'application/xml',
+        'application/javascript', 'application/typescript', 'application/toml', 'application/x-sh',
+    ]);
+    static #TEXT_EXTENSIONS = new Set([
+        '.yaml', '.yml', '.json', '.txt', '.csv', '.log', '.md', '.py', '.js', '.ts',
+        '.sh', '.xml', '.toml', '.cfg', '.ini', '.conf', '.env', '.html', '.css',
+    ]);
+    static #TEXT_FILE_MAX_BYTES = 50 * 1024;
+
     async #handleFileAttachment(message) {
         let fileId, displayName, isImage = false;
         if (message.photo?.length > 0) {
@@ -1718,7 +1901,17 @@ export class Bridge {
 
         const fileInfo = await this.#telegram.getFile(fileId);
         const buffer = await this.#telegram.downloadFile(fileInfo.file_path);
-        return { buffer, displayName, isImage, mimeType: message.document?.mime_type };
+        const mimeType = message.document?.mime_type || '';
+
+        let textContent = null;
+        if (!isImage && buffer.length <= Bridge.#TEXT_FILE_MAX_BYTES) {
+            const ext = displayName ? '.' + displayName.split('.').pop().toLowerCase() : '';
+            if (Bridge.#TEXT_MIMES.has(mimeType) || Bridge.#TEXT_EXTENSIONS.has(ext)) {
+                textContent = buffer.toString('utf-8');
+            }
+        }
+
+        return { buffer, displayName, isImage, mimeType, textContent };
     }
 
     // --- Response Composer lifecycle ---

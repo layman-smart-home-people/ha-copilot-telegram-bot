@@ -28,6 +28,8 @@ export class ResponseComposer {
     #permissionPending = false;
     #elapsedTimer = null;
     #log;
+    #thoughtBuffer = "";
+    #thoughtActive = true;
 
     constructor(telegram, log = () => {}) {
         this.#telegram = telegram;
@@ -49,6 +51,8 @@ export class ResponseComposer {
         this.#finalized = false;
         this.#startTime = Date.now();
         this.#permissionPending = false;
+        this.#thoughtBuffer = "";
+        this.#thoughtActive = true;
 
         // Periodic elapsed time updates (every 5s)
         this.#elapsedTimer = setInterval(() => this.#scheduleEdit(true), 5000);
@@ -94,10 +98,22 @@ export class ResponseComposer {
     }
 
     /**
+     * Append streaming thought/reasoning text from the agent.
+     */
+    appendThought(text) {
+        if (!this.active || !this.#thoughtActive) return;
+        this.#thoughtBuffer += text;
+        this.#scheduleEdit();
+    }
+
+    /**
      * Append streaming text from the agent.
      */
     appendText(text) {
         if (this.#finalized) return;
+        if (this.#thoughtActive) {
+            this.#thoughtActive = false;
+        }
         this.#textBuffer += text;
         this.#scheduleEdit();
     }
@@ -218,6 +234,13 @@ export class ResponseComposer {
             html = stepsHtml
                 ? `🔐 <i>Awaiting permission...</i>${timer}\n${stepsHtml}`
                 : `🔐 <i>Awaiting permission...</i>${timer}`;
+        } else if (this.#thoughtActive && this.#thoughtBuffer) {
+            // Live reasoning display — show last ~300 chars
+            const thought = this.#thoughtBuffer.length > 300
+                ? "…" + this.#thoughtBuffer.slice(-300)
+                : this.#thoughtBuffer;
+            const thoughtHtml = `🧠 <i>${escapeHtml(thought)}</i>${timer}`;
+            html = stepsHtml ? `${thoughtHtml}\n${stepsHtml}` : thoughtHtml;
         } else if (stepsHtml) {
             // Show thinking indicator + tool steps
             html = `🤔 <i>Thinking...</i>${timer}\n${stepsHtml}`;
