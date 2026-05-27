@@ -67,6 +67,20 @@ export class ACPClient extends EventEmitter {
         if (this.#config.permissionPolicy === "allow_all") {
             args.push("--allow-all");
         }
+        // Disable broken built-in ask_user (no TUI in headless mode).
+        // Our tg-ux MCP server provides a working replacement.
+        args.push("--no-ask-user");
+        // Register the Telegram UX MCP server so the model can ask users questions
+        const mcpConfig = JSON.stringify({
+            mcpServers: {
+                "tg-ux": {
+                    type: "stdio",
+                    command: "node",
+                    args: ["/app/src/tg-mcp-server.mjs"],
+                },
+            },
+        });
+        args.push("--additional-mcp-config", mcpConfig);
         // interactive mode: don't pass --allow-all-tools so CLI sends permission requests
         if (this.#config.model) args.push("--model", this.#config.model);
         if (this.#config.extraArgs) {

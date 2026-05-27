@@ -2,6 +2,24 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.20.0] — 2026-05-27
+
+### Added
+- **MCP ask_user tool** — model can now ask interactive questions via Telegram:
+  - With options → inline keyboard buttons (❓ prefix, one per row + Cancel)
+  - Without options → free-text reply prompt
+  - Replaces broken built-in `ask_user` (disabled via `--no-ask-user`)
+- **tg-ux MCP server** — minimal stdio MCP sidecar (zero deps, ~140 LOC)
+  - Registered via `--additional-mcp-config` at CLI spawn
+  - Communicates with bot via Unix domain socket IPC
+- **Unified interaction state** — composer shows "Awaiting your input…" for all interactive prompts
+
+### Changed
+- `setPermissionPending()` → `setInteractionPending(type)` for generic interaction tracking
+
+### Removed
+- Dead `awaitingInput` code (field was never set, only nulled)
+
 ## [0.19.0] — 2026-05-28
 
 ### Added

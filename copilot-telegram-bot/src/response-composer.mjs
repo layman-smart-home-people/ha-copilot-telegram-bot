@@ -25,7 +25,7 @@ export class ResponseComposer {
     #finalized = false;
     #editRetries = 0;
     #startTime = null;
-    #permissionPending = false;
+    #interactionPending = null; // null | "permission" | "question" | "plan"
     #elapsedTimer = null;
     #log;
     #thoughtBuffer = "";
@@ -53,8 +53,7 @@ export class ResponseComposer {
         this.#lastEditTime = 0;
         this.#finalized = false;
         this.#startTime = Date.now();
-        this.#permissionPending = false;
-        this.#thoughtBuffer = "";
+        this.#interactionPending = null;        this.#thoughtBuffer = "";
         this.#thoughtActive = true;
         this.#planEntries = [];
 
@@ -144,10 +143,11 @@ export class ResponseComposer {
     }
 
     /**
-     * Signal that the agent is waiting for user permission.
+     * Signal that the agent is waiting for user interaction.
+     * @param {string|null} type - "permission", "question", "plan", or null to clear
      */
-    setPermissionPending(pending = true) {
-        this.#permissionPending = pending;
+    setInteractionPending(type = "permission") {
+        this.#interactionPending = type || null;
         this.#scheduleEdit();
     }
 
@@ -265,11 +265,16 @@ export class ResponseComposer {
         const timer = elapsed > 0 ? ` <i>(${elapsed}s)</i>` : "";
 
         let html;
-        if (this.#permissionPending) {
-            // Waiting for user permission
+        if (this.#interactionPending) {
+            const labels = {
+                permission: "🔐 Awaiting permission...",
+                question: "❓ Awaiting your input...",
+                plan: "📋 Awaiting your decision...",
+            };
+            const label = labels[this.#interactionPending] || "⏳ Awaiting your input...";
             html = progressHtml
-                ? `🔐 <i>Awaiting permission...</i>${timer}\n${progressHtml}`
-                : `🔐 <i>Awaiting permission...</i>${timer}`;
+                ? `${label}${timer}\n${progressHtml}`
+                : `${label}${timer}`;
         } else if (this.#thoughtActive && this.#thoughtBuffer) {
             // Live reasoning — only show after 3s to avoid flicker on fast responses
             if (elapsed >= 3) {

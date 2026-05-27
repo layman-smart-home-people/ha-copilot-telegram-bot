@@ -47,9 +47,6 @@ export class ScopeState {
         this.turnToolErrors = 0;
         this.lastBotMessageId = null;
 
-        // Pending ask-user input for this scope only
-        this.awaitingInput = null;
-
         // ACP-side per-session settings
         this.model = "";
         this.mode = "";
@@ -89,10 +86,12 @@ export class ScopeState {
         this.turnToolErrors = 0;
         this.lastBotMessageId = null;
 
-        if (this.awaitingInput) {
-            clearTimeout(this.awaitingInput.timer);
-            this.awaitingInput.resolve?.(null);
-            this.awaitingInput = null;
+        // Clean up pending elicitation/ask_user promises
+        if (this.pendingElicitation) {
+            if (typeof this.pendingElicitation.resolve === "function") {
+                this.pendingElicitation.resolve(undefined);
+            }
+            this.pendingElicitation = null;
         }
 
         if (this.composer?.active) {

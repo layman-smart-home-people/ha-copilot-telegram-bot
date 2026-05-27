@@ -5,13 +5,36 @@
 // and structured callback payloads.
 
 const TIMEOUT_MS = 60_000;
+const MAX_MENU_AGE_MS = 10 * 60 * 1000; // 10 minutes — sweep abandoned menus
+const SWEEP_INTERVAL_MS = 60 * 1000;    // check every minute
 
 export class ButtonManager {
     #telegram;
-    #pending = new Map(); // menuId → { chatId, messageId, resolve, timer, consumed }
+    #pending = new Map(); // menuId → { chatId, messageId, resolve, timer, consumed, createdAt }
+    #sweepTimer = null;
 
     constructor(telegram) {
         this.#telegram = telegram;
+        // Periodic sweep for abandoned zero-timeout menus
+        this.#sweepTimer = setInterval(() => this.#sweepStale(), SWEEP_INTERVAL_MS);
+        if (this.#sweepTimer.unref) this.#sweepTimer.unref(); // don't block process exit
+    }
+
+    /** Stop the sweep timer (call on shutdown). */
+    destroy() {
+        if (this.#sweepTimer) {
+            clearInterval(this.#sweepTimer);
+            this.#sweepTimer = null;
+        }
+    }
+
+    #sweepStale() {
+        const now = Date.now();
+        for (const [menuId, menu] of this.#pending) {
+            if (!menu.timer && (now - menu.createdAt) > MAX_MENU_AGE_MS) {
+                this.#expire(menuId, "⏰ Question expired");
+            }
+        }
     }
 
     /**
@@ -36,15 +59,21 @@ export class ButtonManager {
             }))
         );
 
-        // Send the message
-        const sent = await this.#telegram.sendMessage(
-            chatId, text, undefined, { inline_keyboard }
-        );
+        // Send via raw API call so reply_to_message_id is a top-level param
+        const apiParams = {
+            chat_id: chatId,
+            text,
+            reply_markup: { inline_keyboard },
+            link_preview_options: { is_disabled: true },
+        };
+        if (opts.parseMode) apiParams.parse_mode = opts.parseMode;
+        if (opts.reply_to_message_id) apiParams.reply_to_message_id = opts.reply_to_message_id;
+        const sent = await this.#telegram.call("sendMessage", apiParams);
         const messageId = sent?.message_id;
         if (!messageId) return { value: null, messageId: null };
 
         const value = await new Promise((resolve) => {
-            // timeout=0 means no timeout (buttons persist until clicked)
+            // timeout=0 means no timeout (buttons persist until clicked or swept)
             const timer = timeout > 0
                 ? setTimeout(() => { this.#expire(menuId, opts.timeoutText); }, timeout)
                 : null;
@@ -55,10 +84,11 @@ export class ButtonManager {
                 resolve,
                 timer,
                 consumed: false,
+                createdAt: Date.now(),
             });
         });
 
-        return { value, messageId };
+        return { value, messageId, menuId };
     }
 
     /**
@@ -95,6 +125,7 @@ export class ButtonManager {
                 resolve,
                 timer,
                 consumed: false,
+                createdAt: Date.now(),
             });
         });
 
@@ -182,6 +213,24 @@ export class ButtonManager {
     cancelAll() {
         for (const [menuId] of this.#pending) {
             this.#expire(menuId, "Session ended");
+        }
+    }
+
+    /**
+     * Cancel a specific menu by its menuId.
+     */
+    cancelMenu(menuId, text) {
+        if (menuId) this.#expire(menuId, text || "Dismissed");
+    }
+
+    /**
+     * Cancel all pending menus for a specific chat.
+     */
+    cancelForChat(chatId, text) {
+        for (const [menuId, menu] of this.#pending) {
+            if (menu.chatId === chatId) {
+                this.#expire(menuId, text || "Dismissed");
+            }
         }
     }
 

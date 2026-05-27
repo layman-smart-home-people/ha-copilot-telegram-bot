@@ -12,9 +12,12 @@ import { ResponseComposer } from "./response-composer.mjs";
 import { formatError } from "./errors.mjs";
 import { MessageTransport, makeRef } from "./transport.mjs";
 import { spawn } from "node:child_process";
+import { createServer as createNetServer } from "node:net";
+import { unlinkSync, chmodSync } from "node:fs";
 
 const TYPING_INTERVAL_MS = 4000;
 const TYPING_DEBOUNCE_MS = 60000;
+const TG_UX_SOCK = process.env.TG_UX_SOCK || "/run/tg-ux.sock";
 const PHOTO_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 const UNDO_ALLOWED_DOMAINS = new Set([
@@ -102,6 +105,9 @@ export class Bridge {
     #statusMsg = null; // { chatId, messageId, createdAt }
     #statusRefreshPaused = false; // true during intentional restart (skip exit event refresh)
 
+    // UDS server for tg-ux MCP sidecar IPC
+    #udsServer = null;
+
     constructor({ telegram, acp, config, log, pairing, scopeMgr, sessionMgr }) {
         this.#telegram = telegram;
         this.#acp = acp;
@@ -178,6 +184,8 @@ export class Bridge {
         if (promises.length > 0) {
             await Promise.allSettled(promises);
         }
+        this.#stopUdsServer();
+        this.#buttons.destroy();
     }
 
     /** Re-submit a message as if the user sent it (for /retry) */
@@ -557,18 +565,19 @@ export class Bridge {
                 scope.activeTools.clear();
                 this.#flushMessageBuffer();
 
-                // Resolve any pending ask-user prompt so it doesn't hang
-                if (scope.awaitingInput) {
-                    clearTimeout(scope.awaitingInput.timer);
-                    scope.awaitingInput.resolve(null);
-                    scope.awaitingInput = null;
-                }
                 // Cancel any pending elicitation
                 if (scope.pendingElicitation) {
-                    const { requestId } = scope.pendingElicitation;
-                    try { acp.respondElicitation(requestId, "cancel"); } catch {}
-                    scope.pendingElicitation.resolve(undefined);
+                    const { requestId, resolve } = scope.pendingElicitation;
+                    if (requestId) {
+                        try { acp.respondElicitation(requestId, "cancel"); } catch {}
+                    }
+                    if (typeof resolve === "function") resolve(undefined);
                     scope.pendingElicitation = null;
+                }
+                // Cancel any pending button menus for this chat
+                const chatId = this.#activeRef?.chatId;
+                if (chatId && this.#buttons) {
+                    this.#buttons.cancelForChat(chatId, "🛑 Session ended");
                 }
             }
 
@@ -670,7 +679,7 @@ export class Bridge {
                     return [{ text: `${icon} ${opt.name}`, value: val }];
                 });
 
-                if (scope.composer) scope.composer.setPermissionPending(true);
+                if (scope.composer) scope.composer.setInteractionPending("plan");
                 let selected, permMsgId;
                 try {
                     ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
@@ -678,7 +687,7 @@ export class Bridge {
                         { timeoutMs: 0, timeoutText: "📋 Plan approval cancelled" }
                     ));
                 } finally {
-                    if (scope.composer) scope.composer.setPermissionPending(false);
+                    if (scope.composer) scope.composer.setInteractionPending(null);
                 }
 
                 const selectedOption = this.#unwrapPermissionSelection(selected);
@@ -776,7 +785,7 @@ export class Bridge {
                     { text: "❌ Deny", value: rejectOnceValue },
                 ],
             ];
-            if (scope.composer) scope.composer.setPermissionPending(true);
+            if (scope.composer) scope.composer.setInteractionPending("permission");
             let selected, permMsgId;
             try {
                 ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
@@ -786,7 +795,7 @@ export class Bridge {
                     { timeoutMs: 60000, timeoutText: "🔐 Permission denied (timeout)" }
                 ));
             } finally {
-                if (scope.composer) scope.composer.setPermissionPending(false);
+                if (scope.composer) scope.composer.setInteractionPending(null);
             }
 
             const selectedOption = this.#unwrapPermissionSelection(selected);
@@ -959,6 +968,176 @@ export class Bridge {
                 acp.respondElicitation(req.requestId, "accept", {});
             }
         });
+
+        // Start UDS server for tg-ux MCP sidecar IPC
+        this.#startUdsServer();
+    }
+
+    // --- UDS IPC server for tg-ux MCP ask_user tool ---
+
+    #startUdsServer() {
+        try { unlinkSync(TG_UX_SOCK); } catch {}
+        this.#udsServer = createNetServer({ allowHalfOpen: true }, (conn) => {
+            let buf = "";
+            conn.on("data", (c) => {
+                buf += c.toString();
+                // Request is a single JSON line; parse once we have a complete line
+                const nlIdx = buf.indexOf("\n");
+                if (nlIdx === -1) return;
+                const line = buf.slice(0, nlIdx);
+                buf = "";
+                let req;
+                try {
+                    req = JSON.parse(line);
+                } catch {
+                    conn.end();
+                    return;
+                }
+                this.#handleMcpAskUser(req.params || {})
+                    .then((result) => conn.end(JSON.stringify(result)))
+                    .catch((err) => conn.end(JSON.stringify({ error: err.message })));
+            });
+            conn.on("error", () => {});
+        });
+        this.#udsServer.on("error", (err) => {
+            this.#log(`UDS server error: ${err.message}`);
+        });
+        this.#udsServer.listen(TG_UX_SOCK, () => {
+            try { chmodSync(TG_UX_SOCK, 0o600); } catch {}
+            this.#log(`UDS server listening on ${TG_UX_SOCK}`);
+        });
+    }
+
+    #stopUdsServer() {
+        if (this.#udsServer) {
+            this.#udsServer.close();
+            this.#udsServer = null;
+            try { unlinkSync(TG_UX_SOCK); } catch {}
+        }
+    }
+
+    async #handleMcpAskUser({ message, options }) {
+        const scope = this.#activeScope;
+        const ref = this.#activeRef;
+        const chatId = ref?.chatId;
+        if (!chatId || !scope) return { error: "No active session" };
+        if (!message) return { error: "No message provided" };
+
+        // Guard: only one interactive prompt at a time per scope (atomic reserve)
+        if (scope?.pendingElicitation) {
+            return { error: "Another question is already pending" };
+        }
+        // Reserve the slot immediately to prevent TOCTOU races
+        if (scope) scope.pendingElicitation = { reserved: true };
+
+        const composerRef = scope?.composer;
+        const replyToMsg = composerRef?.messageId;
+        const sendOpts = replyToMsg ? { reply_to_message_id: replyToMsg } : {};
+
+        if (options && Array.isArray(options) && options.length > 0) {
+            if (options.length <= 8) {
+                // Inline buttons — one per row + cancel
+                const rows = options.map((opt, i) => [
+                    { text: opt.label || opt.value, value: `mcpq:${i}` },
+                ]);
+                rows.push([{ text: "❌ Cancel", value: "mcpq:cancel" }]);
+
+                if (composerRef) composerRef.setInteractionPending("question");
+                try {
+                    const { value, messageId: btnMsgId } = await this.#buttons.prompt(
+                        chatId, `❓ ${message}`, rows,
+                        { timeoutMs: 0, ...sendOpts }
+                    );
+                    if (!value || value === "mcpq:cancel") {
+                        // Show cancelled state on the button message
+                        if (btnMsgId) {
+                            this.#buttons.finalize(chatId, btnMsgId, `❌ Cancelled: ${message}`).catch(() => {});
+                        }
+                        return { error: "User cancelled" };
+                    }
+                    const idx = parseInt(value.replace("mcpq:", ""), 10);
+                    const answer = options[idx]?.value ?? value;
+                    const label = options[idx]?.label || answer;
+                    // Show selection on the button message
+                    if (btnMsgId) {
+                        this.#buttons.finalize(chatId, btnMsgId, `✅ ${label}`).catch(() => {});
+                    }
+                    return { answer };
+                } finally {
+                    if (scope) scope.pendingElicitation = null;
+                    if (composerRef) composerRef.setInteractionPending(null);
+                }
+            } else {
+                // Too many options — numbered list + text reply
+                const numbered = options.map((opt, i) => `${i + 1}. ${opt.label || opt.value}`).join("\n");
+                const prompt = `❓ ${message}\n\n${numbered}\n\nReply with the number of your choice, or "cancel".`;
+                const sendParams = { chat_id: chatId, text: prompt, link_preview_options: { is_disabled: true } };
+                if (sendOpts.reply_to_message_id) sendParams.reply_to_message_id = sendOpts.reply_to_message_id;
+                await this.#telegram.call("sendMessage", sendParams);
+
+                if (composerRef) composerRef.setInteractionPending("question");
+                try {
+                    const answer = await new Promise((resolve) => {
+                        if (scope) {
+                            scope.pendingElicitation = {
+                                resolve, schema: { type: "string" }, propName: "answer",
+                            };
+                        }
+                    });
+                    if (!answer || answer.toLowerCase() === "cancel") {
+                        return { error: "User cancelled" };
+                    }
+                    const num = parseInt(answer, 10);
+                    if (num >= 1 && num <= options.length) {
+                        return { answer: options[num - 1].value };
+                    }
+                    return { answer };
+                } finally {
+                    if (scope) scope.pendingElicitation = null;
+                    if (composerRef) composerRef.setInteractionPending(null);
+                }
+            }
+        } else {
+            // Free text — prompt and wait for next message
+            const cancelRows = [[{ text: "❌ Cancel", value: "mcpq:cancel" }]];
+
+            if (composerRef) composerRef.setInteractionPending("question");
+            try {
+                // Send question with cancel button
+                const btnPromise = this.#buttons.prompt(
+                    chatId, `❓ ${message}\n\nType your answer below:`, cancelRows,
+                    { timeoutMs: 0, ...sendOpts }
+                );
+
+                // Set up text reply intercept
+                const textPromise = new Promise((resolve) => {
+                    if (scope) {
+                        scope.pendingElicitation = {
+                            resolve, schema: { type: "string" }, propName: "answer",
+                        };
+                    }
+                });
+
+                // Race: button cancel vs text reply
+                const result = await Promise.race([
+                    btnPromise.then(r => ({ type: "button", value: r.value })),
+                    textPromise.then(v => ({ type: "text", value: v })),
+                ]);
+
+                if (result.type === "button") {
+                    // User tapped cancel — clear text intercept
+                    if (scope) scope.pendingElicitation = null;
+                    return { error: "User cancelled" };
+                } else {
+                    // User typed an answer — cancel the cancel-button for this chat
+                    this.#buttons.cancelForChat(chatId, `✅ Answered`);
+                    return { answer: result.value ?? "" };
+                }
+            } finally {
+                if (scope) scope.pendingElicitation = null;
+                if (composerRef) composerRef.setInteractionPending(null);
+            }
+        }
     }
 
     setupTelegramHandlers() {
@@ -1044,14 +1223,14 @@ export class Bridge {
                 value: `elicit:${i}`,
             }]);
             rows.push([{ text: "❌ Skip", value: "elicit:__cancel__" }]);
-            if (scope.composer) scope.composer.setPermissionPending(true);
+            if (scope.composer) scope.composer.setInteractionPending("question");
             let selected;
             try {
                 ({ value: selected } = await this.#buttons.prompt(
                     chatId, `❓ ${message}`, rows
                 ));
             } finally {
-                if (scope.composer) scope.composer.setPermissionPending(false);
+                if (scope.composer) scope.composer.setInteractionPending(null);
             }
             const val = selected?.replace(/^elicit:/, "");
             if (!val || val === "__cancel__") {
@@ -1069,14 +1248,14 @@ export class Bridge {
                 value: `elicit:${i}`,
             }]);
             rows.push([{ text: "❌ Skip", value: "elicit:__cancel__" }]);
-            if (scope.composer) scope.composer.setPermissionPending(true);
+            if (scope.composer) scope.composer.setInteractionPending("question");
             let selected;
             try {
                 ({ value: selected } = await this.#buttons.prompt(
                     chatId, `❓ ${message}`, rows
                 ));
             } finally {
-                if (scope.composer) scope.composer.setPermissionPending(false);
+                if (scope.composer) scope.composer.setInteractionPending(null);
             }
             const val = selected?.replace(/^elicit:/, "");
             if (!val || val === "__cancel__") {
@@ -1091,7 +1270,7 @@ export class Bridge {
             const defaultVal = schema.default;
             const yesLabel = defaultVal === true ? "✅ Yes (default)" : "✅ Yes";
             const noLabel = defaultVal === false ? "❌ No (default)" : "❌ No";
-            if (scope.composer) scope.composer.setPermissionPending(true);
+            if (scope.composer) scope.composer.setInteractionPending("question");
             let selected;
             try {
                 ({ value: selected } = await this.#buttons.prompt(
@@ -1101,7 +1280,7 @@ export class Bridge {
                     ]
                 ));
             } finally {
-                if (scope.composer) scope.composer.setPermissionPending(false);
+                if (scope.composer) scope.composer.setInteractionPending(null);
             }
             const val = selected?.replace(/^elicit:/, "");
             if (!val || val === "__cancel__") {
@@ -1126,7 +1305,7 @@ export class Bridge {
                 const selected = [];
                 // For simplicity, present as single-select repeated
                 // (full multi-select toggle would require re-rendering buttons)
-                if (scope.composer) scope.composer.setPermissionPending(true);
+                if (scope.composer) scope.composer.setInteractionPending("question");
                 try {
                     const { value } = await this.#buttons.prompt(
                         chatId,
@@ -1140,7 +1319,7 @@ export class Bridge {
                     }
                     if (val !== "__done__") selected.push(itemOptions[Number.parseInt(val, 10)]);
                 } finally {
-                    if (scope.composer) scope.composer.setPermissionPending(false);
+                    if (scope.composer) scope.composer.setInteractionPending(null);
                 }
                 return selected;
             }
@@ -1778,34 +1957,41 @@ export class Bridge {
         // Track incoming user message in history
         if (scope) scope.history.push({ role: "user", text, messageId: message.message_id, replyToMessageId: message.reply_to_message?.message_id });
 
-        // Check if scope is awaiting input (ask-user)
-        if (scope?.awaitingInput) {
-            const { resolve } = scope.awaitingInput;
-            clearTimeout(scope.awaitingInput.timer);
-            scope.awaitingInput = null;
-            resolve(text);
-            return;
-        }
-
-        // Check if scope has a pending elicitation (text input)
-        if (scope?.pendingElicitation) {
-            const { resolve, schema, propName } = scope.pendingElicitation;
-            let value = text;
-            // Type coercion for number/integer schemas
-            if (schema.type === "number" || schema.type === "integer") {
-                if (!text || !text.trim()) {
-                    await this.#telegram.sendMessage(chatId, "⚠️ Please enter a valid number.");
+        // Check if scope has a pending elicitation or MCP question (text input)
+        // Only intercept if the pendingElicitation has a resolve function
+        // (not just { reserved: true } from the atomic TOCTOU guard)
+        if (scope?.pendingElicitation && typeof scope.pendingElicitation.resolve === "function") {
+            // Let /stop and /cancel through to the slash command handler
+            if (text.startsWith("/")) {
+                const parsed = parseSlashCommand(text, this.#telegram.botInfo?.username);
+                if (parsed && (parsed.command === "stop" || parsed.command === "cancel")) {
+                    scope.pendingElicitation.resolve(undefined);
+                    scope.pendingElicitation = null;
+                    // Fall through to slash command handler below
+                } else {
+                    // Other slash commands: treat as the answer text
+                    scope.pendingElicitation.resolve(text);
                     return;
                 }
-                const num = Number(text.trim());
-                if (isNaN(num)) {
-                    await this.#telegram.sendMessage(chatId, "⚠️ Please enter a valid number.");
-                    return;
+            } else {
+                const { resolve, schema } = scope.pendingElicitation;
+                let value = text;
+                // Type coercion for number/integer schemas
+                if (schema?.type === "number" || schema?.type === "integer") {
+                    if (!text || !text.trim()) {
+                        await this.#telegram.sendMessage(chatId, "⚠️ Please enter a valid number.");
+                        return;
+                    }
+                    const num = Number(text.trim());
+                    if (isNaN(num)) {
+                        await this.#telegram.sendMessage(chatId, "⚠️ Please enter a valid number.");
+                        return;
+                    }
+                    value = schema.type === "integer" ? Math.round(num) : num;
                 }
-                value = schema.type === "integer" ? Math.round(num) : num;
+                resolve(value);
+                return;
             }
-            resolve(value);
-            return;
         }
 
         // Handle slash commands BEFORE typing
