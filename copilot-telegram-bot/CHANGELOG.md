@@ -2,6 +2,13 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.17.0] — 2026-05-27
+
+### Fixed
+- **Stale session crash on restart** — after ACP restart, all scope sessionIds are cleared so commands don't try to load non-existent sessions
+- **Session recovery** — `loadSession` failures now fall back to creating a new session instead of aborting with an error
+- **All ACP commands work again** — `/plan`, `/autopilot`, `/model`, `/compact`, `/fleet`, `/mode` now survive bot restarts
+
 ## [0.16.1] — 2026-05-27
 
 ### Fixed

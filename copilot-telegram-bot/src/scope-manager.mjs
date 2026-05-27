@@ -305,4 +305,13 @@ export class ScopeManager {
             this.#flushTimer = null;
         }
     }
+
+    /** Clear all sessionIds (called after ACP restart — old sessions are gone). */
+    clearAllSessions() {
+        for (const scope of this.#scopes.values()) {
+            scope.sessionId = null;
+            scope.preambleSent = false;
+        }
+        this.#markDirty();
+    }
 }

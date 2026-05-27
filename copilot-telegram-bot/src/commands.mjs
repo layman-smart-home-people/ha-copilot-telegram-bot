@@ -38,8 +38,19 @@ export async function handleSlashCommand(ctx, command, args) {
         if (!acp?.alive || !scope) return false;
         if (scope.sessionId) {
             if (acp.sessionId !== scope.sessionId) {
-                const result = await acp.loadSession(scope.sessionId);
-                updateScopeSettings(result);
+                try {
+                    const result = await acp.loadSession(scope.sessionId);
+                    updateScopeSettings(result);
+                } catch {
+                    // Old session doesn't exist — clear and create fresh
+                    scope.sessionId = null;
+                    scope.preambleSent = false;
+                    if (!createIfMissing) return false;
+                    const result = await acp.newSession({ cwd: config?.workingDirectory || "/config" });
+                    scope.sessionId = result.sessionId;
+                    if (ref) ref.sessionId = result.sessionId;
+                    updateScopeSettings(result);
+                }
             }
         } else {
             if (!createIfMissing) return false;

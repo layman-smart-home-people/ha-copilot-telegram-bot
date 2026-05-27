@@ -1665,19 +1665,31 @@ export class Bridge {
                             await this.#acp.loadSession(scope.sessionId);
                             this.#scopeMgr.setActive(scopeKey);
                         } catch (err) {
-                            this.#log(`Session load failed for ${scope.sessionId}: ${err.message}`);
-                            const msg = `⚠️ Could not load session. Use /new to start a fresh session.\nError: ${err.message}`;
-                            if (scope.composer?.active) {
-                                await scope.composer.abort(msg);
-                                scope.composer = null;
-                            } else if (ref) {
-                                this.#transport.enqueueSend(ref, msg);
+                            this.#log(`Session load failed for ${scope.sessionId}: ${err.message} — creating new session`);
+                            // Old session gone — create a fresh one
+                            try {
+                                const result = await this.#acp.newSession({
+                                    cwd: this.#config.workingDirectory || "/config",
+                                });
+                                scope.sessionId = result.sessionId;
+                                if (ref) ref.sessionId = result.sessionId;
+                                scope.preambleSent = false;
+                                if (this.#scopeMgr) this.#scopeMgr.setActive(scopeKey);
+                            } catch (createErr) {
+                                this.#log(`Fallback session create failed: ${createErr.message}`);
+                                const msg = `⚠️ Could not create session: ${createErr.message}`;
+                                if (scope.composer?.active) {
+                                    await scope.composer.abort(msg);
+                                    scope.composer = null;
+                                } else if (ref) {
+                                    this.#transport.enqueueSend(ref, msg);
+                                }
+                                this.#promptActive = false;
+                                this.#activeRef = null;
+                                this.#activeScope = null;
+                                this.#scopeMgr?.clearActive();
+                                return;
                             }
-                            this.#promptActive = false;
-                            this.#activeRef = null;
-                            this.#activeScope = null;
-                            this.#scopeMgr?.clearActive();
-                            return;
                         } finally {
                             this.#switching = false;
                         }
@@ -1883,6 +1895,11 @@ export class Bridge {
             throw new Error(`Session creation failed: ${err.message}`);
         }
 
+        // Clear stale scope sessionIds — old ACP sessions don't survive restart
+        if (this.#scopeMgr) {
+            this.#scopeMgr.clearAllSessions();
+            this.#log("Cleared stale scope sessions after ACP restart");
+        }
         this.resetPreamble();
         this.#log(`Copilot started, session: ${this.#acp.sessionId}`);
         this.#refreshStatusIfAlive().catch(() => {});
