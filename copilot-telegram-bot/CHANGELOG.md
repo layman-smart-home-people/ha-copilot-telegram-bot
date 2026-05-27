@@ -2,6 +2,13 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.16.0] — 2026-05-26
+
+### Fixed
+- **`/plan`, `/autopilot`, `/fleet`, `/model`, `/mode` commands** — bypassed broken `session/set_config_option` RPC and route mode/model changes as ACP slash commands through the bridge queue, fixing `-32602 Invalid params` errors
+- **Mode ID normalization** — ACP's full URI mode IDs (e.g. `...#agent`) now normalized to short names (`agent`, `plan`, `autopilot`) across all scope tracking and status display
+- **Removed dead code** — cleaned up unused `setMode()`/`setModel()` methods from acp.mjs
+
 ## [0.15.5] — 2026-05-26
 
 ### Fixed

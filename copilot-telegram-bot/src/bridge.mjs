@@ -6,6 +6,7 @@
 
 import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "./formatter.mjs";
 import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
+import { normalizeModeId } from "./acp.mjs";
 import { ButtonManager } from "./buttons.mjs";
 import { ResponseComposer } from "./response-composer.mjs";
 import { formatError } from "./errors.mjs";
@@ -307,7 +308,7 @@ export class Bridge {
             const currentModel = scope?.model || "";
             const currentMode = scope?.mode || "";
             const modelName = this.#models?.find(m => m.modelId === currentModel)?.name || currentModel || "unknown";
-            const modeName = this.#modes?.find(m => m.id === currentMode)?.name || currentMode || "unknown";
+            const modeName = this.#modes?.find(m => normalizeModeId(m.id) === currentMode)?.name || currentMode || "unknown";
             const modeIcon = currentMode === "autopilot" ? "🟢" : currentMode === "plan" ? "📝" : "💬";
             lines.push(`🤖 Model: ${modelName}`);
             lines.push(`${modeIcon} Mode: ${modeName}`);
@@ -739,7 +740,7 @@ export class Bridge {
                     scope.model = result.models.currentModelId;
                 }
                 if (result.modes?.currentModeId) {
-                    scope.mode = result.modes.currentModeId;
+                    scope.mode = normalizeModeId(result.modes.currentModeId);
                 }
             }
             if (result.modes?.availableModes) {
@@ -770,7 +771,7 @@ export class Bridge {
                 }));
             }
             if (modeOpt?.currentValue && scope) {
-                scope.mode = modeOpt.currentValue;
+                scope.mode = normalizeModeId(modeOpt.currentValue);
             }
             this.#refreshStatusIfAlive();
         });

@@ -6,6 +6,19 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 
+/**
+ * Normalize ACP mode identifiers.
+ * ACP returns full URIs like "https://agentclientprotocol.com/protocol/session-modes#agent"
+ * but commands use short names like "agent", "plan", "autopilot".
+ */
+export function normalizeModeId(mode) {
+    if (!mode) return "agent";
+    const hash = mode.lastIndexOf("#");
+    if (hash >= 0) return mode.slice(hash + 1);
+    if (mode === "interactive") return "agent";
+    return mode;
+}
+
 export class ACPClient extends EventEmitter {
     #process = null;
     #buffer = "";
@@ -198,30 +211,10 @@ export class ACPClient extends EventEmitter {
     }
 
     // --- RPC commands ---
-    // Note: ACP exposes commands (model, autopilot, compact, usage) rather than
-    // typed RPC methods. We use session/set_config_option where available and
-    // fall back to sending commands as prompts.
-
-    async setMode(mode) {
-        try {
-            return await this.#send("session/set_config_option", {
-                sessionId: this.#sessionId, optionId: "mode", value: mode,
-            }, 10000);
-        } catch {
-            // Fallback: send as a slash command via prompt
-            return this.prompt(`/autopilot ${mode === "autopilot" ? "on" : "off"}`);
-        }
-    }
-
-    async setModel(modelId) {
-        try {
-            return await this.#send("session/set_config_option", {
-                sessionId: this.#sessionId, optionId: "model", value: modelId,
-            }, 10000);
-        } catch {
-            return this.prompt(`/model ${modelId}`);
-        }
-    }
+    // Note: Mode and model changes are routed through bridge.submitRetry()
+    // as slash commands (/autopilot, /plan, /model) because
+    // session/set_config_option is broken in current ACP/CLI versions.
+    // The bridge queue ensures proper composer/response handling.
 
     async compact() {
         return this.prompt("/compact");

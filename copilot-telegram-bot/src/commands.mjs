@@ -2,6 +2,8 @@
 // Slash Command Handler
 // ============================================================
 
+import { normalizeModeId } from "./acp.mjs";
+
 export function parseSlashCommand(text, botUsername) {
     const match = text.match(/^\/([a-zA-Z0-9_]+)(?:@([a-zA-Z0-9_]+))?\s*([\s\S]*)?$/);
     if (!match) return null;
@@ -30,7 +32,7 @@ export async function handleSlashCommand(ctx, command, args) {
     const updateScopeSettings = (result) => {
         if (!scope) return;
         if (result?.models?.currentModelId) scope.model = result.models.currentModelId;
-        if (result?.modes?.currentModeId) scope.mode = result.modes.currentModeId;
+        if (result?.modes?.currentModeId) scope.mode = normalizeModeId(result.modes.currentModeId);
     };
     const activateScopeSession = async ({ createIfMissing = false } = {}) => {
         if (!acp?.alive || !scope) return false;
@@ -57,14 +59,12 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
                 if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
+                // Route through bridge queue — ACP processes the slash command
+                // and responds; mode is synced via config_option_update notification
                 if (args === "off" || args === "false") {
-                    await acp.setMode("interactive");
-                    if (scope) scope.mode = "interactive";
-                    reply(`✅ Autopilot OFF for ${scopeLabel}`);
+                    bridge.submitRetry(ref, "/autopilot off");
                 } else {
-                    await acp.setMode("autopilot");
-                    if (scope) scope.mode = "autopilot";
-                    reply(`✅ Autopilot ON for ${scopeLabel}`);
+                    bridge.submitRetry(ref, "/autopilot on");
                 }
                 return true;
             }
@@ -73,13 +73,9 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
                 if (args === "off" || args === "false") {
-                    await acp.setMode("interactive");
-                    if (scope) scope.mode = "interactive";
-                    reply(`✅ Plan mode OFF for ${scopeLabel}`);
+                    bridge.submitRetry(ref, "/autopilot off");
                 } else {
-                    await acp.setMode("plan");
-                    if (scope) scope.mode = "plan";
-                    reply(`✅ Plan mode ON for ${scopeLabel}`);
+                    bridge.submitRetry(ref, "/plan");
                 }
                 return true;
             }
@@ -87,10 +83,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
                 if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
-                // Fleet is autopilot with a hint to use parallel agents
-                await acp.setMode("autopilot");
-                if (scope) scope.mode = "autopilot";
-                reply(`🚀 Fleet mode ON for ${scopeLabel}\n\n💡 Copilot is in autopilot. Send your task and ask it to "use /autopilot_fleet" or "parallelize with fleet mode" for multi-agent execution.`);
+                bridge.submitRetry(ref, "/autopilot on");
                 return true;
             }
             case "mode": {
@@ -103,10 +96,15 @@ export async function handleSlashCommand(ctx, command, args) {
                         timeoutText: "📋 Mode selection expired",
                     });
                     if (selected) {
-                        await acp.setMode(selected);
-                        if (scope) scope.mode = selected;
-                        const name = modes.find(m => m.id === selected)?.name || selected;
-                        reply(`📋 Mode for ${scopeLabel} → ${name}`);
+                        const normalized = normalizeModeId(selected);
+                        // Route through bridge queue
+                        if (normalized === "plan") {
+                            bridge.submitRetry(ref, "/plan");
+                        } else if (normalized === "autopilot") {
+                            bridge.submitRetry(ref, "/autopilot on");
+                        } else {
+                            bridge.submitRetry(ref, "/autopilot off");
+                        }
                     }
                 } else {
                     reply("📋 Mode: use /autopilot or /plan to change");
@@ -129,9 +127,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
                 if (args) {
-                    await acp.setModel(args);
-                    if (scope) scope.model = args;
-                    reply(`🤖 Model for ${scopeLabel} → ${args}`);
+                    bridge.submitRetry(ref, `/model ${args}`);
                 } else if (buttons && models?.length > 0) {
                     // Show interactive model picker
                     const rows = [];
@@ -146,10 +142,7 @@ export async function handleSlashCommand(ctx, command, args) {
                         timeoutText: "🤖 Model selection expired",
                     });
                     if (selected) {
-                        await acp.setModel(selected);
-                        if (scope) scope.model = selected;
-                        const name = models.find(m => m.modelId === selected)?.name || selected;
-                        reply(`🤖 Model for ${scopeLabel} → ${name}`);
+                        bridge.submitRetry(ref, `/model ${selected}`);
                     }
                 } else {
                     reply("🤖 No models available yet. Try again after session starts.");
