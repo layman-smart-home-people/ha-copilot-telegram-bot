@@ -2,6 +2,21 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.19.0] — 2026-05-28
+
+### Added
+- **Plan display** — agent plan entries now show in the composer with ⏳/🔄/✅ status emoji, updated in real-time
+- **Plan approval buttons** — when agent finishes planning and asks for approval (`switch_mode`), dynamic option buttons appear (e.g., "🚀 Auto-accept all", "✅ Manual accept", "❌ Stay in architect")
+- **Elicitation support** — agent questions presented as Telegram inline buttons:
+  - Enum/oneOf → inline keyboard with dynamic labels
+  - Boolean → Yes/No buttons
+  - Text/number → force_reply with text intercept + Skip button
+  - Multi-field forms → sequential prompts
+- **No timeout on decisions** — plan approval and elicitation buttons persist until tapped or session ends
+- **Mode update handler** — `current_mode_update` notifications update scope mode in real-time
+- **Elicitation capability** — declared `elicitation: { form: {} }` in ACP initialize for future compatibility
+- `respondElicitation()` method in ACP client for structured responses
+
 ## [0.18.0] — 2026-05-27
 
 ### Fixed

@@ -524,6 +524,27 @@ export class Bridge {
             }
         });
 
+        // Plan entries — display in composer
+        acp.on("plan", (entries) => {
+            if (this.#switching) return;
+            const scope = this.#activeScope;
+            if (!scope) return;
+            this.#log(`Plan update: ${entries.length} entries`);
+            if (scope.composer?.active) {
+                scope.composer.setPlan(entries);
+            }
+        });
+
+        // Mode change notification
+        acp.on("mode_update", (modeId) => {
+            const scope = this.#activeScope;
+            if (scope && modeId) {
+                scope.mode = normalizeModeId(modeId);
+                this.#log(`Mode updated: ${scope.mode}`);
+                this.#refreshStatusIfAlive();
+            }
+        });
+
         // Process exit — handle crash recovery
         acp.on("exit", ({ code, signal }) => {
             this.#stopTyping();
@@ -541,6 +562,13 @@ export class Bridge {
                     clearTimeout(scope.awaitingInput.timer);
                     scope.awaitingInput.resolve(null);
                     scope.awaitingInput = null;
+                }
+                // Cancel any pending elicitation
+                if (scope.pendingElicitation) {
+                    const { requestId } = scope.pendingElicitation;
+                    try { acp.respondElicitation(requestId, "cancel"); } catch {}
+                    scope.pendingElicitation.resolve(undefined);
+                    scope.pendingElicitation = null;
                 }
             }
 
@@ -598,6 +626,79 @@ export class Bridge {
                          req.toolName || req.tool || req.name || "unknown_tool";
             const desc = entityId ? `${domain}.${service} → ${entityId}` :
                          toolTitle || "";
+
+            // Plan approval / mode switch — special UX with dynamic option buttons
+            if (toolCall.kind === "switch_mode") {
+                const options = req.options || [];
+                if (options.length === 0) {
+                    this.#log('Plan approval: no options provided');
+                    acp.respondPermission(requestId, "reject_once");
+                    return;
+                }
+                const targetRef = this.#activeRef;
+                const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
+                if (!chatId || !this.#buttons) {
+                    const fallbackId = options.find(o => o.kind === "allow_once")?.optionId || options[0]?.optionId;
+                    if (fallbackId) acp.respondPermission(requestId, fallbackId);
+                    return;
+                }
+
+                // Extract plan content from toolCall.content
+                let planSummary = "";
+                if (Array.isArray(toolCall.content)) {
+                    for (const c of toolCall.content) {
+                        const text = c?.content?.text || c?.text || "";
+                        if (text) planSummary += (planSummary ? "\n" : "") + text;
+                    }
+                }
+
+                const header = toolTitle || "📋 Ready for implementation";
+                // Truncate plan summary accounting for header
+                const maxSummary = 3800 - header.length;
+                if (planSummary.length > maxSummary) planSummary = planSummary.slice(0, maxSummary) + "…";
+                const label = planSummary
+                    ? `📋 ${header}\n\n${planSummary}`
+                    : `📋 ${header}`;
+
+                // Build buttons from dynamic options — one per row for clarity
+                const encodedUserId = this.#encodeCallbackUserId(targetRef?.userId);
+                const rows = options.map(opt => {
+                    const icon = opt.kind === "reject_once" || opt.kind === "reject_always" ? "❌"
+                               : opt.kind === "allow_always" ? "🚀"
+                               : "✅";
+                    const val = encodedUserId ? `perm:${encodedUserId}:${opt.optionId}` : opt.optionId;
+                    return [{ text: `${icon} ${opt.name}`, value: val }];
+                });
+
+                if (scope.composer) scope.composer.setPermissionPending(true);
+                let selected, permMsgId;
+                try {
+                    ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
+                        chatId, label, rows,
+                        { timeoutMs: 0, timeoutText: "📋 Plan approval cancelled" }
+                    ));
+                } finally {
+                    if (scope.composer) scope.composer.setPermissionPending(false);
+                }
+
+                const selectedOption = this.#unwrapPermissionSelection(selected);
+                if (selectedOption) {
+                    acp.respondPermission(requestId, selectedOption);
+                    const chosenName = options.find(o => o.optionId === selectedOption)?.name || selectedOption;
+                    this.#log(`Plan approval: ${chosenName}`);
+                    if (permMsgId) {
+                        try {
+                            await this.#buttons.finalize(chatId, permMsgId, `📋 ${chosenName}`);
+                        } catch {}
+                    }
+                } else {
+                    // Timeout/cancelled — respond with reject
+                    const rejectId = options.find(o => o.kind === "reject_once")?.optionId || "reject_once";
+                    acp.respondPermission(requestId, rejectId);
+                    this.#log(`Plan approval cancelled/timed out`);
+                }
+                return;
+            }
 
             // Allow-all mode: skip all permission prompts
             if (scope.allowAll) {
@@ -788,6 +889,76 @@ export class Bridge {
                 this.#log(`Copilot commands available: ${commands.length}`);
             }
         });
+
+        // Elicitation — agent asks structured questions
+        acp.on("elicitation_request", async (req) => {
+            if (this.#switching) return;
+            const scope = this.#activeScope;
+            if (!scope) {
+                acp.respondElicitation(req.requestId, "cancel");
+                return;
+            }
+            if (scope.pendingElicitation) {
+                acp.respondElicitation(req.requestId, "cancel");
+                this.#log(`Rejected concurrent elicitation (another pending)`);
+                return;
+            }
+            this.#log(`Elicitation: ${req.message}`);
+
+            const targetRef = this.#activeRef;
+            const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
+            if (!chatId) {
+                acp.respondElicitation(req.requestId, "cancel");
+                return;
+            }
+
+            const schema = req.requestedSchema;
+            const props = schema?.properties || {};
+            const propNames = Object.keys(props);
+
+            // Single-property shortcut (most common case)
+            if (propNames.length === 1) {
+                const propName = propNames[0];
+                const propSchema = props[propName];
+                const result = await this.#elicitSingleField(
+                    chatId, req.requestId, req.message, propName, propSchema, scope
+                );
+                if (result !== undefined) {
+                    acp.respondElicitation(req.requestId, "accept", { [propName]: result });
+                }
+                // If undefined, response was already sent (decline/cancel)
+                return;
+            }
+
+            // Multi-field: collect answers sequentially
+            if (propNames.length > 1) {
+                const content = {};
+                const required = new Set(schema.required || []);
+                for (const propName of propNames) {
+                    const propSchema = props[propName];
+                    const fieldMsg = propSchema.title
+                        ? `${req.message}\n\n${propSchema.title}${propSchema.description ? `\n${propSchema.description}` : ""}`
+                        : req.message;
+                    const result = await this.#elicitSingleField(
+                        chatId, req.requestId, fieldMsg, propName, propSchema, scope
+                    );
+                    if (result === undefined) return; // cancelled
+                    content[propName] = result;
+                }
+                acp.respondElicitation(req.requestId, "accept", content);
+                return;
+            }
+
+            // Empty schema — just show message with OK button
+            if (this.#buttons) {
+                const { value } = await this.#buttons.prompt(chatId, `❓ ${req.message}`, [
+                    [{ text: "✅ OK", value: "ok" }, { text: "❌ Cancel", value: "cancel" }]
+                ]);
+                acp.respondElicitation(req.requestId, value === "ok" ? "accept" : "decline", {});
+            } else {
+                acp.respondElicitation(req.requestId, "accept", {});
+            }
+        });
     }
 
     setupTelegramHandlers() {
@@ -854,6 +1025,173 @@ export class Bridge {
         if (!value?.startsWith("perm:")) return value;
         const parts = value.split(":");
         return parts.length >= 3 ? parts.slice(2).join(":") : value;
+    }
+
+    /**
+     * Elicit a single field from the user via Telegram UI.
+     * Returns the value on accept, or undefined if cancelled/declined
+     * (in which case the elicitation response is already sent).
+     */
+    async #elicitSingleField(chatId, requestId, message, propName, schema, scope) {
+        const acp = this.#acp;
+        const title = schema.title || propName;
+
+        // Enum with titles (oneOf) → inline keyboard
+        if (Array.isArray(schema.oneOf)) {
+            const optionValues = schema.oneOf.map(opt => opt.const);
+            const rows = schema.oneOf.map((opt, i) => [{
+                text: opt.title || opt.const,
+                value: `elicit:${i}`,
+            }]);
+            rows.push([{ text: "❌ Skip", value: "elicit:__cancel__" }]);
+            if (scope.composer) scope.composer.setPermissionPending(true);
+            let selected;
+            try {
+                ({ value: selected } = await this.#buttons.prompt(
+                    chatId, `❓ ${message}`, rows
+                ));
+            } finally {
+                if (scope.composer) scope.composer.setPermissionPending(false);
+            }
+            const val = selected?.replace(/^elicit:/, "");
+            if (!val || val === "__cancel__") {
+                acp.respondElicitation(requestId, "decline");
+                return undefined;
+            }
+            return optionValues[Number.parseInt(val, 10)];
+        }
+
+        // Enum without titles → inline keyboard
+        if (Array.isArray(schema.enum)) {
+            const optionValues = [...schema.enum];
+            const rows = schema.enum.map((v, i) => [{
+                text: String(v),
+                value: `elicit:${i}`,
+            }]);
+            rows.push([{ text: "❌ Skip", value: "elicit:__cancel__" }]);
+            if (scope.composer) scope.composer.setPermissionPending(true);
+            let selected;
+            try {
+                ({ value: selected } = await this.#buttons.prompt(
+                    chatId, `❓ ${message}`, rows
+                ));
+            } finally {
+                if (scope.composer) scope.composer.setPermissionPending(false);
+            }
+            const val = selected?.replace(/^elicit:/, "");
+            if (!val || val === "__cancel__") {
+                acp.respondElicitation(requestId, "decline");
+                return undefined;
+            }
+            return optionValues[Number.parseInt(val, 10)];
+        }
+
+        // Boolean → Yes/No buttons
+        if (schema.type === "boolean") {
+            const defaultVal = schema.default;
+            const yesLabel = defaultVal === true ? "✅ Yes (default)" : "✅ Yes";
+            const noLabel = defaultVal === false ? "❌ No (default)" : "❌ No";
+            if (scope.composer) scope.composer.setPermissionPending(true);
+            let selected;
+            try {
+                ({ value: selected } = await this.#buttons.prompt(
+                    chatId, `❓ ${message}`, [
+                        [{ text: yesLabel, value: "elicit:true" }, { text: noLabel, value: "elicit:false" }],
+                        [{ text: "⏭️ Skip", value: "elicit:__cancel__" }],
+                    ]
+                ));
+            } finally {
+                if (scope.composer) scope.composer.setPermissionPending(false);
+            }
+            const val = selected?.replace(/^elicit:/, "");
+            if (!val || val === "__cancel__") {
+                acp.respondElicitation(requestId, "decline");
+                return undefined;
+            }
+            return val === "true";
+        }
+
+        // Multi-select array → sequential toggle buttons
+        if (schema.type === "array" && schema.items) {
+            const itemOptions = schema.items.enum || schema.items.anyOf?.map(o => o.const) || [];
+            const itemLabels = schema.items.anyOf?.map(o => o.title) || itemOptions.map(String);
+            if (itemOptions.length > 0) {
+                const rows = itemOptions.map((v, i) => [{
+                    text: itemLabels[i] || String(v),
+                    value: `elicit:${i}`,
+                }]);
+                rows.push([{ text: "✅ Done", value: "elicit:__done__" },
+                           { text: "❌ Cancel", value: "elicit:__cancel__" }]);
+
+                const selected = [];
+                // For simplicity, present as single-select repeated
+                // (full multi-select toggle would require re-rendering buttons)
+                if (scope.composer) scope.composer.setPermissionPending(true);
+                try {
+                    const { value } = await this.#buttons.prompt(
+                        chatId,
+                        `❓ ${message}\n\nSelect one option:`,
+                        rows
+                    );
+                    const val = value?.replace(/^elicit:/, "");
+                    if (!val || val === "__cancel__") {
+                        acp.respondElicitation(requestId, "decline");
+                        return undefined;
+                    }
+                    if (val !== "__done__") selected.push(itemOptions[Number.parseInt(val, 10)]);
+                } finally {
+                    if (scope.composer) scope.composer.setPermissionPending(false);
+                }
+                return selected;
+            }
+        }
+
+        // String/number/integer → text input via pending elicitation
+        const defaultHint = schema.default !== undefined ? `\n(Default: ${schema.default})` : "";
+        const constraintHints = [];
+        if (schema.minLength) constraintHints.push(`min ${schema.minLength} chars`);
+        if (schema.maxLength) constraintHints.push(`max ${schema.maxLength} chars`);
+        if ((schema.type === "number" || schema.type === "integer") && schema.minimum !== undefined) {
+            constraintHints.push(`min: ${schema.minimum}`);
+        }
+        if ((schema.type === "number" || schema.type === "integer") && schema.maximum !== undefined) {
+            constraintHints.push(`max: ${schema.maximum}`);
+        }
+        const constraintText = constraintHints.length > 0 ? `\n(${constraintHints.join(", ")})` : "";
+
+        const promptText = `❓ ${message}${defaultHint}${constraintText}\n\nReply with your answer, or tap Skip.`;
+
+        // Send message with Skip button AND set up text reply intercept
+        return new Promise((resolve) => {
+            // Store pending elicitation on scope for text intercept
+            scope.pendingElicitation = {
+                requestId,
+                propName,
+                schema,
+                resolve: (val) => {
+                    scope.pendingElicitation = null;
+                    resolve(val);
+                },
+            };
+
+            // Send the prompt with a skip button
+            this.#buttons.prompt(chatId, promptText, [
+                [{ text: "⏭️ Skip", value: "elicit:__cancel__" }],
+            ]).then(({ value }) => {
+                if (scope.pendingElicitation?.requestId === requestId) {
+                    // User tapped Skip
+                    scope.pendingElicitation = null;
+                    acp.respondElicitation(requestId, "decline");
+                    resolve(undefined);
+                }
+            }).catch(() => {
+                if (scope.pendingElicitation?.requestId === requestId) {
+                    scope.pendingElicitation = null;
+                    acp.respondElicitation(requestId, "cancel");
+                    resolve(undefined);
+                }
+            });
+        });
     }
 
     #checkRateLimit(userId) {
@@ -1446,6 +1784,27 @@ export class Bridge {
             clearTimeout(scope.awaitingInput.timer);
             scope.awaitingInput = null;
             resolve(text);
+            return;
+        }
+
+        // Check if scope has a pending elicitation (text input)
+        if (scope?.pendingElicitation) {
+            const { resolve, schema, propName } = scope.pendingElicitation;
+            let value = text;
+            // Type coercion for number/integer schemas
+            if (schema.type === "number" || schema.type === "integer") {
+                if (!text || !text.trim()) {
+                    await this.#telegram.sendMessage(chatId, "⚠️ Please enter a valid number.");
+                    return;
+                }
+                const num = Number(text.trim());
+                if (isNaN(num)) {
+                    await this.#telegram.sendMessage(chatId, "⚠️ Please enter a valid number.");
+                    return;
+                }
+                value = schema.type === "integer" ? Math.round(num) : num;
+            }
+            resolve(value);
             return;
         }
 

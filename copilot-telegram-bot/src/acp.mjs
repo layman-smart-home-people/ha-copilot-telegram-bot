@@ -121,7 +121,9 @@ export class ACPClient extends EventEmitter {
         // Initialize ACP
         const initResult = await this.#send("initialize", {
             protocolVersion: 1,
-            clientCapabilities: {},
+            clientCapabilities: {
+                elicitation: { form: {} },
+            },
         });
         this.#initialized = true;
         this.#authMethods = initResult.authMethods || [];
@@ -306,6 +308,27 @@ export class ACPClient extends EventEmitter {
         }
     }
 
+    /**
+     * Respond to an elicitation/create server request.
+     * @param {number} requestId - The JSON-RPC id from the server request
+     * @param {"accept"|"decline"|"cancel"} action
+     * @param {object|null} content - form field values (only for "accept")
+     */
+    respondElicitation(requestId, action, content = null) {
+        const result = { action };
+        if (action === "accept" && content) result.content = content;
+        const response = { jsonrpc: "2.0", id: requestId, result };
+        const payload = JSON.stringify(response) + "\n";
+        this.emit("log", `Elicitation response: ${JSON.stringify(response)}`);
+        try {
+            this.#process.stdin.write(payload, (err) => {
+                if (err) this.emit("log", `Elicitation stdin write error: ${err.message}`);
+            });
+        } catch (err) {
+            this.emit("log", `Failed to respond elicitation ${requestId}: ${err.message}`);
+        }
+    }
+
     // --- Internal ---
 
     #send(method, params, timeoutMs = 30000) {
@@ -429,6 +452,14 @@ export class ACPClient extends EventEmitter {
                 this.#handleNotification(msg);
                 break;
             }
+            case "elicitation/create": {
+                this.emit("log", `Elicitation request: ${JSON.stringify(msg.params)}`);
+                this.emit("elicitation_request", {
+                    requestId: msg.id,
+                    ...msg.params,
+                });
+                break;
+            }
             default: {
                 // Unknown server request — respond with empty result
                 const response = { jsonrpc: "2.0", id: msg.id, result: {} };
@@ -494,6 +525,12 @@ export class ACPClient extends EventEmitter {
                     if (update.content?.type === "text") {
                         this.emit("thought_chunk", update.content.text);
                     }
+                    break;
+                case "plan":
+                    this.emit("plan", update.entries || []);
+                    break;
+                case "current_mode_update":
+                    this.emit("mode_update", update.modeId || update.currentModeId);
                     break;
                 default:
                     this.emit("update", update);

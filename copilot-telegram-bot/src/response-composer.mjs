@@ -31,6 +31,7 @@ export class ResponseComposer {
     #thoughtBuffer = "";
     #thoughtActive = true;
     #trailingHtml = null;
+    #planEntries = [];
 
     constructor(telegram, log = () => {}) {
         this.#telegram = telegram;
@@ -55,6 +56,7 @@ export class ResponseComposer {
         this.#permissionPending = false;
         this.#thoughtBuffer = "";
         this.#thoughtActive = true;
+        this.#planEntries = [];
 
         // Periodic elapsed time updates (every 5s)
         this.#elapsedTimer = setInterval(() => this.#scheduleEdit(true), 5000);
@@ -146,6 +148,15 @@ export class ResponseComposer {
      */
     setPermissionPending(pending = true) {
         this.#permissionPending = pending;
+        this.#scheduleEdit();
+    }
+
+    /**
+     * Update plan entries (replaces entire plan per ACP spec).
+     */
+    setPlan(entries) {
+        if (this.#finalized) return;
+        this.#planEntries = entries || [];
         this.#scheduleEdit();
     }
 
@@ -248,14 +259,16 @@ export class ResponseComposer {
         if (this.#finalized || !this.#messageId) return;
 
         const stepsHtml = this.#buildStepsHtml(false);
+        const planHtml = this.#buildPlanHtml();
+        const progressHtml = [planHtml, stepsHtml].filter(Boolean).join("\n");
         const elapsed = this.#startTime ? Math.round((Date.now() - this.#startTime) / 1000) : 0;
         const timer = elapsed > 0 ? ` <i>(${elapsed}s)</i>` : "";
 
         let html;
         if (this.#permissionPending) {
             // Waiting for user permission
-            html = stepsHtml
-                ? `🔐 <i>Awaiting permission...</i>${timer}\n${stepsHtml}`
+            html = progressHtml
+                ? `🔐 <i>Awaiting permission...</i>${timer}\n${progressHtml}`
                 : `🔐 <i>Awaiting permission...</i>${timer}`;
         } else if (this.#thoughtActive && this.#thoughtBuffer) {
             // Live reasoning — only show after 3s to avoid flicker on fast responses
@@ -268,15 +281,15 @@ export class ResponseComposer {
                 const thoughtHtml = display
                     ? `🧠 <i>${escapeHtml(display)}</i>${timer}`
                     : `🤔 <i>Thinking...</i>${timer}`;
-                html = stepsHtml ? `${thoughtHtml}\n${stepsHtml}` : thoughtHtml;
+                html = progressHtml ? `${thoughtHtml}\n${progressHtml}` : thoughtHtml;
             } else {
-                html = stepsHtml
-                    ? `🤔 <i>Thinking...</i>${timer}\n${stepsHtml}`
+                html = progressHtml
+                    ? `🤔 <i>Thinking...</i>${timer}\n${progressHtml}`
                     : `🤔 <i>Thinking...</i>${timer}`;
             }
-        } else if (stepsHtml) {
-            // Show thinking indicator + tool steps
-            html = `🤔 <i>Thinking...</i>${timer}\n${stepsHtml}`;
+        } else if (progressHtml) {
+            // Show thinking indicator + plan/tool steps
+            html = `🤔 <i>Thinking...</i>${timer}\n${progressHtml}`;
         } else if (this.#textBuffer.trim()) {
             // Text is streaming — show preview
             const preview = this.#textBuffer.trim().slice(0, 120);
@@ -313,6 +326,27 @@ export class ResponseComposer {
             : `🔧 <b>Steps:</b>`;
 
         return `<blockquote>${header}\n${lines.join("\n")}</blockquote>`;
+    }
+
+    #buildPlanHtml() {
+        if (this.#planEntries.length === 0) return "";
+
+        const maxEntries = 20;
+        const entries = this.#planEntries.slice(0, maxEntries);
+        const lines = entries.map(e => {
+            const icon = e.status === "completed" ? "✅"
+                       : e.status === "in_progress" ? "🔄"
+                       : "⏳";
+            const content = (e.content || "").length > 120
+                ? escapeHtml(e.content.slice(0, 120)) + "…"
+                : escapeHtml(e.content || "");
+            return `${icon} ${content}`;
+        });
+        if (this.#planEntries.length > maxEntries) {
+            lines.push(`<i>…and ${this.#planEntries.length - maxEntries} more</i>`);
+        }
+
+        return `<blockquote>📋 <b>Plan:</b>\n${lines.join("\n")}</blockquote>`;
     }
 
     #buildThoughtHtml() {

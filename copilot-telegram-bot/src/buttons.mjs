@@ -26,7 +26,7 @@ export class ButtonManager {
      */
     async prompt(chatId, text, buttons, opts = {}) {
         const menuId = `m_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const timeout = opts.timeout || opts.timeoutMs || TIMEOUT_MS;
+        const timeout = opts.timeout ?? opts.timeoutMs ?? TIMEOUT_MS;
 
         // Build inline keyboard with callback payloads
         const inline_keyboard = buttons.map(row =>
@@ -44,9 +44,10 @@ export class ButtonManager {
         if (!messageId) return { value: null, messageId: null };
 
         const value = await new Promise((resolve) => {
-            const timer = setTimeout(() => {
-                this.#expire(menuId, opts.timeoutText);
-            }, timeout);
+            // timeout=0 means no timeout (buttons persist until clicked)
+            const timer = timeout > 0
+                ? setTimeout(() => { this.#expire(menuId, opts.timeoutText); }, timeout)
+                : null;
 
             this.#pending.set(menuId, {
                 chatId,
