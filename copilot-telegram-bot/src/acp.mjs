@@ -288,6 +288,7 @@ export class ACPClient extends EventEmitter {
                 return reject(new Error("ACP process not running"));
             }
             const id = this.#nextId++;
+            this.emit("log", `ACP → ${method} id=${id}`);
             const msg = JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
 
             const timeout = setTimeout(() => {
