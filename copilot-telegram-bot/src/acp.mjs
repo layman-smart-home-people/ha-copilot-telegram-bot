@@ -19,6 +19,15 @@ export function normalizeModeId(mode) {
     return mode;
 }
 
+const MODE_URI_BASE = "https://agentclientprotocol.com/protocol/session-modes#";
+
+/** Convert short mode ID ("plan") to full ACP URI required by RPCs. */
+export function fullModeUri(shortId) {
+    if (!shortId) return `${MODE_URI_BASE}agent`;
+    if (shortId.startsWith("http")) return shortId; // already full URI
+    return `${MODE_URI_BASE}${shortId}`;
+}
+
 export class ACPClient extends EventEmitter {
     #process = null;
     #buffer = "";
@@ -173,7 +182,11 @@ export class ACPClient extends EventEmitter {
     }
 
     async loadSession(sessionId) {
-        const result = await this.#send("session/load", { sessionId });
+        const result = await this.#send("session/load", {
+            sessionId,
+            cwd: this.#config.cwd || "/config",
+            mcpServers: [],
+        });
         this.#sessionId = result.sessionId || sessionId;
         return result;
     }
@@ -211,18 +224,31 @@ export class ACPClient extends EventEmitter {
     }
 
     // --- RPC commands ---
-    // Note: Mode and model changes are routed through bridge.submitRetry()
-    // as slash commands (/autopilot, /plan, /model) because
-    // session/set_config_option is broken in current ACP/CLI versions.
-    // The bridge queue ensures proper composer/response handling.
+
+    /** Set a session config option (mode, model, etc.) via RPC. */
+    async setConfigOption(configId, value) {
+        if (!this.#sessionId) throw new Error("No active ACP session");
+        return this.#send("session/set_config_option", {
+            sessionId: this.#sessionId,
+            configId,
+            value,
+        });
+    }
+
+    /** Set session mode via the legacy set_mode RPC. */
+    async setMode(modeId) {
+        if (!this.#sessionId) throw new Error("No active ACP session");
+        return this.#send("session/set_mode", {
+            sessionId: this.#sessionId,
+            modeId,
+        });
+    }
 
     async compact() {
         return this.prompt("/compact");
     }
 
     async getUsage() {
-        // Usage is typically delivered via config_option_update notifications
-        // There's no dedicated RPC; send /usage and let the response come through
         return this.prompt("/usage");
     }
 

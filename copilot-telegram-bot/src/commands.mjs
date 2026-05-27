@@ -2,7 +2,7 @@
 // Slash Command Handler
 // ============================================================
 
-import { normalizeModeId } from "./acp.mjs";
+import { normalizeModeId, fullModeUri } from "./acp.mjs";
 
 export function parseSlashCommand(text, botUsername) {
     const match = text.match(/^\/([a-zA-Z0-9_]+)(?:@([a-zA-Z0-9_]+))?\s*([\s\S]*)?$/);
@@ -70,12 +70,13 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
                 if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
-                // Route through bridge queue — ACP processes the slash command
-                // and responds; mode is synced via config_option_update notification
-                if (args === "off" || args === "false") {
-                    bridge.submitRetry(ref, "/autopilot off");
-                } else {
-                    bridge.submitRetry(ref, "/autopilot on");
+                const apTarget = (args === "off" || args === "false") ? "agent" : "autopilot";
+                try {
+                    await acp.setConfigOption("mode", fullModeUri(apTarget));
+                    reply(apTarget === "autopilot" ? "🤖 Autopilot ON" : "💬 Autopilot OFF (agent mode)");
+                } catch {
+                    // Autopilot may fail due to permission service — fall back to prompt
+                    bridge.submitSlashCommand(ref, apTarget === "autopilot" ? "/autopilot on" : "/autopilot off");
                 }
                 return true;
             }
@@ -84,9 +85,19 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
                 if (args === "off" || args === "false") {
-                    bridge.submitRetry(ref, "/autopilot off");
+                    try {
+                        await acp.setConfigOption("mode", fullModeUri("agent"));
+                        reply("💬 Plan mode OFF (agent mode)");
+                    } catch {
+                        bridge.submitSlashCommand(ref, "/autopilot off");
+                    }
                 } else {
-                    bridge.submitRetry(ref, "/plan");
+                    try {
+                        await acp.setConfigOption("mode", fullModeUri("plan"));
+                        reply("📝 Plan mode ON");
+                    } catch {
+                        bridge.submitSlashCommand(ref, "/plan");
+                    }
                 }
                 return true;
             }
@@ -94,7 +105,12 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (!acp?.alive) { reply("⚠️ Copilot not running. Send a message to start it."); return true; }
                 if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
-                bridge.submitRetry(ref, "/autopilot on");
+                try {
+                    await acp.setConfigOption("mode", fullModeUri("autopilot"));
+                    reply("🚀 Fleet (autopilot) mode ON");
+                } catch {
+                    bridge.submitSlashCommand(ref, "/autopilot on");
+                }
                 return true;
             }
             case "mode": {
@@ -107,14 +123,20 @@ export async function handleSlashCommand(ctx, command, args) {
                         timeoutText: "📋 Mode selection expired",
                     });
                     if (selected) {
-                        const normalized = normalizeModeId(selected);
-                        // Route through bridge queue
-                        if (normalized === "plan") {
-                            bridge.submitRetry(ref, "/plan");
-                        } else if (normalized === "autopilot") {
-                            bridge.submitRetry(ref, "/autopilot on");
-                        } else {
-                            bridge.submitRetry(ref, "/autopilot off");
+                        const modeUri = selected.startsWith("http") ? selected : fullModeUri(normalizeModeId(selected));
+                        try {
+                            await acp.setConfigOption("mode", modeUri);
+                            reply(`✅ Mode → ${normalizeModeId(selected)}`);
+                        } catch {
+                            // Fall back to prompt-based command
+                            const short = normalizeModeId(selected);
+                            if (short === "plan") {
+                                bridge.submitSlashCommand(ref, "/plan");
+                            } else if (short === "autopilot") {
+                                bridge.submitSlashCommand(ref, "/autopilot on");
+                            } else {
+                                bridge.submitSlashCommand(ref, "/autopilot off");
+                            }
                         }
                     }
                 } else {
@@ -129,18 +151,24 @@ export async function handleSlashCommand(ctx, command, args) {
                     reply("⚠️ No session yet in this conversation.");
                     return true;
                 }
-                // Route through bridge queue so response is properly composited
-                bridge.submitRetry(ref, "/compact");
+                bridge.submitSlashCommand(ref, "/compact");
                 return true;
             }
             case "model": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
                 if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
                 await activateScopeSession({ createIfMissing: true });
+                const setModel = async (modelId) => {
+                    try {
+                        await acp.setConfigOption("model", modelId);
+                        reply(`✅ Model → ${modelId}`);
+                    } catch {
+                        bridge.submitSlashCommand(ref, `/model ${modelId}`);
+                    }
+                };
                 if (args) {
-                    bridge.submitRetry(ref, `/model ${args}`);
+                    await setModel(args);
                 } else if (buttons && models?.length > 0) {
-                    // Show interactive model picker
                     const rows = [];
                     for (let i = 0; i < models.length; i += 2) {
                         const row = [{ text: models[i].name || models[i].modelId, value: models[i].modelId }];
@@ -153,7 +181,7 @@ export async function handleSlashCommand(ctx, command, args) {
                         timeoutText: "🤖 Model selection expired",
                     });
                     if (selected) {
-                        bridge.submitRetry(ref, `/model ${selected}`);
+                        await setModel(selected);
                     }
                 } else {
                     reply("🤖 No models available yet. Try again after session starts.");
@@ -171,8 +199,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     reply("⚠️ No session yet in this conversation.");
                     return true;
                 }
-                // Route through bridge queue so response is properly composited
-                bridge.submitRetry(ref, "/usage");
+                bridge.submitSlashCommand(ref, "/usage");
                 return true;
             }
             case "status": {
@@ -302,7 +329,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 lines.push("  /help /status /model /mode");
                 lines.push("  /skills /history /compact");
                 lines.push("  /autopilot /plan /fleet /stop /retry");
-                lines.push("  /usage /session");
+                lines.push("  /usage /session /clear");
 
                 if (!knownTools?.size && !availableCommands?.length) {
                     lines.push("\n💡 MCP tools will appear here after Copilot uses them.");
@@ -321,7 +348,7 @@ export async function handleSlashCommand(ctx, command, args) {
                         ],
                         [
                             { text: "🤖 Autopilot", callback_data: "/autopilot on" },
-                            { text: "📋 Plan", callback_data: "/plan on" },
+                            { text: "📋 Plan", callback_data: "/plan" },
                             { text: "🚀 Fleet", callback_data: "/fleet" },
                         ],
                         [
@@ -355,6 +382,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     "  /history [n]\n" +
                     "  /session [new|stop]\n" +
                     "  /new [title] — new session/topic\n" +
+                    "  /clear — reset conversation\n" +
                     "  /close — close current topic\n" +
                     "  /sessions — list scopes\n" +
                     "  /pair — pairing info\n" +
@@ -506,6 +534,33 @@ export async function handleSlashCommand(ctx, command, args) {
                     }
                 } else {
                     reply("💡 /delete only works in forum topic sessions.");
+                }
+                return true;
+            }
+            case "clear": {
+                // Alias for /session new — familiar to CLI users
+                if (!scope) { reply("⚠️ Scope not available"); return true; }
+                if (promptActive) { reply("⏳ Copilot is busy with another request. Try again shortly."); return true; }
+                scope.reset();
+                scope.sessionId = null;
+                scope.model = "";
+                scope.mode = "";
+                if (ref) ref.sessionId = null;
+                if (acp?.alive) {
+                    const result = await acp.newSession({ cwd: config?.workingDirectory || "/config" });
+                    scope.sessionId = result.sessionId;
+                    if (ref) ref.sessionId = result.sessionId;
+                    scope.preambleSent = false;
+                    updateScopeSettings(result);
+                    if (scopeMgr && scopeKey) scopeMgr.setActive(scopeKey);
+                    reply(`🔄 Session cleared for ${scopeLabel}.`);
+                } else {
+                    reply("🚀 Starting Copilot...");
+                    await ctx.startCopilot?.();
+                    scope.sessionId = acp?.sessionId || null;
+                    if (ref) ref.sessionId = scope.sessionId;
+                    if (scopeMgr && scopeKey) scopeMgr.setActive(scopeKey);
+                    reply(`✅ New session ready for ${scopeLabel}.`);
                 }
                 return true;
             }

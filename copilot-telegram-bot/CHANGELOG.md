@@ -2,6 +2,22 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.18.0] — 2026-05-27
+
+### Fixed
+- **Mode/model changes via RPC** — `/autopilot`, `/plan`, `/fleet`, `/mode`, `/model` now use proper `session/set_config_option` RPC instead of prompt-based workaround. Instant switching, zero token cost.
+- **Prefix pollution** — slash commands (`/compact`, `/usage`) no longer get `[Via Telegram]` prepended, which caused timeouts
+- **`loadSession` spec compliance** — now sends required `cwd` and `mcpServers` params
+- **`/plan off` semantics** — now correctly reverts to agent mode instead of sending `/autopilot off`
+- **Help button** — fixed `/plan on` callback to `/plan`
+
+### Added
+- **`/clear` command** — alias for `/session new`, familiar to CLI users
+- **Instant feedback** — mode/model changes show confirmation immediately (✅ Mode → Plan)
+- **`session/set_config_option`** — proper ACP RPC for config changes with prompt fallback
+- **`session/set_mode`** — legacy mode RPC as secondary fallback
+- **`fullModeUri()` helper** — converts short mode IDs to full ACP URIs required by RPCs
+
 ## [0.17.0] — 2026-05-27
 
 ### Fixed

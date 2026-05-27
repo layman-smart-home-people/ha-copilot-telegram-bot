@@ -185,6 +185,11 @@ export class Bridge {
         this.#queuePrompt(this.#getPrefix(ref) + text, {}, ref);
     }
 
+    /** Send an ACP slash command without the [Via Telegram] prefix. */
+    submitSlashCommand(ref, text) {
+        this.#queuePrompt(text, {}, ref);
+    }
+
     #resolveScopeKey(scope, ref = null) {
         if (scope?.key) return scope.key;
         if (ref?.scopeKey) return ref.scopeKey;
