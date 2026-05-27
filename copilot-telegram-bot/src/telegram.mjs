@@ -82,14 +82,14 @@ export class TelegramClient extends EventEmitter {
     }
 
     sendMessage(chatId, text, parseMode, replyMarkup) {
-        const params = { chat_id: chatId, text };
+        const params = { chat_id: chatId, text, link_preview_options: { is_disabled: true } };
         if (parseMode) params.parse_mode = parseMode;
         if (replyMarkup) params.reply_markup = replyMarkup;
         return this.call("sendMessage", params);
     }
 
     editMessageText(chatId, messageId, text, parseMode) {
-        const params = { chat_id: chatId, message_id: messageId, text };
+        const params = { chat_id: chatId, message_id: messageId, text, link_preview_options: { is_disabled: true } };
         if (parseMode) params.parse_mode = parseMode;
         return this.call("editMessageText", params);
     }

@@ -17,7 +17,7 @@ COPY package.json ./
 RUN npm install --production
 
 # Copy source (cache-bust: update this comment on each rebuild)
-# Build: 2026-05-27T09:20
+# Build: 2026-05-27T09:30
 COPY src/ ./src/
 
 # Copy config.yaml and CHANGELOG.md for runtime access

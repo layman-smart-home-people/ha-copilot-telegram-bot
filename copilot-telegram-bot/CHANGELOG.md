@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.16.1] — 2026-05-27
+
+### Fixed
+- **Mode URI leak in status** — full ACP mode URI no longer displayed; normalized on scope load from disk
+- **Link previews disabled** — all bot messages now suppress Telegram link previews
+
 ## [0.16.0] — 2026-05-26
 
 ### Fixed

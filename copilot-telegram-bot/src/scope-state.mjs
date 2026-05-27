@@ -7,6 +7,7 @@
 // - Forum per topic
 
 import { ChatHistory } from "./history.mjs";
+import { normalizeModeId } from "./acp.mjs";
 
 const HISTORY_MAX = 50;
 
@@ -120,7 +121,7 @@ export class ScopeState {
         const scope = new ScopeState(data.key);
         scope.sessionId = data.sessionId ?? null;
         scope.model = data.model ?? "";
-        scope.mode = data.mode ?? "";
+        scope.mode = normalizeModeId(data.mode ?? "");
         scope.allowAll = Boolean(data.allowAll);
         scope.lastActivity = data.lastActivity ?? Date.now();
         scope.createdAt = data.createdAt ?? Date.now();
