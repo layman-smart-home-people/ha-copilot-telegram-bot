@@ -43,7 +43,8 @@ const UNDO_REVERSE_MAP = Object.freeze({
 
 export class Bridge {
     #telegram;
-    #acp;
+    #acp;        // primary ACP instance (shorthand)
+    #acpMgr;     // ACPManager for multi-ACP support
     #config;
     #log;
     #allowedChatIds;
@@ -54,14 +55,17 @@ export class Bridge {
     #scopeMgr;
     #sessionMgr;
 
-    // Active conversation ref — where ACP output is routed
+    // --- Primary ACP context ---
+    // Active conversation ref — where primary ACP output is routed
     #activeRef = null;
-
-    // Active scope — per-scope state for the current prompt
+    // Active scope — per-scope state for the current primary prompt
     #activeScope = null;
-
     // Session switch guard — true while loading a different ACP session
     #switching = false;
+
+    // --- Overflow ACP context ---
+    #overflowScope = null;
+    #overflowRef = null;
 
     // Set when the active prompt was cancelled due to message edit
     #editCancelled = false;
@@ -76,7 +80,7 @@ export class Bridge {
     // Pinned instructions per chat (chatId → text)
     #pinnedInstructions = new Map();
 
-    // Prompt lock (one prompt at a time)
+    // Prompt lock (one prompt at a time on primary)
     #promptActive = false;
     #promptQueue = [];
     #lastProcessedScope = null;
@@ -108,9 +112,15 @@ export class Bridge {
     // UDS server for tg-ux MCP sidecar IPC
     #udsServer = null;
 
-    constructor({ telegram, acp, config, log, pairing, scopeMgr, sessionMgr }) {
+    // Question queue for MCP ask_user (FIFO)
+    #questionQueue = [];
+    #processingQuestion = false;
+    static #MAX_QUESTION_QUEUE = 10;
+
+    constructor({ telegram, acp, acpMgr, config, log, pairing, scopeMgr, sessionMgr }) {
         this.#telegram = telegram;
-        this.#acp = acp;
+        this.#acpMgr = acpMgr || null;
+        this.#acp = acpMgr ? acpMgr.primary : acp;
         this.#config = config;
         this.#log = log;
         this.#allowedChatIds = (config.allowedChatIds || []).map(Number);
@@ -123,12 +133,33 @@ export class Bridge {
 
     get allowedChatIds() { return this.#allowedChatIds; }
     get promptActive() { return this.#promptActive; }
+    get acpMgr() { return this.#acpMgr; }
     get allowAll() { return this.#activeScope?.allowAll ?? false; }
     set allowAll(v) {
         const val = !!v;
         if (this.#activeScope) this.#activeScope.allowAll = val;
         this.#log(`Allow-all mode: ${val}`);
     }
+
+    /** Resolve scope and ref for a given ACP tag. */
+    #getCtxForTag(tag) {
+        if (tag === "overflow") {
+            return { scope: this.#overflowScope, ref: this.#overflowRef };
+        }
+        return { scope: this.#activeScope, ref: this.#activeRef };
+    }
+
+    /** Resolve scope/ref for whichever ACP tag a scope is using. */
+    #getCtxForScope(scopeKey) {
+        if (this.#overflowScope?.key === scopeKey) {
+            return { scope: this.#overflowScope, ref: this.#overflowRef, tag: "overflow" };
+        }
+        if (this.#activeScope?.key === scopeKey) {
+            return { scope: this.#activeScope, ref: this.#activeRef, tag: "primary" };
+        }
+        return { scope: null, ref: null, tag: null };
+    }
+
     resetPreamble() {
         // Clear preambleSent on ALL scopes
         if (this.#scopeMgr) {
@@ -157,6 +188,9 @@ export class Bridge {
     async notifyShutdown() {
         const promises = [];
         const scope = this.#activeScope;
+
+        // Cancel any queued MCP questions
+        this.#cancelQuestionQueue("Bot shutting down");
 
         // If a response was in progress, notify the user
         if (scope?.composer?.active && this.#activeRef) {
@@ -215,6 +249,9 @@ export class Bridge {
     async cancelActivePromptForScope(scope, ref = null, opts = {}) {
         const { notifyIfMissing = true } = opts;
         const requestedKey = this.#resolveScopeKey(scope, ref);
+
+        // Cancel any queued questions for this scope
+        this.#cancelQuestionQueue("User cancelled");
 
         if (this.#promptActive && (!requestedKey || this.#activeScope?.key === requestedKey)) {
             await this.#acp.cancel();
@@ -406,12 +443,38 @@ export class Bridge {
     // --- Setup event handlers ---
 
     setupACPHandlers() {
-        const acp = this.#acp;
+        // Wire primary ACP event handlers
+        this.#wireACPEvents(this.#acp, {
+            getScope: () => this.#activeScope,
+            getRef: () => this.#activeRef,
+            getSwitching: () => this.#switching,
+            tag: "primary",
+        });
+
+        // Start UDS server for tg-ux MCP sidecar IPC
+        this.#startUdsServer();
+    }
+
+    /** Wire overflow ACP event handlers (called when overflow spawns). */
+    #wireOverflowHandlers(overflowAcp) {
+        this.#wireACPEvents(overflowAcp, {
+            getScope: () => this.#overflowScope,
+            getRef: () => this.#overflowRef,
+            getSwitching: () => false,
+            tag: "overflow",
+        });
+    }
+
+    /**
+     * Wire ACP event handlers parametrized by scope/ref resolvers.
+     * This allows the same handler logic for both primary and overflow ACP.
+     */
+    #wireACPEvents(acp, { getScope, getRef, getSwitching, tag }) {
 
         // Text chunks → feed to composer for progressive display
         acp.on("text_chunk", (text) => {
-            if (this.#switching) return;
-            const scope = this.#activeScope;
+            if (getSwitching()) return;
+            const scope = getScope();
             if (!scope) return;
             this.#resetTypingDebounce();
 
@@ -428,14 +491,14 @@ export class Bridge {
             } else {
                 // Legacy path: no composer, flush as separate messages
                 if (scope.messageFlushTimer) clearTimeout(scope.messageFlushTimer);
-                scope.messageFlushTimer = setTimeout(() => this.#flushMessageBuffer(), this.#messageFlushMs);
+                scope.messageFlushTimer = setTimeout(() => this.#flushMessageBuffer(getScope, getRef), this.#messageFlushMs);
             }
         });
 
         // Thought chunks → feed to composer for live reasoning display
         acp.on("thought_chunk", (text) => {
-            if (this.#switching) return;
-            const scope = this.#activeScope;
+            if (getSwitching()) return;
+            const scope = getScope();
             if (!scope) return;
             this.#resetTypingDebounce();
 
@@ -452,9 +515,9 @@ export class Bridge {
 
         // Message boundaries
         acp.on("message_start", () => {
-            this.#log("Agent message_start");
-            if (this.#switching) return;
-            const scope = this.#activeScope;
+            this.#log(`Agent message_start [${tag}]`);
+            if (getSwitching()) return;
+            const scope = getScope();
             if (scope) {
                 scope.messageBuffer = "";
                 scope._toolJustEnded = false;
@@ -463,18 +526,18 @@ export class Bridge {
         });
 
         acp.on("message_end", () => {
-            this.#log("Agent message_end");
-            if (this.#switching) return;
-            this.#finalizeComposer();
+            this.#log(`Agent message_end [${tag}]`);
+            if (getSwitching()) return;
+            this.#finalizeComposer(getScope, getRef);
             this.#stopTyping();
         });
 
         // Tool calls → composer progress updates
         acp.on("tool_start", ({ toolCallId, toolName, arguments: args }) => {
-            if (this.#switching) return;
-            const scope = this.#activeScope;
+            if (getSwitching()) return;
+            const scope = getScope();
             if (!scope) return;
-            this.#log(`Tool start: ${toolName} (${toolCallId})`);
+            this.#log(`Tool start [${tag}]: ${toolName} (${toolCallId})`);
             scope.turnToolCount++;
             this.#resetTypingDebounce();
             const desc = describeToolCall(toolName, args);
@@ -491,12 +554,12 @@ export class Bridge {
         });
 
         acp.on("tool_end", ({ toolCallId, status, result }) => {
-            if (this.#switching) return;
-            const scope = this.#activeScope;
+            if (getSwitching()) return;
+            const scope = getScope();
             if (!scope) return;
             const completed = scope.activeTools.get(toolCallId);
             const resultSummary = result ? JSON.stringify(result).substring(0, 200) : "null";
-            this.#log(`Tool end: ${completed?.name || toolCallId} [${status}] → ${resultSummary}`);
+            this.#log(`Tool end [${tag}]: ${completed?.name || toolCallId} [${status}] → ${resultSummary}`);
             if (status === "failed") {
                 scope.turnToolErrors++;
                 this.#log(`Tool failed: ${completed?.name || toolCallId}`);
@@ -517,16 +580,16 @@ export class Bridge {
 
             // Interactive mode: show notification + undo for HA write tools
             if (!scope.allowAll && status === "completed" && completed?.name) {
-                this.#showToolNotification(completed.name, result);
+                this.#showToolNotification(completed.name, result, getScope, getRef);
             }
 
             // Relay images from tool results
-            this.#relayToolImages(result);
+            this.#relayToolImages(result, getRef);
         });
 
         // Tool progress updates (in_progress status)
         acp.on("tool_update", ({ toolCallId, status }) => {
-            if (this.#switching) return;
+            if (getSwitching()) return;
             if (status === "in_progress") {
                 this.#resetTypingDebounce();
             }
@@ -534,10 +597,10 @@ export class Bridge {
 
         // Plan entries — display in composer
         acp.on("plan", (entries) => {
-            if (this.#switching) return;
-            const scope = this.#activeScope;
+            if (getSwitching()) return;
+            const scope = getScope();
             if (!scope) return;
-            this.#log(`Plan update: ${entries.length} entries`);
+            this.#log(`Plan update [${tag}]: ${entries.length} entries`);
             if (scope.composer?.active) {
                 scope.composer.setPlan(entries);
             }
@@ -545,10 +608,10 @@ export class Bridge {
 
         // Mode change notification
         acp.on("mode_update", (modeId) => {
-            const scope = this.#activeScope;
+            const scope = getScope();
             if (scope && modeId) {
                 scope.mode = normalizeModeId(modeId);
-                this.#log(`Mode updated: ${scope.mode}`);
+                this.#log(`Mode updated [${tag}]: ${scope.mode}`);
                 this.#refreshStatusIfAlive();
             }
         });
@@ -556,14 +619,15 @@ export class Bridge {
         // Process exit — handle crash recovery
         acp.on("exit", ({ code, signal }) => {
             this.#stopTyping();
-            const scope = this.#activeScope;
+            const scope = getScope();
+            const ref = getRef();
             if (scope) {
                 if (scope.composer?.active) {
                     scope.composer.abort("Copilot process exited unexpectedly").catch(() => {});
                     scope.composer = null;
                 }
                 scope.activeTools.clear();
-                this.#flushMessageBuffer();
+                this.#flushMessageBuffer(() => scope, () => ref);
 
                 // Cancel any pending elicitation
                 if (scope.pendingElicitation) {
@@ -575,52 +639,68 @@ export class Bridge {
                     scope.pendingElicitation = null;
                 }
                 // Cancel any pending button menus for this chat
-                const chatId = this.#activeRef?.chatId;
+                const chatId = ref?.chatId;
                 if (chatId && this.#buttons) {
                     this.#buttons.cancelForChat(chatId, "🛑 Session ended");
                 }
+
+                // Cancel any queued MCP questions
+                this.#cancelQuestionQueue("Session ended");
             }
 
-            // Crash recovery: reject any active prompt so the queue doesn't wedge
-            if (this.#promptActive) {
-                this.#promptActive = false;
-                this.#activeRef = null;
-                this.#activeScope = null;
-                this.#scopeMgr?.clearActive();
-                // Drain the queue — notify users that queued messages were lost
-                const dropped = this.#promptQueue.length;
-                this.#promptQueue = [];
-                if (dropped > 0) {
-                    this.#broadcastAdmin(`⚠️ ${dropped} queued message(s) dropped due to Copilot exit.`);
+            if (tag === "primary") {
+                // Crash recovery: reject any active prompt so the queue doesn't wedge
+                if (this.#promptActive) {
+                    this.#promptActive = false;
+                    this.#activeRef = null;
+                    this.#activeScope = null;
+                    this.#scopeMgr?.clearActive();
+                    // Drain the queue — notify users that queued messages were lost
+                    const dropped = this.#promptQueue.length;
+                    this.#promptQueue = [];
+                    if (dropped > 0) {
+                        this.#broadcastAdmin(`⚠️ ${dropped} queued message(s) dropped due to Copilot exit.`);
+                    }
+                }
+
+                // Don't broadcast exit if it was intentional (code 0 or null = SIGTERM)
+                if (code !== 0 && code !== null) {
+                    this.#broadcastAdmin(`⚠️ Copilot process exited (code: ${code}). Send a message to restart.`);
+                }
+            } else {
+                // Overflow exit — clean up overflow state
+                this.#overflowScope = null;
+                this.#overflowRef = null;
+                if (this.#acpMgr) this.#acpMgr.release("overflow");
+                if (code !== 0 && code !== null) {
+                    this.#log(`Overflow ACP crashed (code: ${code}). Will respawn on next demand.`);
                 }
             }
 
-            // Don't broadcast exit if it was intentional (code 0 or null = SIGTERM)
-            if (code !== 0 && code !== null) {
-                this.#broadcastAdmin(`⚠️ Copilot process exited (code: ${code}). Send a message to restart.`);
-            }
-            // Clear stale mode/model from active scope
-            const exitScope = this.#activeScope;
+            // Clear stale mode/model from scope
+            const exitScope = getScope();
             if (exitScope) {
                 exitScope.mode = "";
                 exitScope.model = "";
+                exitScope.promptRunning = false;
+                exitScope.acpTag = null;
             }
             this.#refreshStatusIfAlive().catch(() => {});
         });
 
         acp.on("error", (err) => {
-            this.#log(`ACP error: ${err.message}`);
+            this.#log(`ACP [${tag}] error: ${err.message}`);
         });
 
         acp.on("log", (text) => {
-            this.#log(`ACP: ${text}`);
+            this.#log(`ACP[${tag}]: ${text}`);
         });
 
         acp.on("permission_request", async (req) => {
-            if (this.#switching) return;
-            const scope = this.#activeScope;
+            if (getSwitching()) return;
+            const scope = getScope();
             if (!scope) return;
-            this.#log(`Permission request: ${JSON.stringify(req)}`);
+            this.#log(`Permission request [${tag}]: ${JSON.stringify(req)}`);
             const { requestId } = req;
 
             // Extract tool identification from the new session/request_permission format
@@ -644,7 +724,7 @@ export class Bridge {
                     acp.respondPermission(requestId, "reject_once");
                     return;
                 }
-                const targetRef = this.#activeRef;
+                const targetRef = getRef();
                 const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
                 if (!chatId || !this.#buttons) {
                     const fallbackId = options.find(o => o.kind === "allow_once")?.optionId || options[0]?.optionId;
@@ -733,7 +813,7 @@ export class Bridge {
             const rejectOnceId = findOption("reject_once") || "reject_once";
 
             // Per-user per-scope grants
-            const ref = this.#activeRef;
+            const ref = getRef();
             const userId = ref?.userId;
             if (isReadOnly || (userId && scope.isToolGranted(userId, tool))) {
                 acp.respondPermission(requestId, allowAlwaysId);
@@ -765,7 +845,7 @@ export class Bridge {
             }
 
             // Ask user via inline buttons
-            const targetRef = this.#activeRef;
+            const targetRef = getRef();
             const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
             if (!chatId || !this.#buttons) {
                 acp.respondPermission(requestId, rejectOnceId);
@@ -849,7 +929,7 @@ export class Bridge {
                 this.#models = result.models.availableModels;
                 this.#log(`Models available: ${this.#models.length}`);
             }
-            const scope = this.#activeScope;
+            const scope = getScope();
             if (scope) {
                 if (result.models?.currentModelId) {
                     scope.model = result.models.currentModelId;
@@ -865,7 +945,7 @@ export class Bridge {
 
         // config_option_update can update models/modes mid-session
         acp.on("config_options", (options) => {
-            const scope = this.#activeScope;
+            const scope = getScope();
             const modelOpt = options?.find(o => o.id === "model");
             if (modelOpt?.options) {
                 this.#models = modelOpt.options.map(o => ({
@@ -901,8 +981,8 @@ export class Bridge {
 
         // Elicitation — agent asks structured questions
         acp.on("elicitation_request", async (req) => {
-            if (this.#switching) return;
-            const scope = this.#activeScope;
+            if (getSwitching()) return;
+            const scope = getScope();
             if (!scope) {
                 acp.respondElicitation(req.requestId, "cancel");
                 return;
@@ -912,9 +992,9 @@ export class Bridge {
                 this.#log(`Rejected concurrent elicitation (another pending)`);
                 return;
             }
-            this.#log(`Elicitation: ${req.message}`);
+            this.#log(`Elicitation [${tag}]: ${req.message}`);
 
-            const targetRef = this.#activeRef;
+            const targetRef = getRef();
             const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
             if (!chatId) {
                 acp.respondElicitation(req.requestId, "cancel");
@@ -968,10 +1048,7 @@ export class Bridge {
                 acp.respondElicitation(req.requestId, "accept", {});
             }
         });
-
-        // Start UDS server for tg-ux MCP sidecar IPC
-        this.#startUdsServer();
-    }
+    }  // end of #wireACPEvents
 
     // --- UDS IPC server for tg-ux MCP ask_user tool ---
 
@@ -989,15 +1066,26 @@ export class Bridge {
                 let req;
                 try {
                     req = JSON.parse(line);
-                } catch {
-                    conn.end();
+                } catch (e) {
+                    this.#log(`UDS: JSON parse error: ${e.message}`);
+                    try { conn.end(JSON.stringify({ error: "Invalid JSON" })); } catch {}
                     return;
                 }
-                this.#handleMcpAskUser(req.params || {})
-                    .then((result) => conn.end(JSON.stringify(result)))
-                    .catch((err) => conn.end(JSON.stringify({ error: err.message })));
+                const scopeKey = req.scopeKey;
+                this.#log(`UDS: ask_user received (scope=${scopeKey || "unknown"})`);
+                this.#handleMcpAskUser(req.params || {}, scopeKey)
+                    .then((result) => {
+                        this.#log(`UDS: ask_user result (scope=${scopeKey || "unknown"}): ${result.error ? "error: " + result.error : "ok"}`);
+                        try { conn.end(JSON.stringify(result)); } catch {}
+                    })
+                    .catch((err) => {
+                        this.#log(`UDS: ask_user error: ${err.message}`);
+                        try { conn.end(JSON.stringify({ error: err.message })); } catch {}
+                    });
             });
-            conn.on("error", () => {});
+            conn.on("error", (err) => {
+                this.#log(`UDS: connection error: ${err.message}`);
+            });
         });
         this.#udsServer.on("error", (err) => {
             this.#log(`UDS server error: ${err.message}`);
@@ -1016,23 +1104,102 @@ export class Bridge {
         }
     }
 
-    async #handleMcpAskUser({ message, options }) {
-        const scope = this.#activeScope;
-        const ref = this.#activeRef;
+    async #handleMcpAskUser({ message, options }, scopeKey) {
+        // Resolve scope from scopeKey (UDS payload) or fall back to activeScope
+        let scope, ref;
+        if (scopeKey && this.#scopeMgr) {
+            scope = this.#scopeMgr.get(scopeKey);
+            ref = scope?.activeRef || this.#activeRef;
+        }
+        if (!scope) {
+            scope = this.#activeScope;
+            ref = this.#activeRef;
+        }
         const chatId = ref?.chatId;
         if (!chatId || !scope) return { error: "No active session" };
         if (!message) return { error: "No message provided" };
 
-        // Guard: only one interactive prompt at a time per scope (atomic reserve)
-        if (scope?.pendingElicitation) {
-            return { error: "Another question is already pending" };
+        // Queue overflow protection
+        if (this.#questionQueue.length >= Bridge.#MAX_QUESTION_QUEUE) {
+            this.#log(`Question queue full (${this.#questionQueue.length}), rejecting`);
+            return { error: "Too many pending questions" };
         }
-        // Reserve the slot immediately to prevent TOCTOU races
-        if (scope) scope.pendingElicitation = { reserved: true };
+
+        // Enqueue and return a Promise that resolves when this question is answered
+        return new Promise((resolve) => {
+            this.#questionQueue.push({
+                message, options, resolve, scope, chatId, ref,
+                queuedAt: Date.now(),
+            });
+            this.#log(`Question queued (queue=${this.#questionQueue.length})`);
+            this.#drainQuestionQueue();
+        });
+    }
+
+    /** Process questions FIFO — one at a time. */
+    async #drainQuestionQueue() {
+        if (this.#processingQuestion) return;
+        if (this.#questionQueue.length === 0) return;
+
+        this.#processingQuestion = true;
+        try {
+            while (this.#questionQueue.length > 0) {
+                const item = this.#questionQueue[0];
+                const total = this.#questionQueue.length;
+                const prefix = total > 1 ? `(1/${total}) ` : "";
+
+                // Stale scope check
+                if (item.scope !== this.#activeScope && item.scope !== this.#overflowScope) {
+                    this.#log(`Question skipped: scope no longer active`);
+                    item.resolve({ error: "Session ended" });
+                    this.#questionQueue.shift();
+                    continue;
+                }
+
+                try {
+                    const result = await this.#doAskUser(item, prefix);
+                    item.resolve(result);
+                } catch (err) {
+                    this.#log(`Question error: ${err.message}`);
+                    item.resolve({ error: err.message });
+                }
+                this.#questionQueue.shift();
+
+                // Brief delay between questions for smooth UX
+                if (this.#questionQueue.length > 0) {
+                    await new Promise(r => setTimeout(r, 500));
+                }
+            }
+        } finally {
+            this.#processingQuestion = false;
+        }
+    }
+
+    /** Cancel all queued questions (e.g., on /stop or ACP exit). */
+    #cancelQuestionQueue(reason) {
+        const count = this.#questionQueue.length;
+        if (count === 0) return;
+        this.#log(`Cancelling ${count} queued questions: ${reason}`);
+        for (const item of this.#questionQueue) {
+            item.resolve({ error: reason });
+        }
+        this.#questionQueue.length = 0;
+    }
+
+    /**
+     * Show a single question to the user and wait for answer.
+     * Extracted from the old #handleMcpAskUser logic.
+     */
+    async #doAskUser(item, prefix) {
+        const { message, options, scope, chatId } = item;
 
         const composerRef = scope?.composer;
         const replyToMsg = composerRef?.messageId;
         const sendOpts = replyToMsg ? { reply_to_message_id: replyToMsg } : {};
+        const displayMsg = `${prefix}${message}`;
+
+        // Reserve pendingElicitation slot
+        if (scope) scope.pendingElicitation = { reserved: true };
 
         if (options && Array.isArray(options) && options.length > 0) {
             if (options.length <= 8) {
@@ -1045,11 +1212,10 @@ export class Bridge {
                 if (composerRef) composerRef.setInteractionPending("question");
                 try {
                     const { value, messageId: btnMsgId } = await this.#buttons.prompt(
-                        chatId, `❓ ${message}`, rows,
+                        chatId, `❓ ${displayMsg}`, rows,
                         { timeoutMs: 0, ...sendOpts }
                     );
                     if (!value || value === "mcpq:cancel") {
-                        // Show cancelled state on the button message
                         if (btnMsgId) {
                             this.#buttons.finalize(chatId, btnMsgId, `❌ Cancelled: ${message}`).catch(() => {});
                         }
@@ -1058,7 +1224,6 @@ export class Bridge {
                     const idx = parseInt(value.replace("mcpq:", ""), 10);
                     const answer = options[idx]?.value ?? value;
                     const label = options[idx]?.label || answer;
-                    // Show selection on the button message
                     if (btnMsgId) {
                         this.#buttons.finalize(chatId, btnMsgId, `✅ ${label}`).catch(() => {});
                     }
@@ -1070,7 +1235,7 @@ export class Bridge {
             } else {
                 // Too many options — numbered list + text reply
                 const numbered = options.map((opt, i) => `${i + 1}. ${opt.label || opt.value}`).join("\n");
-                const prompt = `❓ ${message}\n\n${numbered}\n\nReply with the number of your choice, or "cancel".`;
+                const prompt = `❓ ${displayMsg}\n\n${numbered}\n\nReply with the number of your choice, or "cancel".`;
                 const sendParams = { chat_id: chatId, text: prompt, link_preview_options: { is_disabled: true } };
                 if (sendOpts.reply_to_message_id) sendParams.reply_to_message_id = sendOpts.reply_to_message_id;
                 await this.#telegram.call("sendMessage", sendParams);
@@ -1103,13 +1268,11 @@ export class Bridge {
 
             if (composerRef) composerRef.setInteractionPending("question");
             try {
-                // Send question with cancel button
                 const btnPromise = this.#buttons.prompt(
-                    chatId, `❓ ${message}\n\nType your answer below:`, cancelRows,
+                    chatId, `❓ ${displayMsg}\n\nType your answer below:`, cancelRows,
                     { timeoutMs: 0, ...sendOpts }
                 );
 
-                // Set up text reply intercept
                 const textPromise = new Promise((resolve) => {
                     if (scope) {
                         scope.pendingElicitation = {
@@ -1118,18 +1281,15 @@ export class Bridge {
                     }
                 });
 
-                // Race: button cancel vs text reply
                 const result = await Promise.race([
                     btnPromise.then(r => ({ type: "button", value: r.value })),
                     textPromise.then(v => ({ type: "text", value: v })),
                 ]);
 
                 if (result.type === "button") {
-                    // User tapped cancel — clear text intercept
                     if (scope) scope.pendingElicitation = null;
                     return { error: "User cancelled" };
                 } else {
-                    // User typed an answer — cancel the cancel-button for this chat
                     this.#buttons.cancelForChat(chatId, `✅ Answered`);
                     return { answer: result.value ?? "" };
                 }
@@ -2666,11 +2826,10 @@ export class Bridge {
 
     // --- Response Composer lifecycle ---
 
-    async #finalizeComposer() {
-        const scope = this.#activeScope;
+    async #finalizeComposer(getScope, getRef) {
+        const scope = getScope ? getScope() : this.#activeScope;
         if (!scope?.composer) {
-            // No composer — fall back to legacy buffer flush
-            this.#flushMessageBuffer();
+            this.#flushMessageBuffer(getScope, getRef);
             return;
         }
 
@@ -2704,7 +2863,7 @@ export class Bridge {
             }
 
             if (overflow?.length > 0) {
-                const ref = this.#activeRef;
+                const ref = getRef ? getRef() : this.#activeRef;
                 if (ref) {
                     for (let i = 0; i < overflow.length; i++) {
                         const chunk = overflow[i];
@@ -2739,7 +2898,7 @@ export class Bridge {
 
             // Send collapsible details (reasoning + steps) as trailing message
             if (composer.trailingHtml) {
-                const ref = this.#activeRef;
+                const ref = getRef ? getRef() : this.#activeRef;
                 if (ref) {
                     const detailsHtml = composer.trailingHtml;
                     this.#telegram.enqueue(async () => {
@@ -2754,7 +2913,7 @@ export class Bridge {
         } catch (err) {
             this.#log(`Composer finalize error: ${err.message}`);
             if (fullText) {
-                const ref = this.#activeRef;
+                const ref = getRef ? getRef() : this.#activeRef;
                 if (ref) {
                     const chunks = chunkMessage(fullText);
                     for (let i = 0; i < chunks.length; i++) {
@@ -2790,8 +2949,8 @@ export class Bridge {
 
     // --- Message buffer (accumulate chunks → send) ---
 
-    #flushMessageBuffer() {
-        const scope = this.#activeScope;
+    #flushMessageBuffer(getScope, getRef) {
+        const scope = getScope ? getScope() : this.#activeScope;
         if (scope?.messageFlushTimer) {
             clearTimeout(scope.messageFlushTimer);
             scope.messageFlushTimer = null;
@@ -2802,7 +2961,7 @@ export class Bridge {
         scope.messageBuffer = "";
 
         const chunks = chunkMessage(content);
-        const ref = this.#activeRef;
+        const ref = getRef ? getRef() : this.#activeRef;
 
         if (ref) {
             for (const chunk of chunks) {
@@ -2818,9 +2977,9 @@ export class Bridge {
         }
     }
 
-    async #sendFormatted(ref, markdown) {
+    async #sendFormatted(ref, markdown, scope) {
         const html = markdownToTelegramHtml(markdown);
-        const scope = this.#activeScope;
+        const resolvedScope = scope || this.#activeScope;
         let sent;
         try {
             sent = await this.#transport.send(ref, html, "HTML");
@@ -2832,8 +2991,8 @@ export class Bridge {
             }
         }
         if (sent?.message_id) {
-            if (scope) scope.lastBotMessageId = sent.message_id;
-            if (scope?.history) scope.history.push({ role: "bot", text: markdown, messageId: sent.message_id });
+            if (resolvedScope) resolvedScope.lastBotMessageId = sent.message_id;
+            if (resolvedScope?.history) resolvedScope.history.push({ role: "bot", text: markdown, messageId: sent.message_id });
         }
         return sent;
     }
@@ -2849,8 +3008,8 @@ export class Bridge {
 
     // --- Tool notifications for interactive mode ---
 
-    #showToolNotification(toolName, result) {
-        const scope = this.#activeScope;
+    #showToolNotification(toolName, result, getScope, getRef) {
+        const scope = getScope ? getScope() : this.#activeScope;
         this.#log(`Tool notification check: ${toolName}, allowAll=${scope?.allowAll}`);
 
         // Only notify for HA write tools
@@ -2903,10 +3062,10 @@ export class Bridge {
         // Determine undo action (reversible services)
         const reverseService = UNDO_REVERSE_MAP[service];
 
-        const ref = this.#activeRef;
+        const ref = getRef ? getRef() : this.#activeRef;
         const undoRef = ref ? {
             ...ref,
-            scopeKey: ref.scopeKey || this.#activeScope?.key || null,
+            scopeKey: ref.scopeKey || (getScope ? getScope() : this.#activeScope)?.key || null,
         } : null;
         const chatId = undoRef?.chatId || this.#allowedChatIds?.[0];
         if (!chatId) return;
@@ -2946,14 +3105,14 @@ export class Bridge {
 
     // --- Relay images from tool results ---
 
-    #relayToolImages(result) {
+    #relayToolImages(result, getRef) {
         const contents = result?.contents;
         if (!contents || !Array.isArray(contents)) return;
 
         for (const block of contents) {
             if (block.type === "image" && block.data && block.mimeType) {
                 const bytes = Math.ceil(block.data.length * 3 / 4);
-                const ref = this.#activeRef;
+                const ref = getRef ? getRef() : this.#activeRef;
                 const targets = ref ? [ref] : this.#allowedChatIds.map(id => makeRef(id));
 
                 for (const targetRef of targets) {

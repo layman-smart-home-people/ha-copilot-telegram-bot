@@ -54,6 +54,12 @@ export class ScopeState {
         // Scope-local allow-all toggle
         this.allowAll = false;
 
+        // Per-scope prompt serialization
+        this.promptQueue = [];       // queued prompts for this scope
+        this.promptRunning = false;  // true while this scope's prompt is in-flight
+        this.activeRef = null;       // conversation ref for current prompt
+        this.acpTag = null;          // 'primary' | 'overflow' | null
+
         // Activity tracking for LRU eviction
         this.lastActivity = Date.now();
 
@@ -85,6 +91,16 @@ export class ScopeState {
         this.turnToolCount = 0;
         this.turnToolErrors = 0;
         this.lastBotMessageId = null;
+
+        // Clean up per-scope prompt state
+        this.promptRunning = false;
+        this.activeRef = null;
+        this.acpTag = null;
+        for (const entry of this.promptQueue) {
+            // Resolve any pending promises with undefined
+            if (typeof entry.reject === "function") entry.reject(new Error("Scope reset"));
+        }
+        this.promptQueue = [];
 
         // Clean up pending elicitation/ask_user promises
         if (this.pendingElicitation) {

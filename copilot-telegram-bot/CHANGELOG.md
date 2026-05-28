@@ -2,6 +2,29 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.21.0] — 2026-05-28
+
+### Added
+- **Question queue** — MCP `ask_user` calls are now queued FIFO instead of rejected:
+  - Multiple concurrent questions are shown one at a time
+  - Queue prefix shown: "❓ (1/3) What color?" when multiple are pending
+  - 500ms delay between questions for smooth UX
+  - Max 10 queued questions (overflow rejected gracefully)
+  - Queue cancelled on /stop, ACP exit, or bot shutdown
+- **UDS diagnostic logging** — both bot and MCP server now log UDS connection lifecycle
+- **MCP server stderr logging** — `tg-mcp-server.mjs` logs to stderr for visibility in addon logs
+
+### Changed
+- `#handleMcpAskUser` refactored into queue + `#doAskUser` (extracted question display logic)
+- `#finalizeComposer`, `#flushMessageBuffer`, `#sendFormatted` now accept optional scope/ref params
+- `#showToolNotification`, `#relayToolImages` accept optional getter params for multi-ACP prep
+- Event handlers in `#wireACPEvents` fully parametrized (scope/ref/switching via getters)
+- UDS handler wraps `conn.end()` in try/catch for robustness
+
+### Fixed
+- Concurrent `ask_user` calls no longer fail with "Another question is already pending"
+- UDS connection errors now logged instead of silently swallowed
+
 ## [0.20.0] — 2026-05-27
 
 ### Added

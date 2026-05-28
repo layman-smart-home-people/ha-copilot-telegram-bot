@@ -1,0 +1,350 @@
+// ============================================================
+// ACPManager — Manages primary + overflow ACP processes
+// ============================================================
+// Provides isolated ACP instances for concurrent multi-user support.
+// Primary is always alive while bot is running.
+// Overflow is spawned on demand when primary is busy, reaped after idle.
+
+import { ACPClient } from "./acp.mjs";
+import { mkdirSync, existsSync, copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const OVERFLOW_SPAWN_COOLDOWN_MS = 5000; // min time between overflow spawns
+
+export class ACPManager {
+    #primaryAcp = null;
+    #overflowAcp = null;
+    #config;
+    #log;
+
+    // Which scope key each ACP is currently serving (null = idle)
+    #primaryScopeKey = null;
+    #overflowScopeKey = null;
+
+    // Overflow lifecycle
+    #overflowEnabled;
+    #overflowIdleMs;
+    #overflowIdleTimer = null;
+    #overflowLastSpawn = 0;
+    #overflowStartPromise = null;
+
+    // COPILOT_HOME paths
+    #primaryHome;
+    #overflowHome;
+
+    // Auth state
+    #authenticated = false;
+
+    constructor({ config, log, overflowEnabled = false, overflowIdleMinutes = 5 }) {
+        this.#config = config;
+        this.#log = log;
+        this.#overflowEnabled = overflowEnabled;
+        this.#overflowIdleMs = overflowIdleMinutes * 60 * 1000;
+
+        this.#primaryHome = config.copilotConfigDir;
+        this.#overflowHome = config.copilotConfigDir + "-overflow";
+    }
+
+    get primary() { return this.#primaryAcp; }
+    get overflow() { return this.#overflowAcp; }
+    get overflowEnabled() { return this.#overflowEnabled; }
+    get overflowAlive() { return this.#overflowAcp?.alive ?? false; }
+    get primaryScopeKey() { return this.#primaryScopeKey; }
+    get overflowScopeKey() { return this.#overflowScopeKey; }
+    get authenticated() { return this.#authenticated; }
+
+    /** Create the primary ACP client (does not start it). */
+    createPrimary() {
+        this.#primaryAcp = new ACPClient({
+            binary: this.#config.copilotBinary,
+            cwd: this.#config.workingDirectory,
+            model: this.#config.model,
+            extraArgs: this.#config.copilotExtraArgs,
+            copilotHome: this.#primaryHome,
+            permissionPolicy: this.#config.permissionPolicy || "interactive",
+        });
+        return this.#primaryAcp;
+    }
+
+    /**
+     * Try to acquire an ACP instance for a scope.
+     * Returns { acp, tag: 'primary'|'overflow' } or null if none available.
+     * Does NOT spawn overflow — use acquireOrSpawn for that.
+     */
+    tryAcquire(scopeKey) {
+        // If primary is serving this scope or idle → use primary
+        if (this.#primaryScopeKey === null || this.#primaryScopeKey === scopeKey) {
+            return { acp: this.#primaryAcp, tag: "primary" };
+        }
+
+        // If overflow is enabled and serving this scope or idle
+        if (this.#overflowEnabled && this.#overflowAcp?.alive) {
+            if (this.#overflowScopeKey === null || this.#overflowScopeKey === scopeKey) {
+                this.#clearOverflowIdleTimer();
+                return { acp: this.#overflowAcp, tag: "overflow" };
+            }
+        }
+
+        // Both busy with different scopes
+        return null;
+    }
+
+    /**
+     * Try to acquire, spawning overflow if needed.
+     * Returns { acp, tag } or null if both are busy.
+     */
+    async acquireOrSpawn(scopeKey) {
+        const result = this.tryAcquire(scopeKey);
+        if (result) return result;
+
+        // Primary is busy with another scope. Try overflow.
+        if (!this.#overflowEnabled) return null;
+
+        // Overflow exists but busy with yet another scope
+        if (this.#overflowAcp?.alive && this.#overflowScopeKey !== null) {
+            return null;
+        }
+
+        // Spawn overflow
+        try {
+            await this.#spawnOverflow();
+            return { acp: this.#overflowAcp, tag: "overflow" };
+        } catch (err) {
+            this.#log(`Overflow spawn failed: ${err.message}`);
+            return null;
+        }
+    }
+
+    /** Mark an ACP as busy with a scope. */
+    claim(tag, scopeKey) {
+        if (tag === "primary") {
+            this.#primaryScopeKey = scopeKey;
+        } else {
+            this.#overflowScopeKey = scopeKey;
+            this.#clearOverflowIdleTimer();
+        }
+    }
+
+    /** Mark an ACP as idle (done with its scope's prompt). */
+    release(tag) {
+        if (tag === "primary") {
+            this.#primaryScopeKey = null;
+        } else {
+            this.#overflowScopeKey = null;
+            this.#resetOverflowIdleTimer();
+        }
+    }
+
+    /** Check if a specific ACP tag is busy. */
+    isBusy(tag) {
+        return tag === "primary"
+            ? this.#primaryScopeKey !== null
+            : this.#overflowScopeKey !== null;
+    }
+
+    /** Get the scope key an ACP is serving. */
+    getScopeKey(tag) {
+        return tag === "primary" ? this.#primaryScopeKey : this.#overflowScopeKey;
+    }
+
+    /** Get the ACP instance by tag. */
+    getAcp(tag) {
+        return tag === "primary" ? this.#primaryAcp : this.#overflowAcp;
+    }
+
+    setAuthenticated(val) {
+        this.#authenticated = !!val;
+    }
+
+    // --- Overflow lifecycle ---
+
+    async #spawnOverflow() {
+        if (this.#overflowAcp?.alive) return;
+
+        // Cooldown check
+        const now = Date.now();
+        if (now - this.#overflowLastSpawn < OVERFLOW_SPAWN_COOLDOWN_MS) {
+            throw new Error("Overflow spawn cooldown");
+        }
+
+        // Deduplicate concurrent spawn calls
+        if (this.#overflowStartPromise) {
+            return this.#overflowStartPromise;
+        }
+
+        this.#overflowStartPromise = this.#doSpawnOverflow();
+        try {
+            await this.#overflowStartPromise;
+        } finally {
+            this.#overflowStartPromise = null;
+        }
+    }
+
+    async #doSpawnOverflow() {
+        this.#log("Spawning overflow ACP process...");
+        this.#overflowLastSpawn = Date.now();
+
+        // Prepare isolated COPILOT_HOME
+        this.#prepareOverflowHome();
+
+        this.#overflowAcp = new ACPClient({
+            binary: this.#config.copilotBinary,
+            cwd: this.#config.workingDirectory,
+            model: this.#config.model,
+            extraArgs: this.#config.copilotExtraArgs,
+            copilotHome: this.#overflowHome,
+            permissionPolicy: this.#config.permissionPolicy || "interactive",
+        });
+
+        // Wire exit handler to clean up
+        this.#overflowAcp.on("exit", ({ code, signal }) => {
+            this.#log(`Overflow ACP exited: code=${code} signal=${signal}`);
+            this.#overflowScopeKey = null;
+            this.#clearOverflowIdleTimer();
+        });
+
+        this.#overflowAcp.on("log", (text) => {
+            this.#log(`ACP[overflow]: ${text}`);
+        });
+
+        try {
+            await this.#overflowAcp.start();
+
+            // Authenticate overflow
+            try {
+                await this.#overflowAcp.authenticate();
+                this.#log("Overflow ACP authenticated");
+            } catch (err) {
+                if (err.message?.includes("Authentication required") || err.message?.includes("-32000")) {
+                    this.#log("Overflow auth failed — will fall back to primary queue");
+                    await this.#overflowAcp.stop();
+                    this.#overflowAcp = null;
+                    throw new Error("Overflow authentication failed — no token available");
+                }
+                throw err;
+            }
+
+            // Create initial session
+            await new Promise(r => setTimeout(r, 300));
+            await this.#overflowAcp.newSession({
+                cwd: this.#config.workingDirectory || "/config",
+            });
+
+            this.#log(`Overflow ACP started, session: ${this.#overflowAcp.sessionId}`);
+        } catch (err) {
+            try { await this.#overflowAcp?.stop(); } catch {}
+            this.#overflowAcp = null;
+            throw err;
+        }
+    }
+
+    /** Prepare isolated COPILOT_HOME for overflow. */
+    #prepareOverflowHome() {
+        if (!existsSync(this.#overflowHome)) {
+            mkdirSync(this.#overflowHome, { recursive: true });
+        }
+
+        // Copy auth tokens from primary's config.json
+        const primaryConfig = join(this.#primaryHome, "config.json");
+        const overflowConfig = join(this.#overflowHome, "config.json");
+        if (existsSync(primaryConfig)) {
+            try {
+                copyFileSync(primaryConfig, overflowConfig);
+                this.#log("Copied auth config to overflow COPILOT_HOME");
+            } catch (err) {
+                this.#log(`Failed to copy auth config: ${err.message}`);
+            }
+        }
+
+        // Copy MCP config if present
+        for (const name of ["mcp-config.json", "mcp.json"]) {
+            const src = join(this.#primaryHome, name);
+            const dst = join(this.#overflowHome, name);
+            if (existsSync(src)) {
+                try { copyFileSync(src, dst); } catch {}
+            }
+        }
+
+        // Copy settings.json
+        const srcSettings = join(this.#primaryHome, "settings.json");
+        const dstSettings = join(this.#overflowHome, "settings.json");
+        if (existsSync(srcSettings)) {
+            try { copyFileSync(srcSettings, dstSettings); } catch {}
+        }
+    }
+
+    /** Stop the overflow process. */
+    async reapOverflow() {
+        this.#clearOverflowIdleTimer();
+        if (!this.#overflowAcp) return;
+
+        // Don't reap while busy
+        if (this.#overflowScopeKey !== null) {
+            this.#log("Overflow reap deferred — still busy");
+            this.#resetOverflowIdleTimer();
+            return;
+        }
+
+        this.#log("Reaping overflow ACP process...");
+        try {
+            this.#overflowAcp.removeAllListeners();
+            await this.#overflowAcp.stop();
+        } catch (err) {
+            this.#log(`Overflow reap error: ${err.message}`);
+        }
+        this.#overflowAcp = null;
+        this.#overflowScopeKey = null;
+    }
+
+    #resetOverflowIdleTimer() {
+        this.#clearOverflowIdleTimer();
+        if (this.#overflowIdleMs <= 0) return;
+        if (!this.#overflowAcp?.alive) return;
+
+        this.#overflowIdleTimer = setTimeout(() => {
+            this.#log("Overflow idle timeout — reaping");
+            this.reapOverflow().catch(err => {
+                this.#log(`Overflow reap error: ${err.message}`);
+            });
+        }, this.#overflowIdleMs);
+        this.#overflowIdleTimer.unref?.();
+    }
+
+    #clearOverflowIdleTimer() {
+        if (this.#overflowIdleTimer) {
+            clearTimeout(this.#overflowIdleTimer);
+            this.#overflowIdleTimer = null;
+        }
+    }
+
+    /** Stop all ACP processes. */
+    async stopAll() {
+        this.#clearOverflowIdleTimer();
+        const promises = [];
+        if (this.#overflowAcp) {
+            this.#overflowAcp.removeAllListeners();
+            promises.push(this.#overflowAcp.stop().catch(() => {}));
+            this.#overflowAcp = null;
+        }
+        if (this.#primaryAcp) {
+            promises.push(this.#primaryAcp.stop().catch(() => {}));
+        }
+        await Promise.allSettled(promises);
+        this.#primaryScopeKey = null;
+        this.#overflowScopeKey = null;
+        this.#authenticated = false;
+    }
+
+    /** Status info for /status command. */
+    status() {
+        return {
+            primaryAlive: this.#primaryAcp?.alive ?? false,
+            primarySessionId: this.#primaryAcp?.sessionId ?? null,
+            primaryScope: this.#primaryScopeKey,
+            overflowEnabled: this.#overflowEnabled,
+            overflowAlive: this.#overflowAcp?.alive ?? false,
+            overflowSessionId: this.#overflowAcp?.sessionId ?? null,
+            overflowScope: this.#overflowScopeKey,
+        };
+    }
+}

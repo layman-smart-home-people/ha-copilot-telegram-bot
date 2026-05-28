@@ -47,6 +47,7 @@ export class ACPClient extends EventEmitter {
     get sessionId() { return this.#sessionId; }
     get alive() { return this.#process && !this.#dead; }
     get authMethods() { return this.#authMethods; }
+    get tag() { return this.#config.tag || "primary"; }
 
     // --- Lifecycle ---
 
@@ -99,7 +100,11 @@ export class ACPClient extends EventEmitter {
         if (copilotHome) {
             spawnEnv.COPILOT_HOME = copilotHome;
         }
-        this.emit("log", `ACP spawn: COPILOT_HOME=${spawnEnv.COPILOT_HOME || "unset"} args=[${args.join(" ")}]`);
+        // Pass scope key to MCP child processes (for UDS routing)
+        if (this.#config.scopeKey) {
+            spawnEnv.TG_UX_SCOPE_KEY = this.#config.scopeKey;
+        }
+        this.emit("log", `ACP spawn: COPILOT_HOME=${spawnEnv.COPILOT_HOME || "unset"} tag=${this.tag} args=[${args.join(" ")}]`);
         await new Promise((resolve, reject) => {
             this.#process = spawn(this.#config.binary, args, {
                 stdio: ["pipe", "pipe", "pipe"],

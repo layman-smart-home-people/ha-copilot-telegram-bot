@@ -6,6 +6,9 @@
 import { createConnection } from "net";
 
 const SOCKET_PATH = process.env.TG_UX_SOCK || "/run/tg-ux.sock";
+const SCOPE_KEY = process.env.TG_UX_SCOPE_KEY || null;
+
+function log(msg) { process.stderr.write(`[tg-mcp] ${msg}\n`); }
 
 const TOOL = {
     name: "ask_user",
@@ -48,25 +51,36 @@ function sendError(id, code, message) {
 
 function callBot(params) {
     return new Promise((resolve, reject) => {
+        log(`UDS connect → ${SOCKET_PATH} (scope=${SCOPE_KEY || "none"})`);
         const conn = createConnection(SOCKET_PATH, () => {
-            conn.write(JSON.stringify(params) + "\n");
+            const payload = JSON.stringify(params) + "\n";
+            log(`UDS send: ${payload.length} bytes`);
+            conn.write(payload);
         });
         const chunks = [];
-        // 5-minute timeout — user may take time to respond
+        // 30-minute timeout — user may take time to respond, especially if queued
         const timer = setTimeout(() => {
+            log("UDS timeout (30min)");
             conn.destroy();
             reject(new Error("Timed out waiting for user response"));
-        }, 5 * 60 * 1000);
+        }, 30 * 60 * 1000);
         conn.on("data", (c) => chunks.push(c));
         conn.on("end", () => {
             clearTimeout(timer);
             try {
-                resolve(JSON.parse(Buffer.concat(chunks).toString()));
+                const result = JSON.parse(Buffer.concat(chunks).toString());
+                log(`UDS response: ${result.error ? "error: " + result.error : "ok"}`);
+                resolve(result);
             } catch (e) {
+                log(`UDS parse error: ${e.message}`);
                 reject(new Error("Invalid response from bot"));
             }
         });
-        conn.on("error", (err) => { clearTimeout(timer); reject(err); });
+        conn.on("error", (err) => {
+            clearTimeout(timer);
+            log(`UDS error: ${err.message}`);
+            reject(err);
+        });
     });
 }
 
@@ -104,9 +118,10 @@ async function handleToolsCall(id, params) {
         });
         return;
     }
+    log(`ask_user called: "${args.message.substring(0, 80)}"`);
     pendingCalls++;
     try {
-        const result = await callBot({ method: "ask_user", params: args });
+        const result = await callBot({ method: "ask_user", params: args, scopeKey: SCOPE_KEY });
         if (result.error) {
             send(id, {
                 content: [{ type: "text", text: result.error }],
