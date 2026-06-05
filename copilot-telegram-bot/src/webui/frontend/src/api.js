@@ -1,10 +1,8 @@
 import { pushError } from "./components/ErrorCollector";
 
-const BASE = "";
-
 export async function api(path, opts = {}) {
   try {
-    const res = await fetch(`${BASE}/api${path}`, {
+    const res = await fetch(`./api${path}`, {
       headers: { "Content-Type": "application/json", ...opts.headers },
       ...opts,
     });

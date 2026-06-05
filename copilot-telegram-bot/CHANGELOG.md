@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.27.3] — 2026-06-05
+
+### Fixed
+- **WebUI API calls broken via Ingress** — frontend `api()` used absolute paths (`/api/...`) which, through HA Ingress, hit the HA Core API instead of the add-on's server, causing 404 errors on all API endpoints (`/system`, `/status`, `/docs`, `/config/options`). Changed to relative paths (`./api/...`) matching how SSE connections already worked correctly.
+
 ## [0.27.2] — 2026-06-05
 
 ### Fixed
