@@ -17,6 +17,8 @@ export class StandingInstructionOrchestrator {
     #cronTimer = null;
     #timerTimer = null;
     #started = false;
+    #startedAt = null;
+    #triggerCount = 0;
 
     constructor({ eventListener, manager, bridge, telegram, ownerChatId, log }) {
         this.#eventListener = eventListener;
@@ -30,10 +32,27 @@ export class StandingInstructionOrchestrator {
     get manager() { return this.#manager; }
     get eventListener() { return this.#eventListener; }
     get started() { return this.#started; }
+    get startedAt() { return this.#startedAt; }
+    get triggerCount() { return this.#triggerCount; }
+
+    status() {
+        const instructions = this.#manager.list();
+        const enabled = instructions.filter(i => i.enabled).length;
+        const uptime = this.#startedAt ? Math.floor((Date.now() - this.#startedAt) / 1000) : 0;
+        return {
+            started: this.#started,
+            haConnected: this.#eventListener.connected,
+            uptime,
+            triggerCount: this.#triggerCount,
+            total: instructions.length,
+            enabled,
+        };
+    }
 
     async start() {
         if (this.#started) return;
         this.#started = true;
+        this.#startedAt = Date.now();
         this.#log("[STANDING] Orchestrator starting...");
 
         // Wire HA event listener
@@ -93,6 +112,7 @@ export class StandingInstructionOrchestrator {
             for (const instruction of matches) {
                 this.#log(`[STANDING] Matched: "${instruction.description}" (${instruction.id}) for ${event.entity_id}: ${event.old_state} → ${event.new_state}`);
                 this.#manager.markTriggered(instruction.id);
+                this.#triggerCount++;
                 this.#executeAction(instruction, {
                     trigger_type: "state_change",
                     entity_id: event.entity_id,
@@ -114,6 +134,7 @@ export class StandingInstructionOrchestrator {
                 if (this.#manager.cronMatches(instruction.trigger.expression, now)) {
                     this.#log(`[STANDING] Cron matched: "${instruction.description}" (${instruction.id})`);
                     this.#manager.markTriggered(instruction.id);
+                    this.#triggerCount++;
                     this.#executeAction(instruction, {
                         trigger_type: "cron",
                         expression: instruction.trigger.expression,
@@ -133,6 +154,7 @@ export class StandingInstructionOrchestrator {
             for (const instruction of expired) {
                 this.#log(`[STANDING] Timer expired: "${instruction.description}" (${instruction.id})`);
                 this.#manager.markTriggered(instruction.id);
+                this.#triggerCount++;
                 this.#executeAction(instruction, {
                     trigger_type: "timer",
                     fire_at: instruction.trigger.fire_at,

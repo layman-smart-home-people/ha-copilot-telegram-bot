@@ -416,6 +416,16 @@ export class Bridge {
             lines.push(`🔌 MCP: ${this.#config.mcpServers.length} server(s)`);
         }
 
+        // Standing instructions status
+        if (this.standingOrchestrator) {
+            const orch = this.standingOrchestrator;
+            const mgr = orch.manager;
+            const instructions = mgr.list();
+            const enabled = instructions.filter(i => i.enabled).length;
+            const haWs = orch.eventListener.connected ? "🟢" : "🔴";
+            lines.push(`📡 HA Events: ${haWs} | Standing: ${enabled}/${instructions.length} active`);
+        }
+
         lines.push(`📱 Telegram: connected`);
         lines.push(`👥 Chats: ${this.#allowedChatIds.length}`);
         if (this.#pairing) {
@@ -446,6 +456,7 @@ export class Bridge {
                 [
                     { text: scopeAllowAll ? "\u{1F512} Allow-all OFF" : "\u{1F513} Allow-all ON",
                       callback_data: scopeAllowAll ? "/allowall off" : "/allowall on" },
+                    { text: "📡 Standing", callback_data: "/standing" },
                 ],
                 [
                     { text: "🔄 Restart", callback_data: "/session new" },

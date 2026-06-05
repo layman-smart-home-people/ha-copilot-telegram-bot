@@ -593,13 +593,21 @@ export async function handleSlashCommand(ctx, command, args) {
 
                 // Default: list all
                 const instructions = mgr.list();
+                const st = orch.status();
+                const uptimeStr = formatUptime(st.uptime);
+
                 if (instructions.length === 0) {
-                    reply("📋 No standing instructions registered.\n\nThe agent can create them during conversations.");
+                    let text = `📋 *Standing Instructions*\n\n`;
+                    text += `📡 HA Events: ${st.haConnected ? "🟢 connected" : "🔴 disconnected"}\n`;
+                    text += `⏱️ Uptime: ${uptimeStr}\n`;
+                    text += `🎯 Triggers fired: ${st.triggerCount}\n\n`;
+                    text += `No instructions registered.\nThe agent can create them during conversations.`;
+                    reply(text);
                     return true;
                 }
 
-                const haConn = orch.eventListener.connected ? "🟢" : "🔴";
-                let text = `📋 *Standing Instructions* (${instructions.length})\nHA Events: ${haConn}\n\n`;
+                let text = `📋 *Standing Instructions* (${st.enabled}/${st.total} active)\n`;
+                text += `📡 HA Events: ${st.haConnected ? "🟢" : "🔴"} | ⏱️ ${uptimeStr} | 🎯 ${st.triggerCount} fired\n\n`;
                 for (const inst of instructions) {
                     const status = inst.enabled ? "✅" : "⏸️";
                     const triggerDesc = inst.trigger.type === "state_change"
@@ -625,4 +633,12 @@ export async function handleSlashCommand(ctx, command, args) {
         reply(`❌ Command error: ${err.message}`);
         return true;
     }
+}
+
+function formatUptime(seconds) {
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
