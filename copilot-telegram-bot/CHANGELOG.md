@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.27.2] — 2026-06-05
+
+### Fixed
+- **WebUI startup errors** — API responses with invalid JSON (e.g. from Ingress during startup) are now handled gracefully instead of crashing the parser
+- **Retry on initial load** — Dashboard and SystemInfo use `apiWithRetry` to silently retry during the brief window after bot restart when the server may not be fully ready
+
 ## [0.27.1] — 2026-06-05
 
 ### Added

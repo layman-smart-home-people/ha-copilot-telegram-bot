@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
-import { api } from "../api";
+import { apiWithRetry } from "../api";
 
 export default function SystemInfo({ toast }) {
   const [info, setInfo] = useState(null);
 
   const load = useCallback(async () => {
     try {
-      const data = await api("/system");
+      const data = await apiWithRetry("/system");
       setInfo(data);
     } catch (err) {
       toast(`Failed to load system info: ${err.message}`, "error");

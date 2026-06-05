@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import { api } from "../api";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { api, apiWithRetry } from "../api";
 
 function formatUptime(seconds) {
   if (!seconds || seconds < 0) return "—";
@@ -35,10 +35,13 @@ function StatusBadge({ online, paused }) {
 
 export default function Dashboard({ toast, onVersion }) {
   const [status, setStatus] = useState(null);
+  const initialRef = useRef(true);
 
   const load = useCallback(async () => {
     try {
-      const data = await api("/status");
+      const fetcher = initialRef.current ? apiWithRetry : api;
+      initialRef.current = false;
+      const data = await fetcher("/status");
       setStatus(data);
       onVersion(data.bot.version);
     } catch (err) {
