@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.26.0] — 2026-06-05
+
+### Added
+- **Log Viewer** — live-tail logs via Server-Sent Events (SSE) with level filtering (ERROR/WARNING/ACP/STANDING), text search, auto-scroll, and clear
+- **Config Editor** — view and edit add-on options with form UI, password redaction, restart button
+- **System Info** — host details (board, OS version, kernel) and disk usage with progress bar on dashboard
+- **Entity Autocomplete** — search HA entities by ID or friendly name in standing instruction forms
+
+### Changed
+- Dashboard now includes System section below module status
+- Added Logs and Config tabs to navigation
+
 ## [0.25.0] — 2026-06-05
 
 ### Added

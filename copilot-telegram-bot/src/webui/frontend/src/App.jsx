@@ -2,12 +2,17 @@ import { useState, useCallback } from "react";
 import Dashboard from "./components/Dashboard";
 import Instructions from "./components/Instructions";
 import DocsEditor from "./components/DocsEditor";
+import LogViewer from "./components/LogViewer";
+import ConfigEditor from "./components/ConfigEditor";
+import SystemInfo from "./components/SystemInfo";
 import Toast from "./components/Toast";
 
 const TABS = [
   { id: "dashboard", label: "📊 Dashboard" },
   { id: "instructions", label: "📋 Instructions" },
   { id: "docs", label: "📚 Docs" },
+  { id: "logs", label: "📜 Logs" },
+  { id: "config", label: "⚙️ Config" },
 ];
 
 export default function App() {
@@ -51,12 +56,22 @@ export default function App() {
 
       <div className="tab-content active">
         {activeTab === "dashboard" && (
-          <Dashboard toast={toast} onVersion={setVersion} />
+          <>
+            <Dashboard toast={toast} onVersion={setVersion} />
+            <div style={{ marginTop: "1.5rem" }}>
+              <h3 style={{ fontSize: "1rem", marginBottom: "0.75rem", color: "var(--text-secondary)" }}>
+                🖥️ System
+              </h3>
+              <SystemInfo toast={toast} />
+            </div>
+          </>
         )}
         {activeTab === "instructions" && (
           <Instructions toast={toast} onCountChange={setInstrCount} />
         )}
         {activeTab === "docs" && <DocsEditor toast={toast} />}
+        {activeTab === "logs" && <LogViewer toast={toast} />}
+        {activeTab === "config" && <ConfigEditor toast={toast} />}
       </div>
 
       <div className="toast-container">

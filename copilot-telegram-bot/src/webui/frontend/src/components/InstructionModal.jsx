@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
+import EntitySearch from "./EntitySearch";
 
 function toLocalDatetime(date) {
   const pad = (n) => String(n).padStart(2, "0");
@@ -167,11 +168,10 @@ export default function InstructionModal({ instruction, onClose, onSaved, toast 
           <>
             <div className="form-group">
               <label>Entity ID</label>
-              <input
-                type="text"
+              <EntitySearch
                 value={entity}
-                onChange={(e) => setEntity(e.target.value)}
-                placeholder="sensor.temperature"
+                onChange={setEntity}
+                placeholder="sensor.temperature (autocomplete available)"
               />
             </div>
             <div className="form-row">

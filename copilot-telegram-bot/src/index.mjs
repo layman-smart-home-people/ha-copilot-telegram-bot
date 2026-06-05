@@ -273,6 +273,14 @@ async function main() {
     });
     _webui = webui;
 
+    // Hook log output into WebUI SSE stream
+    const origLog = console.log;
+    console.log = (...args) => {
+        origLog(...args);
+        const line = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+        webui.pushLog(line);
+    };
+
     // Idle timeout
     let idleTimer = null;
     if (config.idleTimeoutMinutes > 0) {
