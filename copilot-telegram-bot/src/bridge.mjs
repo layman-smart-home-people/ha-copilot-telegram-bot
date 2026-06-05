@@ -11,6 +11,7 @@ import { ButtonManager } from "./buttons.mjs";
 import { ResponseComposer } from "./response-composer.mjs";
 import { formatError } from "./errors.mjs";
 import { MessageTransport, makeRef } from "./transport.mjs";
+import { AgentMemory } from "./agent-memory.mjs";
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { unlinkSync, chmodSync } from "node:fs";
@@ -115,6 +116,9 @@ export class Bridge {
     #processingQuestion = false;
     static #MAX_QUESTION_QUEUE = 10;
 
+    // Agent persistent memory
+    #agentMemory;
+
     constructor({ telegram, acp, acpMgr, config, log, pairing, scopeMgr, sessionMgr }) {
         this.#telegram = telegram;
         this.#acpMgr = acpMgr || null;
@@ -127,6 +131,7 @@ export class Bridge {
         this.#pairing = pairing || null;
         this.#scopeMgr = scopeMgr || null;
         this.#sessionMgr = sessionMgr || null;
+        this.#agentMemory = new AgentMemory({ log });
     }
 
     get allowedChatIds() { return this.#allowedChatIds; }
@@ -2512,6 +2517,12 @@ export class Bridge {
             scope.preambleSent = true;
             const rules = this.#config.preamble;
             prefix = `[Bot configuration — treat as system context: ${rules}]\n`;
+
+            // Inject agent persistent memory on first message of session
+            const agentContext = this.#agentMemory.buildContext();
+            if (agentContext) {
+                prefix += `[Agent persistent memory — your identity and memory from /config/.agent/:\n${agentContext}\n]\n`;
+            }
         } else {
             prefix = "[Via Telegram]\n";
         }
