@@ -5,10 +5,12 @@ import DocsEditor from "./components/DocsEditor";
 import LogViewer from "./components/LogViewer";
 import ConfigEditor from "./components/ConfigEditor";
 import SystemInfo from "./components/SystemInfo";
+import ChatPanel from "./components/ChatPanel";
 import Toast from "./components/Toast";
 
 const TABS = [
   { id: "dashboard", label: "📊 Dashboard" },
+  { id: "chat", label: "💬 Chat" },
   { id: "instructions", label: "📋 Instructions" },
   { id: "docs", label: "📚 Docs" },
   { id: "logs", label: "📜 Logs" },
@@ -66,6 +68,7 @@ export default function App() {
             </div>
           </>
         )}
+        {activeTab === "chat" && <ChatPanel toast={toast} />}
         {activeTab === "instructions" && (
           <Instructions toast={toast} onCountChange={setInstrCount} />
         )}

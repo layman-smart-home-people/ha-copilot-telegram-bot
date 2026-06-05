@@ -2,6 +2,21 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.27.0] — 2025-07-17
+
+### Added
+- **Copilot Web Chat (Phase 3)** — full chat interface in the Web UI
+  - Dedicated ACP process with auto-approve permissions
+  - SSE streaming for text chunks, tool calls, and thinking indicators
+  - Message bubbles with markdown rendering, tool call cards, copy button
+  - New session / stop generation controls
+  - Agent memory context injected as preamble
+
+### Fixed
+- Stale closure in ChatPanel SSE handler (used ref pattern)
+- Race condition in `#ensureChatAcp` — concurrent calls no longer spawn duplicate ACP processes
+- Error handling in ACP init — partial failures now clean up properly instead of leaving stuck state
+
 ## [0.26.0] — 2026-06-05
 
 ### Added

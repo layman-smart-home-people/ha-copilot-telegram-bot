@@ -8,6 +8,8 @@ import http from "node:http";
 import { readFileSync, readdirSync, statSync, readFile, writeFile } from "node:fs";
 import { join, extname, resolve, basename, dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
+import { ACPClient } from "../acp.mjs";
+import { AgentMemory } from "../agent-memory.mjs";
 
 const STATIC_DIR = new URL("./dist/", import.meta.url).pathname;
 
@@ -32,6 +34,11 @@ export class WebUIServer {
     #logMaxLines = 500;
     #sseClients = new Set(); // SSE connections for live log streaming
     #addonSlug = null;     // resolved lazily
+    #chatAcp = null;       // dedicated ACP client for web chat
+    #chatSseClients = new Set(); // SSE connections for chat streaming
+    #chatBusy = false;     // true while a prompt is in progress
+    #chatSessionId = null; // current ACP session ID for web chat
+    #chatInitPromise = null; // deduplicates concurrent init calls
 
     constructor({ port = 8099, log = console.log } = {}) {
         this.#port = port;
@@ -74,6 +81,12 @@ export class WebUIServer {
     }
 
     async stop() {
+        // Stop chat ACP if running
+        if (this.#chatAcp) {
+            try { await this.#chatAcp.stop(); } catch {}
+            this.#chatAcp = null;
+        }
+
         if (this.#server) {
             return new Promise((resolve) => {
                 this.#server.close(() => {
@@ -210,6 +223,32 @@ export class WebUIServer {
         // POST /api/config/restart — restart the add-on
         if (pathname === "/api/config/restart" && method === "POST") {
             return this.#apiConfigRestart(res);
+        }
+
+        // GET /api/chat/status — web chat ACP status
+        if (pathname === "/api/chat/status" && method === "GET") {
+            return this.#apiChatStatus(res);
+        }
+
+        // GET /api/chat/stream — SSE stream for chat events
+        if (pathname === "/api/chat/stream" && method === "GET") {
+            return this.#apiChatStream(req, res);
+        }
+
+        // POST /api/chat/send — send a message to web chat ACP
+        if (pathname === "/api/chat/send" && method === "POST") {
+            const body = await this.#readBody(req);
+            return this.#apiChatSend(res, body);
+        }
+
+        // POST /api/chat/new — start a new chat session
+        if (pathname === "/api/chat/new" && method === "POST") {
+            return this.#apiChatNew(res);
+        }
+
+        // POST /api/chat/stop — cancel the current prompt
+        if (pathname === "/api/chat/stop" && method === "POST") {
+            return this.#apiChatStop(res);
         }
 
         this.#json(res, 404, { error: "Not found" });
@@ -656,6 +695,241 @@ export class WebUIServer {
             }, 500);
         } catch (err) {
             this.#json(res, 500, { error: `Failed to restart: ${err.message}` });
+        }
+    }
+
+    // ── Chat API (Copilot Web Chat) ─────────────────────────────
+
+    #chatSseEmit(event) {
+        for (const client of this.#chatSseClients) {
+            try {
+                client.write(`data: ${JSON.stringify(event)}\n\n`);
+            } catch {
+                this.#chatSseClients.delete(client);
+            }
+        }
+    }
+
+    async #ensureChatAcp() {
+        if (this.#chatAcp?.alive) return this.#chatAcp;
+
+        // Deduplicate concurrent initialization calls
+        if (this.#chatInitPromise) return this.#chatInitPromise;
+        this.#chatInitPromise = this.#doInitChatAcp().finally(() => {
+            this.#chatInitPromise = null;
+        });
+        return this.#chatInitPromise;
+    }
+
+    async #doInitChatAcp() {
+        const config = this.#ctx.config;
+        if (!config) throw new Error("Bot config not available");
+
+        const acp = new ACPClient({
+            binary: config.copilotBinary,
+            cwd: config.workingDirectory,
+            model: config.model,
+            extraArgs: config.copilotExtraArgs,
+            copilotHome: config.copilotConfigDir,
+            permissionPolicy: "allow_all",
+            tag: "webchat",
+        });
+
+        // Wire ACP events to SSE
+        acp.on("text_chunk", (text) => {
+            this.#chatSseEmit({ type: "text_chunk", text });
+        });
+
+        acp.on("thought_chunk", (text) => {
+            this.#chatSseEmit({ type: "thought", text });
+        });
+
+        acp.on("message_start", () => {
+            this.#chatSseEmit({ type: "message_start" });
+        });
+
+        acp.on("message_end", () => {
+            this.#chatBusy = false;
+            this.#chatSseEmit({ type: "done" });
+        });
+
+        acp.on("tool_start", (tool) => {
+            this.#chatSseEmit({
+                type: "tool_start",
+                toolCallId: tool.toolCallId,
+                name: tool.toolName,
+                args: tool.arguments,
+            });
+        });
+
+        acp.on("tool_end", (tool) => {
+            this.#chatSseEmit({
+                type: "tool_end",
+                toolCallId: tool.toolCallId,
+                status: tool.status,
+            });
+        });
+
+        acp.on("plan", (entries) => {
+            this.#chatSseEmit({ type: "plan", entries });
+        });
+
+        // Auto-approve all permission requests for web chat
+        acp.on("permission_request", (req) => {
+            this.#log("[WEBUI-CHAT] Auto-approving permission request");
+            acp.respondPermission(req.requestId, "allow_always");
+        });
+
+        acp.on("exit", ({ code, signal }) => {
+            this.#log(`[WEBUI-CHAT] ACP exited: code=${code} signal=${signal}`);
+            this.#chatBusy = false;
+            this.#chatSessionId = null;
+            this.#chatAcp = null;
+            this.#chatSseEmit({ type: "disconnected" });
+        });
+
+        acp.on("log", (text) => {
+            if (!text.includes("agent_message_chunk") && !text.includes("agent_thought_chunk")) {
+                this.#log(`[WEBUI-CHAT] ${text}`);
+            }
+        });
+
+        // Start the ACP process — clean up on any failure
+        this.#chatSseEmit({ type: "connecting" });
+        try {
+            await acp.start();
+
+            const agentMemory = new AgentMemory({ agentDir: config.agentDir, log: this.#log });
+            const session = await acp.newSession({
+                cwd: config.workingDirectory,
+                mcpServers: config.mcpServers || [],
+            });
+            this.#chatSessionId = session.sessionId;
+            this.#chatAcp = acp;
+
+            // Send preamble with agent context
+            const agentContext = agentMemory.buildContext();
+            const preamble = [
+                "You are an AI assistant connected via the Copilot Bot Web Dashboard.",
+                "You have the same tools and capabilities as via Telegram.",
+                "Use markdown formatting — the web UI renders it natively.",
+                `You have direct HA access: curl -s http://supervisor/core/api/... -H "Authorization: Bearer $SUPERVISOR_TOKEN".`,
+                agentContext ? `\n[Agent persistent memory — your identity and memory:\n${agentContext}\n]` : "",
+            ].filter(Boolean).join("\n");
+
+            this.#chatBusy = true;
+            this.#chatSseEmit({ type: "status", connected: true, busy: true });
+            try {
+                await acp.prompt(preamble, { mode: undefined });
+            } catch (err) {
+                this.#log(`[WEBUI-CHAT] Preamble failed: ${err.message}`);
+            }
+            this.#chatBusy = false;
+
+            this.#chatSseEmit({ type: "status", connected: true, busy: false });
+            return acp;
+        } catch (err) {
+            // Clean up on init failure so next call retries cleanly
+            this.#log(`[WEBUI-CHAT] Init failed: ${err.message}`);
+            try { await acp.stop(); } catch {}
+            this.#chatAcp = null;
+            this.#chatSessionId = null;
+            this.#chatBusy = false;
+            throw err;
+        }
+    }
+
+    #apiChatStatus(res) {
+        this.#json(res, 200, {
+            connected: this.#chatAcp?.alive ?? false,
+            busy: this.#chatBusy,
+            sessionId: this.#chatSessionId,
+        });
+    }
+
+    #apiChatStream(req, res) {
+        res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        });
+
+        // Send current status
+        res.write(`data: ${JSON.stringify({
+            type: "status",
+            connected: this.#chatAcp?.alive ?? false,
+            busy: this.#chatBusy,
+        })}\n\n`);
+
+        this.#chatSseClients.add(res);
+        req.on("close", () => this.#chatSseClients.delete(res));
+    }
+
+    async #apiChatSend(res, body) {
+        const text = body?.text?.trim();
+        if (!text) {
+            return this.#json(res, 400, { error: "Message text is required" });
+        }
+
+        if (this.#chatBusy) {
+            return this.#json(res, 409, { error: "A prompt is already in progress" });
+        }
+
+        try {
+            const acp = await this.#ensureChatAcp();
+            this.#chatBusy = true;
+            this.#chatSseEmit({ type: "user_message", text });
+            this.#json(res, 200, { sent: true });
+
+            // Run prompt async — responses stream via SSE
+            acp.prompt(text, { timeout: 0 }).catch((err) => {
+                this.#chatBusy = false;
+                this.#chatSseEmit({ type: "error", message: err.message });
+                this.#log(`[WEBUI-CHAT] Prompt error: ${err.message}`);
+            });
+        } catch (err) {
+            this.#chatBusy = false;
+            this.#json(res, 500, { error: `Chat error: ${err.message}` });
+        }
+    }
+
+    async #apiChatNew(res) {
+        try {
+            // If ACP is alive, create a new session
+            if (this.#chatAcp?.alive) {
+                if (this.#chatBusy) {
+                    try { await this.#chatAcp.cancel(); } catch {}
+                    this.#chatBusy = false;
+                }
+                const session = await this.#chatAcp.newSession({
+                    cwd: this.#ctx.config?.workingDirectory || "/config",
+                    mcpServers: this.#ctx.config?.mcpServers || [],
+                });
+                this.#chatSessionId = session.sessionId;
+                this.#chatSseEmit({ type: "new_session" });
+                this.#json(res, 200, { sessionId: this.#chatSessionId });
+            } else {
+                // Will be started on next send
+                this.#chatSessionId = null;
+                this.#json(res, 200, { sessionId: null });
+            }
+        } catch (err) {
+            this.#json(res, 500, { error: `Failed to create session: ${err.message}` });
+        }
+    }
+
+    async #apiChatStop(res) {
+        if (!this.#chatBusy || !this.#chatAcp?.alive) {
+            return this.#json(res, 200, { stopped: false });
+        }
+        try {
+            await this.#chatAcp.cancel();
+            this.#chatBusy = false;
+            this.#chatSseEmit({ type: "cancelled" });
+            this.#json(res, 200, { stopped: true });
+        } catch (err) {
+            this.#json(res, 500, { error: `Failed to stop: ${err.message}` });
         }
     }
 
