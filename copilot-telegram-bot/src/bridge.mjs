@@ -248,7 +248,7 @@ export class Bridge {
             return;
         }
         const ref = makeRef(targetChatId, null, null, "private");
-        ref.scopeKey = `dm:${targetChatId}`;
+        ref.scopeKey = `standing:${targetChatId}`;
         const prefix = this.#getPrefix(ref);
         this.#log(`[STANDING] Injecting system prompt to chat=${targetChatId}`);
 

@@ -21,6 +21,8 @@ export class StandingInstructionOrchestrator {
     #triggerCount = 0;
     #boundStateHandler = null;
     #boundErrorHandler = null;
+    #paused = false;
+    #muteUntil = null;  // timestamp (ms) or null
 
     constructor({ eventListener, manager, bridge, telegram, ownerChatId, log }) {
         this.#eventListener = eventListener;
@@ -37,6 +39,31 @@ export class StandingInstructionOrchestrator {
     get startedAt() { return this.#startedAt; }
     get triggerCount() { return this.#triggerCount; }
 
+    pause() {
+        this.#paused = true;
+        this.#log("[STANDING] Orchestrator paused");
+    }
+
+    resume() {
+        this.#paused = false;
+        this.#muteUntil = null;
+        this.#log("[STANDING] Orchestrator resumed");
+    }
+
+    mute(durationMs) {
+        this.#muteUntil = Date.now() + durationMs;
+        this.#log(`[STANDING] Muted for ${Math.round(durationMs / 60000)}min`);
+    }
+
+    get isPaused() {
+        if (this.#paused) return true;
+        if (this.#muteUntil && Date.now() < this.#muteUntil) return true;
+        if (this.#muteUntil && Date.now() >= this.#muteUntil) {
+            this.#muteUntil = null;  // auto-expire
+        }
+        return false;
+    }
+
     status() {
         const instructions = this.#manager.list();
         const enabled = instructions.filter(i => i.enabled).length;
@@ -48,6 +75,8 @@ export class StandingInstructionOrchestrator {
             triggerCount: this.#triggerCount,
             total: instructions.length,
             enabled,
+            paused: this.#paused,
+            mutedUntil: this.#muteUntil,
         };
     }
 
@@ -114,6 +143,7 @@ export class StandingInstructionOrchestrator {
     }
 
     #onStateChanged(event) {
+        if (this.isPaused) return;
         try {
             const matches = this.#manager.matchStateChange(
                 event.entity_id,
@@ -145,6 +175,7 @@ export class StandingInstructionOrchestrator {
     }
 
     #evaluateCron() {
+        if (this.isPaused) return;
         try {
             const now = new Date();
             const cronInstructions = this.#manager.getCronInstructions();
@@ -168,6 +199,7 @@ export class StandingInstructionOrchestrator {
     }
 
     #evaluateTimers() {
+        if (this.isPaused) return;
         try {
             const expired = this.#manager.getExpiredTimers();
 
@@ -195,6 +227,12 @@ export class StandingInstructionOrchestrator {
                 `Instruction: "${instruction.description}"\n` +
                 `Trigger: ${contextSummary}\n` +
                 `Agent prompt: ${instruction.action.prompt}`;
+            if (this.#ownerChatId) {
+                this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(this.#ownerChatId,
+                        `🔔 ${instruction.description}\n⏳ Processing...`)
+                );
+            }
             this.#bridge.injectSystemPrompt(prompt, this.#ownerChatId).catch(err => {
                 this.#log(`[STANDING] Failed to wake agent: ${err.message}`);
             });

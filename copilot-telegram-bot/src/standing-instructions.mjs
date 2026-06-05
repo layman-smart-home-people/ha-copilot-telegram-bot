@@ -163,6 +163,11 @@ export class StandingInstructionManager {
         const observed = this.#getObservedValues(instruction.trigger.attribute, newState, oldState, attributes);
         if (!this.#matchesExpectedValue(instruction.trigger.from, observed.oldValue)) return false;
         if (!this.#matchesExpectedValue(instruction.trigger.to, observed.newValue)) return false;
+
+        const numericValue = Number(observed.newValue);
+        if (instruction.trigger.above !== null && (!Number.isFinite(numericValue) || numericValue <= instruction.trigger.above)) return false;
+        if (instruction.trigger.below !== null && (!Number.isFinite(numericValue) || numericValue >= instruction.trigger.below)) return false;
+
         return true;
     }
 
@@ -238,6 +243,8 @@ export class StandingInstructionManager {
                     entity_id: this.#normalizeEntityIds(trigger.entity_id),
                     to: this.#normalizeOptionalComparable(trigger.to, "State-change trigger.to must be a string or null."),
                     from: this.#normalizeOptionalComparable(trigger.from, "State-change trigger.from must be a string or null."),
+                    above: this.#normalizeOptionalNumber(trigger.above, "State-change trigger.above must be a number or null."),
+                    below: this.#normalizeOptionalNumber(trigger.below, "State-change trigger.below must be a number or null."),
                     attribute: this.#normalizeNullableString(
                         trigger.attribute,
                         "State-change trigger.attribute must be a string or null.",
@@ -320,6 +327,13 @@ export class StandingInstructionManager {
         if (value == null) return null;
         if (typeof value !== "string") throw new Error(errorMessage);
         return value;
+    }
+
+    #normalizeOptionalNumber(value, errorMessage) {
+        if (value == null) return null;
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) throw new Error(errorMessage);
+        return parsed;
     }
 
     #normalizeNullableString(value, errorMessage) {

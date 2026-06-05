@@ -591,6 +591,31 @@ export async function handleSlashCommand(ctx, command, args) {
                     return true;
                 }
 
+                if (sub === "pause") {
+                    orch.pause();
+                    reply("⏸️ Standing instructions paused. Use /standing resume to re-enable.");
+                    return true;
+                }
+
+                if (sub === "resume") {
+                    orch.resume();
+                    reply("▶️ Standing instructions resumed.");
+                    return true;
+                }
+
+                if (sub === "mute") {
+                    const durationStr = args.split(/\s+/)[1];
+                    const minutes = parseDuration(durationStr);
+                    if (!minutes) {
+                        reply("⚠️ Usage: /standing mute <duration>\nExamples: /standing mute 30m, /standing mute 2h");
+                        return true;
+                    }
+                    orch.mute(minutes * 60 * 1000);
+                    const until = new Date(Date.now() + minutes * 60000).toLocaleTimeString();
+                    reply(`🔇 Standing instructions muted until ${until}`);
+                    return true;
+                }
+
                 // Default: list all
                 const instructions = mgr.list();
                 const st = orch.status();
@@ -607,7 +632,13 @@ export async function handleSlashCommand(ctx, command, args) {
                 }
 
                 let text = `📋 Standing Instructions (${st.enabled}/${st.total} active)\n`;
-                text += `📡 HA Events: ${st.haConnected ? "🟢" : "🔴"} | ⏱️ ${uptimeStr} | 🎯 ${st.triggerCount} fired\n\n`;
+                text += `📡 HA Events: ${st.haConnected ? "🟢" : "🔴"} | ⏱️ ${uptimeStr} | 🎯 ${st.triggerCount} fired\n`;
+                if (st.paused) {
+                    text += `⏸️ PAUSED\n`;
+                } else if (st.mutedUntil && Date.now() < st.mutedUntil) {
+                    text += `🔇 Muted until ${new Date(st.mutedUntil).toLocaleTimeString()}\n`;
+                }
+                text += `\n`;
                 for (const inst of instructions) {
                     const status = inst.enabled ? "✅" : "⏸️";
                     const triggerDesc = inst.trigger.type === "state_change"
@@ -622,7 +653,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     text += `   ${inst.action.type} | ${triggerDesc}${lastFired}\n`;
                     text += `   ${inst.id.slice(0, 8)}\n\n`;
                 }
-                text += `Commands: /standing enable|disable|delete <id>`;
+                text += `Commands: /standing pause|resume|mute|enable|disable|delete`;
                 reply(text);
                 return true;
             }
@@ -633,6 +664,16 @@ export async function handleSlashCommand(ctx, command, args) {
         reply(`❌ Command error: ${err.message}`);
         return true;
     }
+}
+
+function parseDuration(str) {
+    if (!str) return null;
+    const match = str.match(/^(\d+)\s*(m|min|h|hr|hrs|hour|hours)?$/i);
+    if (!match) return null;
+    const value = parseInt(match[1], 10);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    const unit = (match[2] || "m").toLowerCase();
+    return unit.startsWith("h") ? value * 60 : value;
 }
 
 function formatUptime(seconds) {
