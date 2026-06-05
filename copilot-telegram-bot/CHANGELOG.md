@@ -2,6 +2,14 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.27.1] — 2026-06-05
+
+### Added
+- **Error Collector** — floating debug panel for frontend error visibility
+  - Captures API errors, unhandled JS errors, and promise rejections
+  - Floating badge shows error count; click to expand full error list
+  - Copy-to-clipboard for easy sharing when reporting issues
+
 ## [0.27.0] — 2025-07-17
 
 ### Added
