@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.28.0] — 2026-06-05
+
+### Added
+- **`ha_service` action type** — standing instructions can now call HA services directly (e.g., toggle lights) without waking the agent. Includes Telegram notification on success/failure. Domain and service names are validated against strict HA identifier patterns to prevent path traversal.
+- **`chain_enable` field** — instructions can specify an array of instruction IDs to auto-enable when they fire, enabling event-driven chains (e.g., "turn on" enables the disabled "turn off" instruction).
+- **`notes` field** — free-form string for agent context, decisions, or state passing between chained instructions.
+- **Instant hot-reload** — `fs.watch` on the instructions file triggers immediate reload instead of waiting for the next cron/timer cycle. Re-establishes the watcher after atomic renames.
+- **Reload on every evaluation** — `reloadIfChanged()` now runs on state change events and timer checks, not just cron cycles.
+
 ## [0.27.4] — 2026-06-05
 
 ### Added

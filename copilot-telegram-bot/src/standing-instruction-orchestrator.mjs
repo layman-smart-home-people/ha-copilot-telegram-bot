@@ -4,6 +4,8 @@
 // Wires HAEventListener + StandingInstructionManager + Bridge
 // to evaluate triggers and wake the agent or send notifications.
 
+import { watch } from "node:fs";
+
 const CRON_CHECK_INTERVAL_MS = 60_000;
 const TIMER_CHECK_INTERVAL_MS = 15_000;
 
@@ -23,14 +25,19 @@ export class StandingInstructionOrchestrator {
     #boundErrorHandler = null;
     #paused = false;
     #muteUntil = null;  // timestamp (ms) or null
+    #haBaseUrl;
+    #haToken;
+    #fileWatcher = null;
 
-    constructor({ eventListener, manager, bridge, telegram, ownerChatId, log }) {
+    constructor({ eventListener, manager, bridge, telegram, ownerChatId, log, haBaseUrl, haToken }) {
         this.#eventListener = eventListener;
         this.#manager = manager;
         this.#bridge = bridge;
         this.#telegram = telegram;
         this.#ownerChatId = ownerChatId;
         this.#log = typeof log === "function" ? log : console.log;
+        this.#haBaseUrl = haBaseUrl || "http://supervisor/core/api";
+        this.#haToken = haToken || process.env.SUPERVISOR_TOKEN;
     }
 
     get manager() { return this.#manager; }
@@ -108,6 +115,9 @@ export class StandingInstructionOrchestrator {
         // Start timer evaluation loop
         this.#timerTimer = setInterval(() => this.#evaluateTimers(), TIMER_CHECK_INTERVAL_MS);
 
+        // Watch the instructions file for instant hot-reload
+        this.#startFileWatcher();
+
         const instructions = this.#manager.list();
         const enabled = instructions.filter(i => i.enabled).length;
         this.#log(`[STANDING] Orchestrator started — ${enabled}/${instructions.length} instructions enabled`);
@@ -125,6 +135,8 @@ export class StandingInstructionOrchestrator {
             clearInterval(this.#timerTimer);
             this.#timerTimer = null;
         }
+
+        this.#stopFileWatcher();
 
         try {
             await this.#eventListener.stop();
@@ -145,6 +157,7 @@ export class StandingInstructionOrchestrator {
     #onStateChanged(event) {
         if (this.isPaused) return;
         try {
+            this.#manager.reloadIfChanged();
             const matches = this.#manager.matchStateChange(
                 event.entity_id,
                 event.new_state,
@@ -216,6 +229,7 @@ export class StandingInstructionOrchestrator {
     #evaluateTimers() {
         if (this.isPaused) return;
         try {
+            this.#manager.reloadIfChanged();
             const expired = this.#manager.getExpiredTimers();
 
             for (const instruction of expired) {
@@ -235,6 +249,9 @@ export class StandingInstructionOrchestrator {
 
     #executeAction(instruction, context) {
         const contextSummary = this.#formatContext(context);
+
+        // Process chain_enable — enable linked instructions
+        this.#processChain(instruction);
 
         switch (instruction.action.type) {
         case "wake_agent": {
@@ -272,6 +289,43 @@ export class StandingInstructionOrchestrator {
             }
             break;
         }
+        case "ha_service": {
+            const { domain, service, data, message } = instruction.action;
+            const url = `${this.#haBaseUrl}/services/${domain}/${service}`;
+            this.#log(`[STANDING] Calling HA service: ${domain}.${service}`);
+
+            fetch(url, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${this.#haToken}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(data || {}),
+            }).then(res => {
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                }
+                this.#log(`[STANDING] HA service ${domain}.${service} called successfully`);
+                if (this.#ownerChatId) {
+                    const notifyMsg = message
+                        ? `🔔 ${instruction.description}\n${message}`
+                        : `✅ ${instruction.description}`;
+                    this.#telegram.enqueue(() =>
+                        this.#telegram.sendMessage(this.#ownerChatId, notifyMsg)
+                    ).catch(err => {
+                        this.#log(`[STANDING] Failed to send ha_service notification: ${err.message}`);
+                    });
+                }
+            }).catch(err => {
+                this.#log(`[STANDING] HA service call failed: ${err.message}`);
+                if (this.#ownerChatId) {
+                    this.#telegram.enqueue(() =>
+                        this.#telegram.sendMessage(this.#ownerChatId, `❌ ${instruction.description}\nService call failed: ${err.message}`)
+                    ).catch(() => {});
+                }
+            });
+            break;
+        }
         default:
             this.#log(`[STANDING] Unknown action type: ${instruction.action.type}`);
         }
@@ -287,6 +341,52 @@ export class StandingInstructionOrchestrator {
             return `timer fired at ${context.fire_at}`;
         default:
             return JSON.stringify(context);
+        }
+    }
+
+    #processChain(instruction) {
+        if (!instruction.chain_enable || !Array.isArray(instruction.chain_enable)) return;
+        for (const targetId of instruction.chain_enable) {
+            const result = this.#manager.enable(targetId);
+            if (result) {
+                this.#log(`[STANDING] Chain: enabled "${result.description}" (${targetId})`);
+            } else {
+                this.#log(`[STANDING] Chain: failed to enable ${targetId} (not found)`);
+            }
+        }
+    }
+
+    #startFileWatcher() {
+        try {
+            const path = this.#manager.persistPath;
+            if (!path) return;
+            this.#fileWatcher = watch(path, { persistent: false }, (eventType) => {
+                if (eventType === "change" || eventType === "rename") {
+                    // Re-establish watcher after atomic rename (inotify watches inodes, not paths)
+                    this.#stopFileWatcher();
+                    const reloaded = this.#manager.reloadIfChanged();
+                    if (reloaded) {
+                        this.#log("[STANDING] Instant reload triggered by file change");
+                    }
+                    // Re-create watcher on the new inode
+                    setTimeout(() => {
+                        if (this.#started) this.#startFileWatcher();
+                    }, 100);
+                }
+            });
+            this.#fileWatcher.on("error", (err) => {
+                this.#log(`[STANDING] File watcher error: ${err.message}`);
+            });
+            this.#log("[STANDING] File watcher started for instant reload");
+        } catch (err) {
+            this.#log(`[STANDING] Failed to start file watcher: ${err.message}`);
+        }
+    }
+
+    #stopFileWatcher() {
+        if (this.#fileWatcher) {
+            this.#fileWatcher.close();
+            this.#fileWatcher = null;
         }
     }
 }

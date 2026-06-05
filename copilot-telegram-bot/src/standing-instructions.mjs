@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 const DEFAULT_PERSIST_PATH = "/data/standing_instructions.json";
 const DEFAULT_COOLDOWN_SECONDS = 300;
 const VALID_TRIGGER_TYPES = new Set(["state_change", "cron", "timer"]);
-const VALID_ACTION_TYPES = new Set(["wake_agent", "notify"]);
+const VALID_ACTION_TYPES = new Set(["wake_agent", "notify", "ha_service"]);
 
 export class StandingInstructionManager {
     #persistPath;
@@ -28,6 +28,10 @@ export class StandingInstructionManager {
 
     list() {
         return this.#clone(this.#instructions);
+    }
+
+    get persistPath() {
+        return this.#persistPath;
     }
 
     /** Re-read from disk if the file was modified externally (e.g. by the agent). */
@@ -264,6 +268,8 @@ export class StandingInstructionManager {
             ),
             trigger_count: this.#normalizeNonNegativeInt(spec.trigger_count, 0, "Instruction trigger_count must be a non-negative integer."),
             max_triggers: this.#normalizeOptionalPositiveInt(spec.max_triggers, "Instruction max_triggers must be a positive integer or null."),
+            notes: this.#normalizeNullableString(spec.notes, "Instruction notes must be a string or null."),
+            chain_enable: this.#normalizeOptionalStringArray(spec.chain_enable, "Instruction chain_enable must be an array of instruction ID strings or null."),
         };
     }
 
@@ -322,6 +328,14 @@ export class StandingInstructionManager {
                 return {
                     type: "notify",
                     message: this.#requireString(action.message, "Notify action.message is required."),
+                };
+            case "ha_service":
+                return {
+                    type: "ha_service",
+                    domain: this.#requireHaIdentifier(action.domain, "ha_service action.domain"),
+                    service: this.#requireHaIdentifier(action.service, "ha_service action.service"),
+                    data: action.data != null && typeof action.data === "object" && !Array.isArray(action.data) ? action.data : {},
+                    message: action.message != null ? this.#requireString(action.message, "ha_service action.message must be a string.") : null,
                 };
             default:
                 throw new Error(`Unsupported action type: ${action.type}.`);
@@ -394,6 +408,12 @@ export class StandingInstructionManager {
         return this.#requireString(value, errorMessage);
     }
 
+    #normalizeOptionalStringArray(value, errorMessage) {
+        if (value == null) return null;
+        if (!Array.isArray(value)) throw new Error(errorMessage);
+        return value.map(v => this.#requireString(v, errorMessage));
+    }
+
     #normalizeNullableIsoTimestamp(value, errorMessage) {
         if (value == null) return null;
         return this.#normalizeIsoTimestamp(value, errorMessage);
@@ -411,6 +431,14 @@ export class StandingInstructionManager {
             throw new Error(errorMessage);
         }
         return value.trim();
+    }
+
+    #requireHaIdentifier(value, label) {
+        const str = this.#requireString(value, `${label} is required.`);
+        if (!/^[a-z_][a-z0-9_]*$/.test(str)) {
+            throw new Error(`${label} must be a valid HA identifier (lowercase letters, digits, underscores).`);
+        }
+        return str;
     }
 
     #coerceDate(value, errorMessage) {
