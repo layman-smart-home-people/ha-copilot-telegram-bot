@@ -1,332 +1,625 @@
 # Copilot Telegram Bot
 
-**Control your smart home with AI — right from Telegram.** Version **0.14.0**.
+**Control your smart home with AI — right from Telegram.** Version **0.28.0**.
 
 ---
 
 ## 🏠 What Is This?
 
-This is a Home Assistant add-on that gives you an AI assistant on Telegram. Just text your bot like you'd text a friend, and it can control your smart home, answer questions, and automate tasks — all from your phone.
+This Home Assistant add-on gives you an always-on AI assistant in Telegram, with a built-in web dashboard, persistent agent memory, and a standing instruction system for alerts, reminders, and scheduled tasks.
 
-No coding required. Just type what you want in plain English.
+You can use it like a chat assistant, a smart-home operator, or a proactive helper that watches for events and acts on them.
+
+No coding is required to get started.
 
 ## 💬 What Can I Do With It?
 
 Here are some things you can ask your bot:
 
-- **"Turn off all the lights"** — it controls your devices
-- **"What's the temperature in the bedroom?"** — it reads your sensors
-- **"Is the front door locked?"** — it checks device states
-- **"Set up an automation to turn on the porch light at sunset"** — it creates automations
-- **"What's on my calendar today?"** — it reads your HA calendars
-- **"Show me the status of all my devices"** — it generates reports
+- **"Turn off all the lights"** — control Home Assistant devices
+- **"What's the temperature upstairs?"** — read sensors and entity state
+- **"Is the front door locked?"** — check status before you sleep
+- **"Remind me at 8 PM to take my medicine"** — create a timed reminder
+- **"If the washer finishes, alert me"** — create a standing instruction
+- **"Show me today's calendar"** — read HA calendars
+- **"Summarize all active alerts and battery issues"** — generate reports
+- **"Open the docs and change your default tone"** — customize agent behavior
 
-You can also have natural conversations — ask follow-up questions, give it context by replying to messages, and pin instructions it should always follow.
+You can also reply to earlier messages for context, pin chat-specific instructions, work from Telegram or the WebUI, and keep long-term memory between sessions.
 
 ## 🚀 Getting Started
 
-You'll need three things: a Telegram bot, a GitHub account with Copilot access, and your Telegram user ID.
+You'll need three things:
 
-### Step 1 — Create Your Bot
+- a Telegram bot
+- a GitHub account with Copilot access
+- your Telegram user ID
+
+### Step 1 — Create Your Telegram Bot
 
 1. Open Telegram and search for **@BotFather**
-2. Send `/newbot` and follow the prompts to name your bot
-3. BotFather gives you a **bot token** — copy it (looks like `123456789:ABC...xyz`)
+2. Send `/newbot` and follow the prompts
+3. Copy the **bot token** BotFather gives you
 
-### Step 2 — Find Your User ID
+It looks something like:
+
+```text
+123456789:ABC...xyz
+```
+
+### Step 2 — Find Your Telegram User ID
 
 1. Open Telegram and search for **@userinfobot**
-2. Send it any message — it replies with your numeric ID (e.g., `123456789`)
+2. Send it any message
+3. Copy your numeric ID
 
 ### Step 3 — Configure the Add-on
 
-In Home Assistant, go to the add-on configuration and fill in:
+In Home Assistant, open the add-on configuration and fill in:
 
-- **Bot token** — paste the token from Step 1
-- **Allowed chat IDs** — paste your numeric ID from Step 2
+- **`bot_token`** — your Telegram bot token
+- **`allowed_chat_ids`** — your Telegram user ID
 
-Optional:
+Optional but useful:
 
-- **GitHub token** — use this for GitHub-backed Copilot features, or authenticate later via the Telegram device flow
+- **`github_token`** — for GitHub-backed Copilot features
+- **`agent_dir`** — where the bot stores identity, memory, skills, and tasks
 
-### Step 4 — Start Chatting!
+### Step 4 — Start the Add-on
 
-Click **Start** on the add-on's Info tab, then open Telegram and send your bot a message. That's it! 🎉
+Start the add-on from Home Assistant.
+
+Then:
+
+- send your bot a message in Telegram, or
+- open the add-on's **WebUI** through Home Assistant Ingress
+
+### Step 5 — Try a Few Commands
+
+Good first commands:
+
+- `/help` — show the main command menu
+- `/status` — live bot status
+- `/model` — choose an AI model
+- `/standing` — inspect standing instructions
 
 ## 🎯 Handy Tips for Everyday Use
 
-- **Reply to a message** to give the AI context about what you're referring to
-- **Pin a message** in the chat to set a standing instruction (e.g., "Always respond in Bahasa")
-- Type `/help` to see all available commands as tappable buttons
-- Type `/status` to see a dashboard of what's running
-- Type `/stop` if something is taking too long
+- **Reply to a message** to give Copilot more context
+- **Pin a message** to add chat-specific guidance like "Always answer in Bahasa"
+- Use `/help` if you prefer buttons over typing commands
+- Use `/status` for a live control panel
+- Use `/standing` for reminders, alerts, and scheduled actions
+- Use the **WebUI** for longer editing tasks, docs, logs, and configuration
+- Use `/stop` or `/cancel` if something is taking too long
 
 ---
 
-*The rest of this document covers commands, features, and configuration in detail.*
+*The rest of this document covers commands, features, and configuration in more detail.*
 
 ---
 
 ## How It Works (Technical Overview)
 
-This add-on runs a Telegram bot that connects to GitHub Copilot CLI using the Agent Client Protocol (ACP). When you send a message, Copilot processes your request with full access to MCP tools (Home Assistant, GitHub, etc.) and streams the response back to Telegram with progressive updates.
+This add-on runs a Telegram bot connected to GitHub Copilot CLI via ACP (Agent Client Protocol).
+
+When a session starts, the bot injects multiple layers of context:
+
+- the **preamble** — channel-specific instructions such as Telegram formatting and API hints
+- the agent's persistent files from **`agent_dir`** — especially `IDENTITY.md`, `MEMORY.md`, `SKILLS.md`, and `TASKS.md`
+- chat-specific context such as pinned messages and reply chains
+
+The result is an assistant that can:
+
+- answer questions and perform actions through Home Assistant tools
+- remember durable facts across sessions
+- manage ongoing tasks
+- react automatically through standing instructions
+- be administered through Telegram or the WebUI
 
 ## Commands
 
-### Mode & Model
+### Everyday Commands
 
-- `/autopilot [on|off]` — Toggle autopilot mode (Copilot works without asking permission for each step)
-- `/plan [on|off]` — Toggle plan-first mode (Copilot creates a plan before acting)
-- `/mode` — Interactive mode picker with inline buttons
-- `/model [name]` — Switch AI model by name, or tap to pick from an interactive list
-- `/allowall [on|off]` — Toggle auto-approve for all tool calls (including write actions). When off, the bot asks before running Home Assistant write operations
+- `/help` — show help with quick-action buttons
+- `/status` — open the live status menu
+- `/history [n]` — show recent messages
+- `/retry` — resend your last message
+- `/stop` — cancel the current operation
+- `/cancel` — alias for `/stop`
+- `/compact` — compress conversation history
+- `/usage` — show token usage and session stats
+- `/context` — same usage/context-window view as `/usage`
 
-### Session Management
+### Mode & Model Commands
 
-- `/session new` — Restart the Copilot session (fresh conversation)
-- `/session stop` — Shut down Copilot (saves resources)
-- `/new [title]` — Create a new session. In forum mode, this also creates a new topic
-- `/close` — Close the current forum topic session
-- `/delete` — Delete a forum topic session and its topic
-- `/sessions` — List all active sessions with their status
+- `/autopilot [on|off]` — let the agent execute without pausing for each step
+- `/plan [on|off]` — prefer plan-first behavior
+- `/fleet` — parallel agent mode
+- `/mode` — interactive mode switcher
+- `/model [name]` — choose a model by name or from a picker
+- `/allowall [on|off]` — auto-approve tool calls for the current conversation
 
-### Information
+### Session & Topic Commands
 
-- `/status` — Show a live status menu with model, mode, session info, and action buttons. Auto-refreshes on state changes
-- `/usage` — Show token usage metrics (context window, input/output tokens, turns)
-- `/skills` or `/tools` — Show all available MCP tools (grouped by type: Home Assistant, GitHub, etc.) and bot commands
-- `/history [n]` — Show the last *n* messages (default: 10, max: 30)
-- `/help` — Show all commands with quick-action buttons
+- `/new [title]` — start a new session; in forum mode this creates a new topic
+- `/close` — close the current forum topic
+- `/delete` — delete the current forum topic
+- `/sessions` — list active sessions/scopes
+- `/clear` — reset the current conversation/session
+- `/session new` — start a fresh session in the current scope
+- `/session stop` — stop Copilot for the current scope
+- `/session kill` — hard-stop the current scope session
 
-### Control
+### Pairing & Access Commands
 
-- `/stop` — Cancel the current Copilot operation (alias: `/cancel`)
-- `/retry` — Resend the last user message to Copilot
-- `/compact` — Compress conversation history to free up context window
+- `/pair` — pairing help for adding users
+- `/pair list` — list paired users (admin)
+- `/unpair <userId>` — remove a user's access
 
-### User Management
+### Discovery Commands
 
-- `/pair` — Show pairing instructions for adding new users
-- `/pair list` — List all paired users (admin only)
-- `/unpair <userId>` — Revoke a user's access (admin only)
+- `/skills` — list available MCP tools and bot capabilities
+- `/tools` — alias for `/skills`
+
+### Standing Instruction Commands
+
+- `/standing` — show the standing instruction summary
+- `/standing list` — list instructions
+- `/standing inspect <id>` — inspect a specific instruction
+- `/standing enable <id|all>` — enable one or more instructions
+- `/standing disable <id|all>` — disable one or more instructions
+- `/standing delete <id|all>` — delete one or more instructions
+- `/standing pause` — pause all standing instructions temporarily
+- `/standing resume` — resume paused instructions
+- `/standing mute <duration>` — suppress triggers for a while (for example `30m` or `2h`)
 
 ## Features
 
-### Pinned Messages as Instructions
+### Standing Instructions
 
-Pin a message in the chat to add persistent instructions that are included as context in every prompt. For example, pin "Always respond in Spanish" or "My house has 3 floors." The bot confirms with 📌 when it picks up the pinned message. Each chat can have its own pinned instruction.
+**Standing Instructions** are the add-on's built-in system for automated alerts, reminders, and scheduled tasks.
+
+They persist across restarts and can be created or edited by:
+
+- asking the agent in plain language
+- using `/standing`
+- using the WebUI **Instructions** tab
+- editing the JSON file directly
+
+### Storage & Reloading
+
+- Stored at **`/data/standing_instructions.json`**
+- Changes are **hot-reloaded immediately** when the file changes
+- No add-on restart is required after saving the file
+
+### Trigger Types
+
+Each instruction has one trigger. Supported trigger types are:
+
+- **`state_change`** — watch one or more Home Assistant entities for changes
+- **`cron`** — run on a recurring 5-field cron schedule
+- **`timer`** — run once at a specific timestamp
+
+### Action Types
+
+Each instruction has one action. Supported action types are:
+
+- **`wake_agent`** — wake Copilot with a prompt for reasoning-heavy work
+- **`notify`** — send a Telegram notification directly
+- **`ha_service`** — call a Home Assistant service directly without waking the agent
+
+`ha_service` is new in **0.28.0** and is ideal for fast, lightweight actions such as toggling helpers, scenes, lights, or scripts.
+
+### Lifecycle Controls
+
+Standing instructions can be made temporary or self-limiting:
+
+- **`one_shot`** — disable after the first trigger
+- **`max_triggers`** — disable after firing a set number of times
+- **`expires_at`** — disable after a specific date/time
+
+### Chaining & Context
+
+Standing instructions can work together:
+
+- **`chain_enable`** — enable another instruction after this one fires
+- **`notes`** — store free-form context for the agent between linked instructions
+
+This lets you build small workflows, such as:
+
+1. one instruction watches for arrival
+2. it enables a second instruction for a departure event
+3. the second instruction handles the follow-up action
+
+### Example
+
+```json
+{
+  "version": 1,
+  "instructions": [
+    {
+      "description": "Remind me to water the plants tomorrow morning",
+      "enabled": true,
+      "trigger": {
+        "type": "timer",
+        "fire_at": "2025-01-15T01:00:00.000Z"
+      },
+      "action": {
+        "type": "notify",
+        "message": "🪴 Time to water the plants"
+      },
+      "one_shot": true,
+      "notes": "Kitchen and balcony plants"
+    }
+  ]
+}
+```
+
+### Agent Memory System
+
+The add-on now has a persistent **agent memory system** so the assistant can keep a stable identity and remember important facts across sessions.
+
+By default, the memory directory is:
+
+```text
+/config/copilot-telegram-bot
+```
+
+You can change this with the **`agent_dir`** config option.
+
+### Files in `agent_dir`
+
+- **`IDENTITY.md`** — the agent's personality, role, and operating rules
+- **`MEMORY.md`** — long-term learned facts and durable knowledge
+- **`SKILLS.md`** — skills/capabilities reference loaded into session context
+- **`TASKS.md`** — active task tracking and resume notes
+- **`memory/YYYY-MM-DD.md`** — daily logs for recent observations and work
+
+### How It Works
+
+On a fresh install, the add-on automatically creates and seeds these files with defaults.
+
+On each new session, it loads:
+
+- identity
+- memory
+- skills
+- tasks
+- recent daily logs
+
+This gives the assistant continuity without you having to repeat everything every time.
+
+### Preamble vs `IDENTITY.md`
+
+These two are related, but they do different jobs.
+
+### The Preamble
+
+The **`preamble`** config option is for channel-specific instructions such as:
+
+- how to format Telegram replies
+- reminders like "don't use tables"
+- API access hints
+- environment notes
+
+### `IDENTITY.md`
+
+**`IDENTITY.md`** is where the assistant's personality and behavior live, for example:
+
+- tone and style
+- what it should prioritize
+- how proactive it should be
+- household-specific rules and preferences
+
+### Important Behavior
+
+Both the **preamble** and **`IDENTITY.md`** are injected at session start.
+
+Use them like this:
+
+- customize **`preamble`** for **format and channel behavior**
+- customize **`IDENTITY.md`** for **personality, role, and rules**
+
+### WebUI
+
+The add-on includes a built-in **WebUI** available through Home Assistant Ingress.
+
+Open it from the add-on page or sidebar panel.
+
+### Tabs
+
+- **Dashboard** — status overview, system details, and activity summary
+- **Chat** — web-based Copilot chat separate from Telegram
+- **Instructions** — visual standing instruction manager
+- **Docs** — edit agent docs like `IDENTITY.md`, `MEMORY.md`, `SKILLS.md`, `TASKS.md`, and daily logs
+- **Logs** — view live bot logs
+- **Config** — edit add-on configuration
+
+The WebUI is especially useful for desktop use, longer edits, and reviewing logs without leaving Home Assistant.
+
+### Pinned Messages as Persistent Chat Context
+
+Pinned messages still work, but they are **not** the same thing as standing instructions.
+
+Use a **pinned message** for chat context such as:
+
+- "Always answer in Bahasa"
+- "Call the upstairs AC 'Jasmine AC'"
+- "Keep responses under 5 bullet points"
+
+Use a **standing instruction** for automation-like behavior such as:
+
+- "If freezer temperature rises above -10°C, alert me"
+- "Remind me at 9 PM to lock the gate"
+
+Each chat can have its own pinned context.
 
 ### Reply Context & Chains
 
-Reply to any message to include it as context for Copilot. If you reply to a message that itself was a reply, the bot walks the chain (up to 5 messages) and includes the full thread as context. This works for both user and bot messages.
+Reply to any message to include it as context. If that message was itself a reply, the bot walks the recent reply chain so follow-up questions stay coherent.
+
+This works for both user messages and bot messages.
 
 ### Permission System
 
 The bot has two permission modes:
 
-- **Interactive** (default): Read-only Home Assistant tools and standard Copilot tools are auto-approved. Write actions (turning on lights, calling services, etc.) prompt you with Allow/Deny/Allow-for-session buttons
-- **Allow-all**: All tool calls are auto-approved without prompts. Toggle with `/allowall on` or via the status menu
+- **Interactive** (default) — safe/default mode; write actions ask for approval
+- **Allow-all** — auto-approve tool calls for that conversation
 
-Permissions are granted **per user, per scope** — allowing a tool in your DM won't affect group permissions, and vice versa. The `permission_policy` config option sets the default on startup.
+Use `/allowall` to switch modes quickly.
+
+Permissions are scoped per conversation, so changing behavior in one chat does not silently change another.
 
 ### Multi-User Session Isolation
 
-Each conversation gets its own independent Copilot session:
+Each conversation gets its own Copilot session:
 
-- **DM**: every user gets their own private session (`dm:{userId}`)
-- **Group**: each group chat shares one session for all participants (`group:{chatId}`)
-- **Forum**: each topic in a forum supergroup gets its own session (`forum:{chatId}:{threadId}`)
+- **DM** — one private session per user
+- **Group** — one shared session per group
+- **Forum topic** — one session per topic
 
-Sessions are automatically created on first message. The bot handles session switching transparently — you never need to manage this manually. Use `/sessions` to see all active scopes.
+Sessions are created automatically on first use.
 
-Resource limits: 30 DM slots + 20 group/forum slots. Least-recently-used sessions are evicted when limits are reached. The server owner (first `allowed_chat_ids` entry) is never evicted.
+Use `/sessions` to inspect active scopes.
 
 ### Group Chat Support
 
-Add the bot to a Telegram group for shared AI access:
+The bot works in Telegram groups and forum supergroups.
 
-- **@mention mode** (default): bot only responds when @mentioned, replied to, or receiving `/command@botname`
-- **All mode**: bot responds to every message (set `group_mode: all` in config)
-- Messages in groups are automatically attributed to the sender
-- Only authorized (paired) users can interact — others are prompted to DM for pairing
-- Responses are visible to all group members
+### Group Modes
 
-**Group safety**: set `allowed_groups` to whitelist specific groups. Set `max_group_members` to prevent the bot from operating in large groups. The bot auto-leaves groups that don't meet these criteria.
+- **`mention`** (default) — reply only when mentioned, replied to, or called with `/command@botname`
+- **`all`** — reply to every message in the group
+
+### Safety Controls
+
+- **`allowed_groups`** — whitelist permitted groups
+- **`max_group_members`** — keep the bot out of very large groups
+
+Unauthorized users in groups are guided through pairing instead of being allowed in automatically.
 
 ### Rate Limiting
 
-Each user is limited to 10 messages per minute across all conversations. This prevents any single user from overwhelming the bot. A warning message is shown when the limit is reached.
+The bot rate-limits incoming messages to keep one user from overwhelming the service.
+
+If you hit the limit, wait a moment and use `/retry` if needed.
 
 ### Forum Mode (Topic-per-Session)
 
-If you add the bot to a Telegram supergroup with Topics enabled, each topic becomes an independent Copilot session:
+In Telegram forum supergroups, each topic becomes its own independent AI session.
 
-- The **General** topic becomes a management topic (commands only, no chat)
-- Use `/new [title]` to create a new topic with its own session
-- Each topic has isolated conversation history
-- Use `/sessions` to see all topics and their status
-- `/close` closes a topic session; `/delete` removes it entirely
-- The bot auto-detects forum groups and creates sessions when you message in a topic
+- the **General** topic is reserved for management/commands
+- `/new [title]` creates a topic with its own session
+- `/close` closes the current topic session
+- `/delete` deletes the topic and its session
+
+This is useful for organizing projects, households, or issue threads.
 
 ### User Pairing
 
-New users can be granted access without editing the config:
+You can add users without editing the add-on config every time.
 
-1. An unknown user messages the bot
-2. A 6-character pairing code is generated and logged to the HA add-on logs
-3. An admin finds the code in the logs and shares it with the user
-4. The user sends the code to the bot to complete pairing
-5. Codes expire after 15 minutes
+Typical flow:
 
-Users listed in `allowed_chat_ids` are automatically admins. Admins can manage users with `/pair list` and `/unpair`.
+1. an unknown user messages the bot
+2. a pairing code is generated
+3. the code appears in add-on logs
+4. an admin shares the code with the user
+5. the user sends the code to the bot
+
+Users in **`allowed_chat_ids`** are admins automatically.
 
 ### Status Menu
 
-The `/status` command shows a live dashboard with:
+`/status` opens a live status menu with quick controls and current state, including things like:
 
-- Copilot state (Ready / Starting / Stopped)
-- Current model and mode
-- Session ID, available models count
-- Permission mode, paired users, active sessions
-- Quick-action buttons (Model, Mode, Usage, Compact, Restart, Stop, Allow-all toggle)
-
-The status menu is a singleton — only one exists at a time. It auto-refreshes when state changes and can be dismissed.
+- whether Copilot is running
+- current model and mode
+- usage/session information
+- permission mode
+- active sessions
+- shortcut buttons for common actions
 
 ### Progressive Response Display
 
-Responses stream progressively into a single Telegram message:
+Replies stream progressively into Telegram:
 
-- 🤔 **Thinking** indicator while Copilot reasons
-- 🧠 **Live reasoning** line shown after 3 seconds (avoids flicker on fast responses)
-- 🔧 **Tool steps** shown as they execute
-- ✍️ **Answer preview** streams as Copilot generates text
+- thinking indicator
+- tool activity
+- partial answer preview
+- final response in place
 
-On completion, the placeholder becomes the final answer. If reasoning or tool steps were involved, they appear in a **collapsible blockquote** below the answer — tap to expand.
+If the answer involved reasoning or tools, the bot can include a collapsible details block under the final message.
 
 ### Emoji Reactions
 
-Messages get automatic emoji reactions showing status:
+The bot uses emoji reactions to show status, such as:
 
-- ⚡ Processing — your message is being handled
-- ⏳ Queued — another conversation is active, you're next
-- ✅ Done — response delivered successfully
-- ⚠️ Errors — response delivered but some tool calls failed
-- ✏️ Edited — you edited a message and it's being reprocessed
+- ⚡ processing
+- ⏳ queued
+- ✅ finished
+- ⚠️ finished with issues
+- ✏️ edited/reprocessed
 
 ### Message Editing
 
-You can edit messages after sending:
+Editing a message after sending is supported:
 
-- **While queued**: the queue entry is silently updated with your corrected text
-- **While processing**: the current operation is cancelled and resubmitted with the corrected text
-- **After completion**: a correction prompt is sent so Copilot adjusts its answer without re-executing actions
+- while queued — the queued request is updated
+- while running — the current operation is cancelled and resubmitted
+- after completion — the correction is sent back as follow-up context
 
 ### File Attachments
 
-Send text files (`.yaml`, `.json`, `.py`, `.log`, `.txt`, `.csv`, `.xml`, `.md`, and more) and they're read as UTF-8 and injected into the prompt as context. Maximum file size: 50 KB. Photos and images are sent to Copilot directly for visual analysis.
+The bot can read common text files and pass them to the agent as context.
+
+Examples include:
+
+- `.yaml`
+- `.json`
+- `.py`
+- `.log`
+- `.txt`
+- `.csv`
+- `.xml`
+- `.md`
+
+Text attachments are read as UTF-8 and limited to about **50 KB**. Images are passed through for visual analysis.
 
 ### Unsupported Media
 
-The bot handles unsupported message types gracefully with helpful suggestions:
+Unsupported media is handled gracefully.
 
-- 🎤 **Voice/audio** — suggests keyboard speech-to-text
-- 🎬 **Video/GIF** — suggests sending a screenshot instead
-- 🎭 **Stickers** — emoji is extracted and sent as context
-- 📍 **Locations** — coordinates are forwarded (useful for Home Assistant)
-- 👤 **Contacts** — friendly rejection
+Examples:
+
+- voice/audio — suggests text or speech-to-text
+- video/GIF — suggests a screenshot
+- stickers — sends sticker emoji as context when possible
+- locations — forwards coordinates
+- contacts — politely rejected
 
 ### Graceful Shutdown
 
-When the add-on stops while a response is in progress, a notification is sent so users know the operation was interrupted. If a status menu is open, it's updated to show "Stopped."
+If the add-on stops while a request is running, the bot notifies the affected user so the interruption is visible instead of silent.
 
 ## Configuration Options
 
+All existing options remain available in **0.28.0**.
+
 ### Required
 
-**bot_token**
+**`bot_token`**
 Your Telegram bot token from @BotFather.
 
-**allowed_chat_ids**
-List of Telegram user/chat IDs allowed to use the bot. Get yours from @userinfobot. These users are automatically admins for pairing purposes.
+**`allowed_chat_ids`**
+Telegram user/chat IDs allowed to use the bot. These users are also treated as admins for pairing.
 
 ### Authentication
 
-**github_token**
-Optional GitHub fine-grained personal access token (PAT). Used by Copilot for GitHub-backed features. If not set, authenticate through the Telegram device flow.
+**`github_token`**
+Optional GitHub token for Copilot/GitHub-backed features. If omitted, you can authenticate later through the device flow.
 
 ### Copilot Settings
 
-**model**
-Default AI model. Set to `auto` (default) for automatic selection, or specify a model name like `claude-sonnet-4-5`.
+**`model`**
+Default model. Use `auto` for automatic selection, or set a specific model name.
 
-**preamble**
-System prompt prefix sent to Copilot at the start of each session. The default instructs Copilot to be concise and Telegram-friendly. Changing this resets on next session start.
+**`preamble`**
+Channel-specific prompt prefix injected at session start. Best used for formatting, delivery style, and environment hints.
 
-**permission_policy**
-Default permission mode on startup. Options:
-- `interactive` (default) — prompts for write actions
-- `allow_all` — auto-approves all tool calls
+**`permission_policy`**
+Default permission behavior on startup:
 
-**copilot_binary**
-Path to the Copilot CLI binary. Default: `auto` — the add-on downloads and manages Copilot CLI automatically on first start. Set a custom path to use your own installation.
+- `interactive`
+- `allow_all`
 
-**copilot_config_dir**
-Where Copilot's login credentials live. Default: `auto` — the add-on manages this directory automatically. Set a custom path to use your own config.
+**`copilot_binary`**
+Path to the Copilot CLI binary. `auto` lets the add-on manage it automatically.
 
-**copilot_extra_args**
-Additional command-line flags passed to Copilot CLI.
+**`copilot_config_dir`**
+Directory for Copilot authentication/config. `auto` lets the add-on manage it automatically.
+
+**`copilot_extra_args`**
+Additional CLI arguments passed to Copilot.
 
 ### Behavior
 
-**auto_start**
-If `true` (default), Copilot starts when the add-on boots. If `false`, it starts on demand when you send your first message.
+**`auto_start`**
+If `true`, Copilot starts with the add-on. If `false`, it starts on first use.
 
-**idle_timeout_minutes**
-Automatically stop Copilot after this many minutes of inactivity. Set to `0` (default) to keep it running indefinitely. Maximum: 1440 (24 hours).
+**`idle_timeout_minutes`**
+Stop Copilot after inactivity. `0` means never auto-stop.
 
-**working_directory**
-The directory Copilot works in. Default: `/config` (your Home Assistant configuration directory).
+**`working_directory`**
+The default working directory for Copilot. Default: `/config`.
+
+**`agent_dir`**
+Directory for the agent memory system. Default:
+
+```text
+/config/copilot-telegram-bot
+```
+
+This directory stores `IDENTITY.md`, `MEMORY.md`, `SKILLS.md`, `TASKS.md`, and daily logs.
 
 ### Group Settings
 
-**group_mode**
-How the bot responds in groups. Options:
-- `mention` (default) — only responds to @mentions, replies, and `/command@botname`
-- `all` — responds to every message in the group
+**`group_mode`**
+How the bot behaves in groups:
 
-**allowed_groups**
-List of group chat IDs the bot is allowed to join. Leave empty to allow all groups. The bot auto-leaves groups not on this list.
+- `mention`
+- `all`
 
-**max_group_members**
-Maximum number of members a group can have for the bot to operate. Default: 50. Range: 1–1000. The bot leaves groups that exceed this limit.
+**`allowed_groups`**
+Optional list of group IDs the bot is allowed to join.
+
+**`max_group_members`**
+Maximum allowed group size before the bot leaves or refuses the group.
 
 ## Troubleshooting
 
 **Bot doesn't respond at all**
-→ Check the Log tab. Most likely: wrong bot token or your chat ID isn't in the allowed list.
+→ Check the add-on logs first. Common causes are a wrong bot token or your chat ID missing from `allowed_chat_ids`.
+
+**The WebUI does not load**
+→ Refresh the page, then restart the add-on if needed. If Ingress works but the UI stays blank, check add-on logs for WebUI startup errors.
+
+**Standing instructions are not firing**
+→ Check `/standing` or the WebUI Instructions tab. Confirm the instruction is enabled, not expired, and that the trigger condition actually matches. If you edited `/data/standing_instructions.json`, verify the JSON is valid.
+
+**Changes to `standing_instructions.json` are ignored**
+→ Save the file fully and check logs for validation errors. The file is hot-reloaded, so a restart should not be necessary.
+
+**Agent personality changes are not taking effect**
+→ Edit `IDENTITY.md` in `agent_dir`, then start a **new session** so the updated context is injected.
 
 **"Copilot binary not found"**
-→ If `copilot_binary` is `auto`, check internet connectivity and the add-on logs for bootstrap errors from `init-copilot`. If you set a custom path, verify that path exists.
+→ If `copilot_binary` is `auto`, check internet connectivity and bootstrap logs. If you set a custom path, make sure that binary exists.
 
-**"ACP test failed"**
-→ Copilot needs GitHub authentication. Authenticate through the Telegram device flow when prompted — no terminal is needed.
+**"ACP test failed" or authentication errors**
+→ Copilot still needs GitHub authentication. Complete the device flow when prompted.
 
 **"Another process is polling"**
-→ Another bot instance is running with the same token. Wait 30 seconds, then restart this add-on.
+→ Another Telegram bot instance is already using the same token. Stop the duplicate instance, wait a moment, then restart this add-on.
 
 **Responses are slow**
-→ Complex tasks take time. Watch for typing indicators. Use `/stop` if stuck.
+→ Complex tasks can take time. Watch the live progress indicators and use `/stop` if needed.
 
-**Permission prompts not appearing**
-→ Check that `permission_policy` is set to `interactive`. If `/allowall on` was used, it overrides until the session restarts.
+**Permission prompts are not appearing**
+→ Check `permission_policy`. If `/allowall on` was enabled for that conversation, prompts are bypassed until you turn it off or reset the session.
 
-**Forum topics not working**
-→ The bot must be added to a supergroup with Topics enabled. Make sure it has admin permissions to create/manage topics.
+**Forum topics are not working**
+→ Make sure the bot is in a Telegram supergroup with Topics enabled and has permission to manage topics.
 
 ## Prerequisites
 
-- The add-on automatically downloads and configures Copilot CLI on first start
-- A GitHub account with Copilot access is required
+- a GitHub account with Copilot access
+- a Telegram bot token from @BotFather
+- Home Assistant with this add-on installed
+
+The add-on can automatically download and manage Copilot CLI on first start.
 
 ## More Info
 

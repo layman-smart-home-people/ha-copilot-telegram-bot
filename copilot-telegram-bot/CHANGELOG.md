@@ -2,6 +2,21 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.28.1] — 2026-06-05
+
+### Fixed
+- **WebUI chat tab crash** — `handleChatEvent` was referenced before its `const` declaration (temporal dead zone), causing a silent ReferenceError that prevented the chat tab from rendering. Moved the `useCallback` declaration above the ref assignment.
+
+### Added
+- **SKILLS.md loaded into agent context** — AgentMemory now loads SKILLS.md alongside IDENTITY.md, MEMORY.md, and TASKS.md, so the agent natively knows its standing instruction capabilities.
+- **Default file seeding** — new instances get auto-generated IDENTITY.md, MEMORY.md, SKILLS.md, and TASKS.md with sensible defaults.
+- **ha_service domain allowlist** — restricts direct HA service calls to safe domains (light, switch, fan, cover, etc.). Blocks dangerous domains like homeassistant, shell_command with a Telegram error notification.
+- **ha_service request timeout** — 15-second AbortSignal timeout prevents hung fetch calls.
+- **`/clear` registered** — added to BotFather command menu.
+
+### Changed
+- **DOCS.md** — complete rewrite for v0.28.0 feature set (standing instructions, agent memory, WebUI, all commands, configuration).
+
 ## [0.28.0] — 2026-06-05
 
 ### Added

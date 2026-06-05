@@ -165,6 +165,7 @@ async function main() {
                 { command: "pair", description: "Pairing & user management" },
                 { command: "allowall", description: "Toggle auto-approve all tools" },
                 { command: "standing", description: "List/manage standing instructions" },
+                { command: "clear", description: "Reset current conversation" },
             ],
         });
         log("Registered bot commands with Telegram");

@@ -8,6 +8,16 @@ import { watch } from "node:fs";
 
 const CRON_CHECK_INTERVAL_MS = 60_000;
 const TIMER_CHECK_INTERVAL_MS = 15_000;
+const HA_SERVICE_TIMEOUT_MS = 15_000;
+
+// Domains allowed for ha_service action without agent involvement.
+// Restricts automated service calls to safe, non-destructive domains.
+const HA_SERVICE_ALLOWED_DOMAINS = new Set([
+    "light", "switch", "scene", "script", "input_boolean",
+    "input_number", "input_select", "input_text", "input_datetime",
+    "fan", "cover", "media_player", "climate", "vacuum",
+    "button", "number", "select", "lock", "siren",
+]);
 
 export class StandingInstructionOrchestrator {
     #eventListener;
@@ -291,6 +301,17 @@ export class StandingInstructionOrchestrator {
         }
         case "ha_service": {
             const { domain, service, data, message } = instruction.action;
+
+            if (!HA_SERVICE_ALLOWED_DOMAINS.has(domain)) {
+                this.#log(`[STANDING] Blocked ha_service: domain "${domain}" not in allowlist`);
+                if (this.#ownerChatId) {
+                    this.#telegram.enqueue(() =>
+                        this.#telegram.sendMessage(this.#ownerChatId, `⛔ ${instruction.description}\nBlocked: domain "${domain}" is not allowed for direct service calls. Use wake_agent instead.`)
+                    ).catch(() => {});
+                }
+                break;
+            }
+
             const url = `${this.#haBaseUrl}/services/${domain}/${service}`;
             this.#log(`[STANDING] Calling HA service: ${domain}.${service}`);
 
@@ -301,6 +322,7 @@ export class StandingInstructionOrchestrator {
                     "Content-Type": "application/json",
                 },
                 body: JSON.stringify(data || {}),
+                signal: AbortSignal.timeout(HA_SERVICE_TIMEOUT_MS),
             }).then(res => {
                 if (!res.ok) {
                     throw new Error(`HTTP ${res.status} ${res.statusText}`);

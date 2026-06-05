@@ -23,31 +23,7 @@ export default function ChatPanel({ toast }) {
     scrollToBottom();
   }, [messages, currentText, scrollToBottom]);
 
-  // Keep ref up to date for SSE closure
-  handleEventRef.current = handleChatEvent;
-
-  // SSE connection for chat events
-  useEffect(() => {
-    const evtSource = new EventSource("./api/chat/stream");
-    sseRef.current = evtSource;
-
-    evtSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        handleEventRef.current(data);
-      } catch {}
-    };
-
-    evtSource.onerror = () => {
-      setConnected(false);
-    };
-
-    return () => {
-      evtSource.close();
-      sseRef.current = null;
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
+  // Handle chat SSE events
   const handleChatEvent = useCallback((data) => {
     switch (data.type) {
       case "status":
@@ -140,6 +116,31 @@ export default function ChatPanel({ toast }) {
         break;
     }
   }, [toast]);
+
+  // Keep ref up to date for SSE closure
+  handleEventRef.current = handleChatEvent;
+
+  // SSE connection for chat events
+  useEffect(() => {
+    const evtSource = new EventSource("./api/chat/stream");
+    sseRef.current = evtSource;
+
+    evtSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        handleEventRef.current(data);
+      } catch {}
+    };
+
+    evtSource.onerror = () => {
+      setConnected(false);
+    };
+
+    return () => {
+      evtSource.close();
+      sseRef.current = null;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sendMessage = async () => {
     const text = input.trim();
