@@ -2,6 +2,26 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.24.0] — 2026-06-05
+
+### Added
+- **Configurable agent directory** — `agent_dir` addon option (default: `/config/copilot-telegram-bot`):
+  - Follows HA convention (like `zigbee2mqtt/`, `esphome/`)
+  - Supports multi-instance setups with different directories
+  - Auto-migrates from legacy `/config/.agent/` on first boot
+  - All LLM prompt paths are dynamically templated from config
+- **Smart tool step windowing** — progressive message display for long sessions:
+  - Shows first 3 + last 12 tool steps with "…and N more" summary
+  - 80-character step description cap with word-boundary truncation
+  - Budget-aware HTML truncation replaces unsafe `html.slice()` that broke tags
+  - Progressive tail reduction (10→8→6→4→3) when message exceeds 4096 chars
+  - Last-resort summary shows accurate done/running/failed counts
+  - Preserves correct header state (permission/thinking/reasoning) during truncation
+
+### Fixed
+- Tool step display no longer causes Telegram parse errors on long sessions
+- Step count summary now accurately distinguishes "done" vs "running" vs "failed"
+
 ## [0.23.0] — 2026-06-05
 
 ### Added

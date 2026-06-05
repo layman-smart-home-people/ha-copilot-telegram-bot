@@ -304,9 +304,12 @@ export class ResponseComposer {
             html = `🤔 <i>Thinking...</i>${timer}`;
         }
 
-        // Truncate to Telegram limit
+        // Budget-aware truncation
         if (html.length > MAX_MSG_LEN) {
-            html = html.slice(0, MAX_MSG_LEN - 20) + "\n<i>...</i>";
+            // Extract the header line (everything before the first blockquote/progress)
+            const headerEnd = html.indexOf("<blockquote>");
+            const actualHeader = headerEnd > 0 ? html.slice(0, headerEnd).trimEnd() : html.split("\n")[0];
+            html = this.#fitToLimit(actualHeader, planHtml, elapsed);
         }
 
         this.#editMessage(html);
@@ -314,23 +317,88 @@ export class ResponseComposer {
         this.#lastEditTime = Date.now();
     }
 
+    #formatStepLine(step) {
+        const icon = step.status === "completed" ? "✅"
+                   : step.status === "failed" ? "❌"
+                   : "🔄";
+        let desc = step.description || step.id;
+        if (desc.length > 80) {
+            const cut = desc.lastIndexOf(" ", 77);
+            desc = desc.slice(0, cut > 40 ? cut : 77) + "…";
+        }
+        return `${icon} ${escapeHtml(desc)}`;
+    }
+
     #buildStepsHtml(isFinal) {
         if (this.#toolSteps.length === 0) return "";
 
-        const lines = this.#toolSteps.map(s => {
-            const icon = s.status === "completed" ? "✅"
-                       : s.status === "failed" ? "❌"
-                       : "🔄";
-            return `${icon} ${escapeHtml(s.description || s.id)}`;
-        });
+        const steps = this.#toolSteps;
+        const count = steps.length;
+        const failedCount = steps.filter(s => s.status === "failed").length;
+
+        if (isFinal) {
+            const lines = steps.map(s => this.#formatStepLine(s));
+            const header = `🔧 <b>${count} step${count > 1 ? "s" : ""}${failedCount > 0 ? ` (${failedCount} failed)` : ""}</b>`;
+            return `<blockquote>${header}\n${lines.join("\n")}</blockquote>`;
+        }
+
+        // Live display: window to first 3 + last 12 (max 15 visible)
+        const MAX_HEAD = 3;
+        const MAX_TAIL = 12;
+        const MAX_VISIBLE = MAX_HEAD + MAX_TAIL;
+
+        let lines;
+        if (count <= MAX_VISIBLE) {
+            lines = steps.map(s => this.#formatStepLine(s));
+        } else {
+            const head = steps.slice(0, MAX_HEAD).map(s => this.#formatStepLine(s));
+            const skipped = count - MAX_VISIBLE;
+            const tail = steps.slice(-MAX_TAIL).map(s => this.#formatStepLine(s));
+            lines = [...head, `<i>⏳ …and ${skipped} more step${skipped > 1 ? "s" : ""}</i>`, ...tail];
+        }
+
+        const header = `🔧 <b>Steps:</b>`;
+        return `<blockquote>${header}\n${lines.join("\n")}</blockquote>`;
+    }
+
+    #fitToLimit(header, planHtml, elapsed) {
+        if (this.#toolSteps.length === 0) {
+            return (header + "\n").slice(0, MAX_MSG_LEN - 20) + "\n<i>…</i>";
+        }
 
         const count = this.#toolSteps.length;
+        const completedCount = this.#toolSteps.filter(s => s.status === "completed").length;
         const failedCount = this.#toolSteps.filter(s => s.status === "failed").length;
-        const header = isFinal
-            ? `🔧 <b>${count} step${count > 1 ? "s" : ""}${failedCount > 0 ? ` (${failedCount} failed)` : ""}</b>`
-            : `🔧 <b>Steps:</b>`;
 
-        return `<blockquote>${header}\n${lines.join("\n")}</blockquote>`;
+        for (let tailSize = 10; tailSize >= 3; tailSize -= 2) {
+            const headSize = Math.min(2, count);
+            const steps = this.#toolSteps;
+            let lines;
+
+            if (count <= headSize + tailSize) {
+                lines = steps.map(s => this.#formatStepLine(s));
+            } else {
+                const head = steps.slice(0, headSize).map(s => this.#formatStepLine(s));
+                const skipped = count - headSize - tailSize;
+                const tail = steps.slice(-tailSize).map(s => this.#formatStepLine(s));
+                lines = [...head, `<i>⏳ …and ${skipped} more</i>`, ...tail];
+            }
+
+            const stepsBlock = `<blockquote>🔧 <b>Steps:</b>\n${lines.join("\n")}</blockquote>`;
+            const progress = [planHtml, stepsBlock].filter(Boolean).join("\n");
+            const result = `${header}\n${progress}`;
+
+            if (result.length <= MAX_MSG_LEN) return result;
+        }
+
+        // Last resort: just show count
+        const runningCount = count - completedCount - failedCount;
+        const parts = [`${completedCount} done`];
+        if (runningCount > 0) parts.push(`${runningCount} running`);
+        if (failedCount > 0) parts.push(`${failedCount} failed`);
+        const summary = `<blockquote>🔧 <b>${count} steps (${parts.join(", ")})</b></blockquote>`;
+        const progress = [planHtml, summary].filter(Boolean).join("\n");
+        return `${header}\n${progress}`;
     }
 
     #buildPlanHtml() {

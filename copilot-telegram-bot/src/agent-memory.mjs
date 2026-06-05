@@ -5,10 +5,11 @@
 // context to inject into each new session's preamble.
 // Inspired by OpenClaw's MEMORY.md + daily log pattern.
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, mkdirSync, cpSync } from "node:fs";
 import { join } from "node:path";
 
-const DEFAULT_AGENT_DIR = "/config/.agent";
+const DEFAULT_AGENT_DIR = "/config/copilot-telegram-bot";
+const LEGACY_AGENT_DIR = "/config/.agent";
 const MAX_FILE_SIZE = 8000;
 const MAX_DAILY_LOG_SIZE = 4000;
 const DAILY_LOGS_TO_LOAD = 2; // today + yesterday
@@ -20,9 +21,38 @@ export class AgentMemory {
     constructor({ agentDir = DEFAULT_AGENT_DIR, log } = {}) {
         this.#agentDir = agentDir;
         this.#log = typeof log === "function" ? log : () => {};
+        this.#ensureDir();
     }
 
     get agentDir() { return this.#agentDir; }
+
+    #ensureDir() {
+        // Migrate from legacy /config/.agent if new dir doesn't have files yet
+        if (this.#agentDir !== LEGACY_AGENT_DIR && existsSync(LEGACY_AGENT_DIR)) {
+            const hasFiles = existsSync(join(this.#agentDir, "IDENTITY.md"))
+                || existsSync(join(this.#agentDir, "MEMORY.md"));
+            if (!hasFiles) {
+                try {
+                    mkdirSync(this.#agentDir, { recursive: true });
+                    cpSync(LEGACY_AGENT_DIR, this.#agentDir, { recursive: true });
+                    this.#log(`[AGENT-MEM] Migrated from ${LEGACY_AGENT_DIR} to ${this.#agentDir}`);
+                } catch (err) {
+                    this.#log(`[AGENT-MEM] Migration failed: ${err.message}`);
+                }
+            }
+        }
+
+        // Ensure directory exists
+        if (!existsSync(this.#agentDir)) {
+            try {
+                mkdirSync(this.#agentDir, { recursive: true });
+                mkdirSync(join(this.#agentDir, "memory"), { recursive: true });
+                this.#log(`[AGENT-MEM] Created agent directory at ${this.#agentDir}`);
+            } catch (err) {
+                this.#log(`[AGENT-MEM] Failed to create directory: ${err.message}`);
+            }
+        }
+    }
 
     /**
      * Build the full agent context string for injection into a new session.
@@ -49,13 +79,13 @@ export class AgentMemory {
 
         if (sections.length === 0) return null;
 
+        const agentDir = this.#agentDir;
         const selfMaintainInstructions = [
             "\n## Agent Memory Instructions",
-            "You have a persistent memory directory at /config/.agent/. You MUST maintain it:",
-            "- Read /config/.agent/MEMORY.md at session start (already injected above)",
-            "- Update MEMORY.md when you learn important durable facts (preferences, entity IDs, decisions)",
+            `You have a persistent memory directory at ${agentDir}/. You MUST maintain it:`,
+            `- MEMORY.md has been loaded above — update it when you learn important durable facts`,
             "- Update TASKS.md when starting, completing, or being interrupted on a task",
-            "- Append observations to today's daily log: /config/.agent/memory/YYYY-MM-DD.md",
+            `- Append observations to today's daily log: ${agentDir}/memory/YYYY-MM-DD.md`,
             "- Periodically distill key insights from daily logs into MEMORY.md",
             "- Keep files concise — MEMORY.md under 200 lines, daily logs under 100 lines",
             "- This is YOUR persistent self. These files define who you are across sessions.",

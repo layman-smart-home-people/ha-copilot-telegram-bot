@@ -131,7 +131,7 @@ export class Bridge {
         this.#pairing = pairing || null;
         this.#scopeMgr = scopeMgr || null;
         this.#sessionMgr = sessionMgr || null;
-        this.#agentMemory = new AgentMemory({ log });
+        this.#agentMemory = new AgentMemory({ agentDir: config.agentDir, log });
     }
 
     get allowedChatIds() { return this.#allowedChatIds; }

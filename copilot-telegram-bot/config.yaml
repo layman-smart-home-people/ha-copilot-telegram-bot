@@ -2,7 +2,7 @@ name: Copilot Telegram Bot
 description: Always-on Telegram bot connected to GitHub Copilot CLI via ACP
 slug: copilot-telegram-bot
 url: https://github.com/layman-smart-home-people/ha-copilot-telegram-bot
-version: 0.23.0
+version: 0.24.0
 init: false
 arch:
   - aarch64
@@ -39,6 +39,7 @@ options:
   group_mode: mention
   allowed_groups: []
   max_group_members: 50
+  agent_dir: /config/copilot-telegram-bot
 schema:
   bot_token: password
   allowed_chat_ids:
@@ -57,3 +58,4 @@ schema:
   allowed_groups:
     - str
   max_group_members: int(1,1000)?
+  agent_dir: str

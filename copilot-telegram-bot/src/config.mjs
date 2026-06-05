@@ -101,6 +101,7 @@ export async function loadConfig(log = () => {}) {
         model: options.model || "",
         workingDirectory: options.working_directory || "/config",
         permissionPolicy: options.permission_policy || "interactive",
+        agentDir: options.agent_dir || "/config/copilot-telegram-bot",
         version: addonVersion,
         mcpServers: [],
     };
