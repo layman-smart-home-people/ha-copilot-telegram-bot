@@ -57,8 +57,8 @@ export class ResponseComposer {
         this.#thoughtActive = true;
         this.#planEntries = [];
 
-        // Periodic elapsed time updates (every 5s)
-        this.#elapsedTimer = setInterval(() => this.#scheduleEdit(true), 5000);
+        // Periodic elapsed time updates — interval scales up with turn duration
+        this.#scheduleElapsedUpdate();
 
         const params = {
             chat_id: ref.chatId,
@@ -78,10 +78,29 @@ export class ResponseComposer {
         } catch (err) {
             this.#log(`Composer: placeholder failed: ${err.message}`);
             if (this.#elapsedTimer) {
-                clearInterval(this.#elapsedTimer);
+                clearTimeout(this.#elapsedTimer);
                 this.#elapsedTimer = null;
             }
         }
+    }
+
+    /**
+     * Schedule the next elapsed-time update with adaptive interval.
+     * Starts at 3s, scales to 20s as the turn gets longer.
+     */
+    #scheduleElapsedUpdate() {
+        if (this.#finalized || !this.#messageId) return;
+        const elapsed = this.#startTime ? (Date.now() - this.#startTime) / 1000 : 0;
+        let delay;
+        if (elapsed < 15)       delay = 3000;
+        else if (elapsed < 60)  delay = 7000;
+        else if (elapsed < 120) delay = 12000;
+        else                    delay = 20000;
+        this.#elapsedTimer = setTimeout(() => {
+            this.#elapsedTimer = null;
+            this.#scheduleEdit(true);
+            this.#scheduleElapsedUpdate();
+        }, delay);
     }
 
     /**
@@ -170,7 +189,7 @@ export class ResponseComposer {
         if (this.#finalized) return [];
         this.#finalized = true;
         if (this.#editTimer) { clearTimeout(this.#editTimer); this.#editTimer = null; }
-        if (this.#elapsedTimer) { clearInterval(this.#elapsedTimer); this.#elapsedTimer = null; }
+        if (this.#elapsedTimer) { clearTimeout(this.#elapsedTimer); this.#elapsedTimer = null; }
 
         this.#textBuffer = fullText || this.#textBuffer;
 
@@ -212,7 +231,7 @@ export class ResponseComposer {
      */
     async abort(errorMsg) {
         if (this.#editTimer) { clearTimeout(this.#editTimer); this.#editTimer = null; }
-        if (this.#elapsedTimer) { clearInterval(this.#elapsedTimer); this.#elapsedTimer = null; }
+        if (this.#elapsedTimer) { clearTimeout(this.#elapsedTimer); this.#elapsedTimer = null; }
         this.#finalized = true;
 
         if (this.#messageId && errorMsg) {
