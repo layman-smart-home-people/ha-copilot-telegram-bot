@@ -7,6 +7,7 @@ import ConfigEditor from "./components/ConfigEditor";
 import SystemInfo from "./components/SystemInfo";
 import ChatPanel from "./components/ChatPanel";
 import Toast from "./components/Toast";
+import ErrorCollector from "./components/ErrorCollector";
 
 const TABS = [
   { id: "dashboard", label: "📊 Dashboard" },
@@ -82,6 +83,8 @@ export default function App() {
           <Toast key={t.id} message={t.message} type={t.type} />
         ))}
       </div>
+
+      <ErrorCollector />
     </div>
   );
 }
