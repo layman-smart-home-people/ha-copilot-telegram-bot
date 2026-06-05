@@ -241,7 +241,7 @@ export class ACPClient extends EventEmitter {
         };
         if (opts.mode) params.mode = opts.mode;
 
-        return this.#send("session/prompt", params, opts.timeout || 300000);
+        return this.#send("session/prompt", params, opts.timeout ?? 0);
     }
 
     // --- RPC commands ---
@@ -359,10 +359,13 @@ export class ACPClient extends EventEmitter {
             this.emit("log", `ACP → ${method} id=${id}`);
             const msg = JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n";
 
-            const timeout = setTimeout(() => {
-                this.#pending.delete(id);
-                reject(new Error(`ACP request timeout: ${method} (${timeoutMs}ms)`));
-            }, timeoutMs);
+            // timeoutMs <= 0 means no timeout (run to completion)
+            const timeout = timeoutMs > 0
+                ? setTimeout(() => {
+                    this.#pending.delete(id);
+                    reject(new Error(`ACP request timeout: ${method} (${timeoutMs}ms)`));
+                }, timeoutMs)
+                : null;
 
             this.#pending.set(id, { resolve, reject, timeout });
 

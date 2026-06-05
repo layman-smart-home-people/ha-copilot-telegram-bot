@@ -87,8 +87,6 @@ export class Bridge {
     #lastProcessedAt = 0;
     #userMessageTimes = new Map(); // userId → [timestamps]
 
-    // Permission timeout tracker (toolName → { count, lastTimeout })
-    #permissionTimeouts = new Map();
 
     // Login lock — prevents multiple concurrent login flows
     #loginPromise = null;
@@ -821,29 +819,6 @@ export class Bridge {
                 return;
             }
 
-            // Clean stale permission timeout entries (older than 5 minutes)
-            const now = Date.now();
-            for (const [t, entry] of this.#permissionTimeouts) {
-                if (now - entry.lastTimeout > 300000) this.#permissionTimeouts.delete(t);
-            }
-
-            // Check for recently timed-out tools to prevent retry loops
-            const timeoutEntry = this.#permissionTimeouts.get(tool);
-            if (timeoutEntry) {
-                const elapsed = Date.now() - timeoutEntry.lastTimeout;
-                if (elapsed < 120000) { // within 2 minutes
-                    if (timeoutEntry.count >= 2) {
-                        // Auto-deny silently after 2+ consecutive timeouts
-                        acp.respondPermission(requestId, rejectOnceId);
-                        this.#log(`Permission auto-denied (repeated timeout): ${tool}`);
-                        return;
-                    }
-                } else {
-                    // Stale entry, remove it
-                    this.#permissionTimeouts.delete(tool);
-                }
-            }
-
             // Ask user via inline buttons
             const targetRef = getRef();
             const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
@@ -872,7 +847,7 @@ export class Bridge {
                     chatId,
                     `🔐 Permission request:\n${label}`,
                     rows,
-                    { timeoutMs: 60000, timeoutText: "🔐 Permission denied (timeout)" }
+                    { timeoutMs: 0 }
                 ));
             } finally {
                 if (scope.composer) scope.composer.setInteractionPending(null);
@@ -883,7 +858,6 @@ export class Bridge {
                 if (selectedOption === allowAlwaysId && userId) {
                     scope.grantTool(userId, tool);
                 }
-                this.#permissionTimeouts.delete(tool);
                 acp.respondPermission(requestId, selectedOption);
                 this.#log(`Permission granted (${selectedOption}): ${tool}`);
                 if (permMsgId) {
@@ -894,20 +868,6 @@ export class Bridge {
                     }
                 }
             } else {
-                // Track timeouts (selected is null/falsy when timed out)
-                if (!selected) {
-                    const existing = this.#permissionTimeouts.get(tool) || { count: 0, lastTimeout: 0 };
-                    this.#permissionTimeouts.set(tool, {
-                        count: existing.count + 1,
-                        lastTimeout: Date.now()
-                    });
-
-                    if (existing.count + 1 >= 2) {
-                        this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(chatId, `🔐 Auto-denying repeated requests for "${tool}". Use /allowall to approve all tools.`)
-                        );
-                    }
-                }
                 acp.respondPermission(requestId, rejectOnceId);
                 this.#log(`Permission denied: ${tool} (permMsgId=${permMsgId})`);
                 try {
