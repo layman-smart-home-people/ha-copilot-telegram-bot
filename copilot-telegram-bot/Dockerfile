@@ -17,8 +17,11 @@ COPY package.json ./
 RUN npm install --production
 
 # Copy source (cache-bust: update this comment on each rebuild)
-# Build: 2026-05-28T11:12
+# Build: 2026-06-05T21:30
 COPY src/ ./src/
+
+# Build Web UI frontend (React + Vite)
+RUN cd /app/src/webui/frontend && npm install && npm run build && rm -rf node_modules
 
 # Copy config.yaml and CHANGELOG.md for runtime access
 COPY config.yaml CHANGELOG.md ./

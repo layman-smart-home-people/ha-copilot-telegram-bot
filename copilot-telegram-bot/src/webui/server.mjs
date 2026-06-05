@@ -9,7 +9,7 @@ import { readFileSync, readdirSync, statSync, readFile, writeFile } from "node:f
 import { join, extname, resolve, basename, dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 
-const STATIC_DIR = new URL("./public/", import.meta.url).pathname;
+const STATIC_DIR = new URL("./dist/", import.meta.url).pathname;
 
 const MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
