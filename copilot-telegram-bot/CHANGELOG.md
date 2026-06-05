@@ -2,6 +2,16 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.24.3] — 2026-06-05
+
+### Added
+- **Occurrence-based expiry (`max_triggers`)** — instructions can auto-disable after N firings (e.g., "alert up to 5 times"). Combines with `expires_at` for "whichever comes first" semantics.
+- **Trigger count tracking (`trigger_count`)** — each instruction now tracks how many times it has fired, displayed in `/standing` list
+- Exhausted instructions (reached `max_triggers`) are auto-disabled during routine checks
+
+### Changed
+- `/standing` list now shows fire count and max (e.g., `Fired: 3/5`) when applicable
+
 ## [0.24.2] — 2026-06-05
 
 ### Changed

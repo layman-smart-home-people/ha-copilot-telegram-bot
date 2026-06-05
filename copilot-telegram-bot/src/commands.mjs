@@ -672,8 +672,11 @@ export async function handleSlashCommand(ctx, command, args) {
                     const expiryInfo = inst.expires_at
                         ? `\n   Expires: ${new Date(inst.expires_at).toLocaleString()}`
                         : "";
+                    const triggerCountInfo = inst.trigger_count
+                        ? ` | Fired: ${inst.trigger_count}${inst.max_triggers ? `/${inst.max_triggers}` : ""}`
+                        : "";
                     text += `${status} ${escapeHtml(inst.description)}\n`;
-                    text += `   ${inst.action.type} | ${escapeHtml(triggerDesc)}${lastFired}${expiryInfo}\n`;
+                    text += `   ${inst.action.type} | ${escapeHtml(triggerDesc)}${triggerCountInfo}${lastFired}${expiryInfo}\n`;
                     text += `   ID: <code>${escapeHtml(inst.id)}</code>\n\n`;
                 }
                 text += `Commands: /standing pause|resume|mute|enable|disable|delete &lt;id|all&gt;`;

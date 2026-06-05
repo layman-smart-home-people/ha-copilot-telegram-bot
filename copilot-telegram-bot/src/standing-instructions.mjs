@@ -81,13 +81,13 @@ export class StandingInstructionManager {
 
     getCronInstructions() {
         return this.#instructions
-            .filter(instruction => instruction.enabled && !this.#isExpired(instruction) && instruction.trigger.type === "cron")
+            .filter(instruction => instruction.enabled && !this.#isExpired(instruction) && !this.#isExhausted(instruction) && instruction.trigger.type === "cron")
             .map(instruction => this.#clone(instruction));
     }
 
     getTimerInstructions() {
         return this.#instructions
-            .filter(instruction => instruction.enabled && !this.#isExpired(instruction) && instruction.trigger.type === "timer" && !instruction.last_triggered_at)
+            .filter(instruction => instruction.enabled && !this.#isExpired(instruction) && !this.#isExhausted(instruction) && instruction.trigger.type === "timer" && !instruction.last_triggered_at)
             .map(instruction => this.#clone(instruction));
     }
 
@@ -98,8 +98,12 @@ export class StandingInstructionManager {
         const updated = {
             ...this.#instructions[index],
             last_triggered_at: new Date().toISOString(),
+            trigger_count: (this.#instructions[index].trigger_count || 0) + 1,
         };
         if (updated.one_shot) updated.enabled = false;
+        if (updated.max_triggers !== null && updated.trigger_count >= updated.max_triggers) {
+            updated.enabled = false;
+        }
 
         this.#instructions[index] = updated;
         this.#save();
@@ -134,7 +138,7 @@ export class StandingInstructionManager {
         const nowTime = this.#coerceDate(now, "Timer comparison time must be a valid Date or date string.").getTime();
         return this.#instructions
             .filter(instruction => {
-                if (!instruction.enabled || this.#isExpired(instruction) || instruction.trigger.type !== "timer" || instruction.last_triggered_at) return false;
+                if (!instruction.enabled || this.#isExpired(instruction) || this.#isExhausted(instruction) || instruction.trigger.type !== "timer" || instruction.last_triggered_at) return false;
                 return Date.parse(instruction.trigger.fire_at) <= nowTime;
             })
             .map(instruction => this.#clone(instruction));
@@ -158,6 +162,7 @@ export class StandingInstructionManager {
     #matchesStateChange(instruction, entity_id, newState, oldState, attributes) {
         if (!instruction.enabled) return false;
         if (this.#isExpired(instruction)) return false;
+        if (this.#isExhausted(instruction)) return false;
         if (instruction.trigger.type !== "state_change") return false;
         if (!this.#triggerWatchesEntity(instruction.trigger.entity_id, entity_id)) return false;
         if (this.#isInCooldown(instruction)) return false;
@@ -206,6 +211,11 @@ export class StandingInstructionManager {
         return Date.now() >= Date.parse(instruction.expires_at);
     }
 
+    #isExhausted(instruction) {
+        if (instruction.max_triggers === null) return false;
+        return (instruction.trigger_count || 0) >= instruction.max_triggers;
+    }
+
     #isInCooldown(instruction) {
         if (!instruction.last_triggered_at) return false;
         const cooldownMs = instruction.cooldown_seconds * 1000;
@@ -236,6 +246,8 @@ export class StandingInstructionManager {
                 spec.last_triggered_at,
                 "Instruction last_triggered_at must be null or a valid ISO timestamp.",
             ),
+            trigger_count: this.#normalizeNonNegativeInt(spec.trigger_count, 0, "Instruction trigger_count must be a non-negative integer."),
+            max_triggers: this.#normalizeOptionalPositiveInt(spec.max_triggers, "Instruction max_triggers must be a positive integer or null."),
         };
     }
 
@@ -344,6 +356,20 @@ export class StandingInstructionManager {
         if (value == null) return null;
         const parsed = Number(value);
         if (!Number.isFinite(parsed)) throw new Error(errorMessage);
+        return parsed;
+    }
+
+    #normalizeNonNegativeInt(value, defaultValue, errorMessage) {
+        if (value == null) return defaultValue;
+        const parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < 0) throw new Error(errorMessage);
+        return parsed;
+    }
+
+    #normalizeOptionalPositiveInt(value, errorMessage) {
+        if (value == null) return null;
+        const parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < 1) throw new Error(errorMessage);
         return parsed;
     }
 

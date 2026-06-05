@@ -179,8 +179,12 @@ export class StandingInstructionOrchestrator {
         try {
             const allInstructions = this.#manager.list();
             for (const inst of allInstructions) {
-                if (inst.enabled && inst.expires_at && Date.now() >= Date.parse(inst.expires_at)) {
+                if (!inst.enabled) continue;
+                if (inst.expires_at && Date.now() >= Date.parse(inst.expires_at)) {
                     this.#log(`[STANDING] Expired: "${inst.description}" (${inst.id})`);
+                    this.#manager.disable(inst.id);
+                } else if (inst.max_triggers !== null && (inst.trigger_count || 0) >= inst.max_triggers) {
+                    this.#log(`[STANDING] Exhausted (${inst.trigger_count}/${inst.max_triggers} triggers): "${inst.description}" (${inst.id})`);
                     this.#manager.disable(inst.id);
                 }
             }
