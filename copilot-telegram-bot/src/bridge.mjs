@@ -132,6 +132,7 @@ export class Bridge {
     get allowedChatIds() { return this.#allowedChatIds; }
     get promptActive() { return this.#promptActive; }
     get acpMgr() { return this.#acpMgr; }
+    standingOrchestrator = null;
     get allowAll() { return this.#activeScope?.allowAll ?? false; }
     set allowAll(v) {
         const val = !!v;
@@ -228,6 +229,40 @@ export class Bridge {
     /** Send an ACP slash command without the [Via Telegram] prefix. */
     submitSlashCommand(ref, text) {
         this.#queuePrompt(text, {}, ref);
+    }
+
+    /**
+     * Inject a system-generated prompt into the agent (for standing instructions,
+     * event-triggered wake-ups, scheduled tasks, etc.).
+     * Routes output to the specified chatId (defaults to owner DM).
+     */
+    async injectSystemPrompt(text, chatId) {
+        const targetChatId = chatId || this.#allowedChatIds[0];
+        if (!targetChatId) {
+            this.#log("[STANDING] Cannot inject prompt — no target chatId");
+            return;
+        }
+        const ref = makeRef(targetChatId, null, null, "private");
+        ref.scopeKey = `dm:${targetChatId}`;
+        const prefix = this.#getPrefix(ref);
+        this.#log(`[STANDING] Injecting system prompt to chat=${targetChatId}`);
+
+        // Ensure copilot is running
+        if (!this.#acp.alive) {
+            try {
+                await this.startCopilot();
+            } catch (err) {
+                this.#log(`[STANDING] Failed to start copilot for injection: ${err.message}`);
+                // Notify owner about the failure
+                this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(targetChatId,
+                        `⚠️ Standing instruction triggered but Copilot couldn't start: ${err.message}`)
+                );
+                return;
+            }
+        }
+
+        this.#queuePrompt(prefix + text, {}, ref);
     }
 
     #resolveScopeKey(scope, ref = null) {

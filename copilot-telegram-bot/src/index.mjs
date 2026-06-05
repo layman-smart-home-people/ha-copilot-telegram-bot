@@ -13,6 +13,9 @@ import { PairingManager } from "./pairing.mjs";
 import { ScopeManager } from "./scope-manager.mjs";
 import { SessionManager } from "./sessions.mjs";
 import { loadConfig } from "./config.mjs";
+import { HAEventListener } from "./ha-events.mjs";
+import { StandingInstructionManager } from "./standing-instructions.mjs";
+import { StandingInstructionOrchestrator } from "./standing-instruction-orchestrator.mjs";
 
 // --- Set timezone from HA system before any Date operations ---
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
@@ -160,6 +163,7 @@ async function main() {
                 { command: "sessions", description: "List all sessions" },
                 { command: "pair", description: "Pairing & user management" },
                 { command: "allowall", description: "Toggle auto-approve all tools" },
+                { command: "standing", description: "List/manage standing instructions" },
             ],
         });
         log("Registered bot commands with Telegram");
@@ -216,6 +220,23 @@ async function main() {
     _bridge = bridge; // expose for shutdown handler
     _scopeMgr = scopeMgr;
 
+    // --- Standing Instructions Orchestrator ---
+    const standingMgr = new StandingInstructionManager({
+        persistPath: "/data/standing_instructions.json",
+        log,
+    });
+    const haEvents = new HAEventListener({ log });
+    const orchestrator = new StandingInstructionOrchestrator({
+        eventListener: haEvents,
+        manager: standingMgr,
+        bridge,
+        telegram,
+        ownerChatId,
+        log,
+    });
+    bridge.standingOrchestrator = orchestrator;
+    _orchestrator = orchestrator;
+
     // Start Telegram polling FIRST so the bot can send/receive messages
     // during login flow
     log("Starting Telegram polling...");
@@ -229,6 +250,11 @@ async function main() {
             log(`Auto-start failed: ${err.message}. Will retry on first message.`);
         }
     }
+
+    // Start standing instruction orchestrator (non-blocking)
+    orchestrator.start().catch(err => {
+        log(`Standing instruction orchestrator failed to start: ${err.message}`);
+    });
 
     // Idle timeout
     let idleTimer = null;
@@ -261,11 +287,18 @@ async function main() {
 
 let _bridge = null; // set during main() for shutdown access
 let _scopeMgr = null;
+let _orchestrator = null;
 
 async function shutdown(signal) {
     log(`Received ${signal}, shutting down...`);
 
     const timer = setTimeout(() => process.exit(0), 5000);
+
+    try {
+        if (_orchestrator) await _orchestrator.stop();
+    } catch (err) {
+        log(`Orchestrator shutdown error: ${err.message}`);
+    }
 
     try {
         if (_scopeMgr) _scopeMgr.shutdown();

@@ -564,6 +564,60 @@ export async function handleSlashCommand(ctx, command, args) {
                 }
                 return true;
             }
+            case "standing": {
+                const orch = bridge?.standingOrchestrator;
+                if (!orch) {
+                    reply("⚠️ Standing instructions not available");
+                    return true;
+                }
+                const mgr = orch.manager;
+                const sub = args.split(/\s+/)[0]?.toLowerCase();
+
+                if (sub === "enable" || sub === "disable") {
+                    const id = args.split(/\s+/)[1];
+                    if (!id) { reply(`⚠️ Usage: /standing ${sub} <id>`); return true; }
+                    const result = sub === "enable" ? mgr.enable(id) : mgr.disable(id);
+                    if (!result) { reply(`❌ Instruction not found: ${id}`); return true; }
+                    reply(`${sub === "enable" ? "✅" : "⏸️"} "${result.description}" ${sub}d`);
+                    return true;
+                }
+
+                if (sub === "delete" || sub === "remove") {
+                    const id = args.split(/\s+/)[1];
+                    if (!id) { reply("⚠️ Usage: /standing delete <id>"); return true; }
+                    const instruction = mgr.get(id);
+                    if (!mgr.delete(id)) { reply(`❌ Instruction not found: ${id}`); return true; }
+                    reply(`🗑️ Deleted: "${instruction?.description || id}"`);
+                    return true;
+                }
+
+                // Default: list all
+                const instructions = mgr.list();
+                if (instructions.length === 0) {
+                    reply("📋 No standing instructions registered.\n\nThe agent can create them during conversations.");
+                    return true;
+                }
+
+                const haConn = orch.eventListener.connected ? "🟢" : "🔴";
+                let text = `📋 *Standing Instructions* (${instructions.length})\nHA Events: ${haConn}\n\n`;
+                for (const inst of instructions) {
+                    const status = inst.enabled ? "✅" : "⏸️";
+                    const triggerDesc = inst.trigger.type === "state_change"
+                        ? `${Array.isArray(inst.trigger.entity_id) ? inst.trigger.entity_id.join(", ") : inst.trigger.entity_id}`
+                        : inst.trigger.type === "cron"
+                            ? `cron: ${inst.trigger.expression}`
+                            : `timer: ${inst.trigger.fire_at}`;
+                    const lastFired = inst.last_triggered_at
+                        ? `\n   Last: ${new Date(inst.last_triggered_at).toLocaleString()}`
+                        : "";
+                    text += `${status} *${inst.description}*\n`;
+                    text += `   ${inst.action.type} | ${triggerDesc}${lastFired}\n`;
+                    text += `   \`${inst.id.slice(0, 8)}\`\n\n`;
+                }
+                text += "_Commands: /standing enable|disable|delete <id>_";
+                reply(text);
+                return true;
+            }
             default:
                 return false; // Unknown command — fall through to prompt
         }
