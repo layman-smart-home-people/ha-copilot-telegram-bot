@@ -2,6 +2,21 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.24.1] — 2026-06-05
+
+### Fixed
+- **Standing instruction notify crash** — `sendMessage` received object `{ parse_mode: "Markdown" }` instead of string, causing Telegram API 400 error that crashed the bot process
+- **Unhandled promise rejections in orchestrator** — all `enqueue()` calls in standing instruction actions now have `.catch()` handlers, preventing bot crashes on send failures
+- **Standing `wake_agent` notification when busy** — shows "⏳ Queued" instead of "⏳ Processing..." when the agent is already handling another task
+- **`/standing` partial ID matching** — enable/disable/delete commands now match by ID prefix (e.g., first 8 chars) instead of requiring the full UUID
+- **`/standing` full IDs in list** — instruction list now shows full UUIDs for easy copy-paste
+- **`/standing` notify formatting** — removed Markdown formatting from notify messages to avoid parse failures with special characters in descriptions
+
+### Added
+- **`/standing disable all`** — bulk disable all standing instructions
+- **`/standing enable all`** — bulk enable all standing instructions
+- **`/standing delete all`** — bulk delete all standing instructions
+
 ## [0.24.0] — 2026-06-05
 
 ### Added

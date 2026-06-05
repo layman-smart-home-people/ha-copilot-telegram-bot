@@ -177,6 +177,14 @@ export class StandingInstructionOrchestrator {
     #evaluateCron() {
         if (this.isPaused) return;
         try {
+            const allInstructions = this.#manager.list();
+            for (const inst of allInstructions) {
+                if (inst.enabled && inst.expires_at && Date.now() >= Date.parse(inst.expires_at)) {
+                    this.#log(`[STANDING] Expired: "${inst.description}" (${inst.id})`);
+                    this.#manager.disable(inst.id);
+                }
+            }
+
             const now = new Date();
             const cronInstructions = this.#manager.getCronInstructions();
 
@@ -228,10 +236,15 @@ export class StandingInstructionOrchestrator {
                 `Trigger: ${contextSummary}\n` +
                 `Agent prompt: ${instruction.action.prompt}`;
             if (this.#ownerChatId) {
+                const isBusy = this.#bridge.promptActive;
+                const statusMsg = isBusy
+                    ? `🔔 ${instruction.description}\n⏳ Queued — will process after current task`
+                    : `🔔 ${instruction.description}\n⏳ Processing...`;
                 this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(this.#ownerChatId,
-                        `🔔 ${instruction.description}\n⏳ Processing...`)
-                );
+                    this.#telegram.sendMessage(this.#ownerChatId, statusMsg)
+                ).catch(err => {
+                    this.#log(`[STANDING] Failed to send wake notification: ${err.message}`);
+                });
             }
             this.#bridge.injectSystemPrompt(prompt, this.#ownerChatId).catch(err => {
                 this.#log(`[STANDING] Failed to wake agent: ${err.message}`);
@@ -239,14 +252,16 @@ export class StandingInstructionOrchestrator {
             break;
         }
         case "notify": {
-            const message = `🔔 *Standing Instruction*\n` +
-                `_${instruction.description}_\n\n` +
+            const message = `🔔 Standing Instruction\n` +
+                `${instruction.description}\n\n` +
                 `${instruction.action.message}\n\n` +
                 `Trigger: ${contextSummary}`;
             if (this.#ownerChatId) {
                 this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(this.#ownerChatId, message, { parse_mode: "Markdown" })
-                );
+                    this.#telegram.sendMessage(this.#ownerChatId, message)
+                ).catch(err => {
+                    this.#log(`[STANDING] Failed to send notification: ${err.message}`);
+                });
             }
             break;
         }

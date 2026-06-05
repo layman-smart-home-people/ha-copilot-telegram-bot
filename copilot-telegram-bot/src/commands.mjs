@@ -575,8 +575,20 @@ export async function handleSlashCommand(ctx, command, args) {
 
                 if (sub === "enable" || sub === "disable") {
                     const id = args.split(/\s+/)[1];
-                    if (!id) { reply(`⚠️ Usage: /standing ${sub} <id>`); return true; }
-                    const result = sub === "enable" ? mgr.enable(id) : mgr.disable(id);
+                    if (!id) { reply(`⚠️ Usage: /standing ${sub} <id|all>`); return true; }
+                    if (id === "all") {
+                        const all = mgr.list();
+                        let count = 0;
+                        for (const inst of all) {
+                            if (sub === "enable" && !inst.enabled) { mgr.enable(inst.id); count++; }
+                            if (sub === "disable" && inst.enabled) { mgr.disable(inst.id); count++; }
+                        }
+                        reply(`${sub === "enable" ? "✅" : "⏸️"} ${count} instruction(s) ${sub}d`);
+                        return true;
+                    }
+                    const match = mgr.list().find(i => i.id === id || i.id.startsWith(id));
+                    if (!match) { reply(`❌ Instruction not found: ${id}`); return true; }
+                    const result = sub === "enable" ? mgr.enable(match.id) : mgr.disable(match.id);
                     if (!result) { reply(`❌ Instruction not found: ${id}`); return true; }
                     reply(`${sub === "enable" ? "✅" : "⏸️"} "${result.description}" ${sub}d`);
                     return true;
@@ -584,10 +596,17 @@ export async function handleSlashCommand(ctx, command, args) {
 
                 if (sub === "delete" || sub === "remove") {
                     const id = args.split(/\s+/)[1];
-                    if (!id) { reply("⚠️ Usage: /standing delete <id>"); return true; }
-                    const instruction = mgr.get(id);
-                    if (!mgr.delete(id)) { reply(`❌ Instruction not found: ${id}`); return true; }
-                    reply(`🗑️ Deleted: "${instruction?.description || id}"`);
+                    if (!id) { reply(`⚠️ Usage: /standing delete <id|all>`); return true; }
+                    if (id === "all") {
+                        const all = mgr.list();
+                        for (const inst of all) mgr.delete(inst.id);
+                        reply(`🗑️ Deleted all ${all.length} instruction(s)`);
+                        return true;
+                    }
+                    const match = mgr.list().find(i => i.id === id || i.id.startsWith(id));
+                    if (!match) { reply(`❌ Instruction not found: ${id}`); return true; }
+                    mgr.delete(match.id);
+                    reply(`🗑️ Deleted: "${match.description}"`);
                     return true;
                 }
 
@@ -649,11 +668,14 @@ export async function handleSlashCommand(ctx, command, args) {
                     const lastFired = inst.last_triggered_at
                         ? `\n   Last: ${new Date(inst.last_triggered_at).toLocaleString()}`
                         : "";
+                    const expiryInfo = inst.expires_at
+                        ? `\n   Expires: ${new Date(inst.expires_at).toLocaleString()}`
+                        : "";
                     text += `${status} ${inst.description}\n`;
-                    text += `   ${inst.action.type} | ${triggerDesc}${lastFired}\n`;
-                    text += `   ${inst.id.slice(0, 8)}\n\n`;
+                    text += `   ${inst.action.type} | ${triggerDesc}${lastFired}${expiryInfo}\n`;
+                    text += `   ID: ${inst.id}\n\n`;
                 }
-                text += `Commands: /standing pause|resume|mute|enable|disable|delete`;
+                text += `Commands: /standing pause|resume|mute|enable|disable|delete <id|all>`;
                 reply(text);
                 return true;
             }

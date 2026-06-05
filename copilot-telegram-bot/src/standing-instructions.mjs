@@ -81,13 +81,13 @@ export class StandingInstructionManager {
 
     getCronInstructions() {
         return this.#instructions
-            .filter(instruction => instruction.enabled && instruction.trigger.type === "cron")
+            .filter(instruction => instruction.enabled && !this.#isExpired(instruction) && instruction.trigger.type === "cron")
             .map(instruction => this.#clone(instruction));
     }
 
     getTimerInstructions() {
         return this.#instructions
-            .filter(instruction => instruction.enabled && instruction.trigger.type === "timer" && !instruction.last_triggered_at)
+            .filter(instruction => instruction.enabled && !this.#isExpired(instruction) && instruction.trigger.type === "timer" && !instruction.last_triggered_at)
             .map(instruction => this.#clone(instruction));
     }
 
@@ -134,7 +134,7 @@ export class StandingInstructionManager {
         const nowTime = this.#coerceDate(now, "Timer comparison time must be a valid Date or date string.").getTime();
         return this.#instructions
             .filter(instruction => {
-                if (!instruction.enabled || instruction.trigger.type !== "timer" || instruction.last_triggered_at) return false;
+                if (!instruction.enabled || this.#isExpired(instruction) || instruction.trigger.type !== "timer" || instruction.last_triggered_at) return false;
                 return Date.parse(instruction.trigger.fire_at) <= nowTime;
             })
             .map(instruction => this.#clone(instruction));
@@ -156,7 +156,9 @@ export class StandingInstructionManager {
     }
 
     #matchesStateChange(instruction, entity_id, newState, oldState, attributes) {
-        if (!instruction.enabled || instruction.trigger.type !== "state_change") return false;
+        if (!instruction.enabled) return false;
+        if (this.#isExpired(instruction)) return false;
+        if (instruction.trigger.type !== "state_change") return false;
         if (!this.#triggerWatchesEntity(instruction.trigger.entity_id, entity_id)) return false;
         if (this.#isInCooldown(instruction)) return false;
 
@@ -199,6 +201,11 @@ export class StandingInstructionManager {
         return value == null ? null : String(value);
     }
 
+    #isExpired(instruction) {
+        if (!instruction.expires_at) return false;
+        return Date.now() >= Date.parse(instruction.expires_at);
+    }
+
     #isInCooldown(instruction) {
         if (!instruction.last_triggered_at) return false;
         const cooldownMs = instruction.cooldown_seconds * 1000;
@@ -218,6 +225,10 @@ export class StandingInstructionManager {
             action: this.#normalizeAction(spec.action),
             cooldown_seconds: this.#normalizeCooldown(spec.cooldown_seconds),
             one_shot: this.#normalizeBoolean(spec.one_shot, false, "Instruction one_shot must be a boolean."),
+            expires_at: this.#normalizeNullableIsoTimestamp(
+                spec.expires_at,
+                "Instruction expires_at must be null or a valid ISO timestamp.",
+            ),
             created_at: existing
                 ? this.#normalizeIsoTimestamp(spec.created_at, "Instruction created_at must be a valid ISO timestamp.")
                 : new Date().toISOString(),
