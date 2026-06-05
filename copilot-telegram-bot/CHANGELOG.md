@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.27.4] — 2026-06-05
+
+### Added
+- **Standing instructions hot-reload** — the bot now detects external changes to `standing_instructions.json` (e.g. written by the Copilot agent) and reloads them automatically within 60 seconds, without requiring a restart
+
 ## [0.27.3] — 2026-06-05
 
 ### Fixed

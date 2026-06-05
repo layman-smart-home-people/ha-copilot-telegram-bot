@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 const DEFAULT_PERSIST_PATH = "/data/standing_instructions.json";
@@ -11,6 +11,7 @@ export class StandingInstructionManager {
     #persistPath;
     #log;
     #instructions = [];
+    #lastKnownMtimeMs = 0;
 
     constructor({ persistPath = DEFAULT_PERSIST_PATH, log } = {}) {
         this.#persistPath = persistPath;
@@ -27,6 +28,21 @@ export class StandingInstructionManager {
 
     list() {
         return this.#clone(this.#instructions);
+    }
+
+    /** Re-read from disk if the file was modified externally (e.g. by the agent). */
+    reloadIfChanged() {
+        try {
+            if (!existsSync(this.#persistPath)) return false;
+            const mtime = statSync(this.#persistPath).mtimeMs;
+            if (mtime <= this.#lastKnownMtimeMs) return false;
+            this.#load();
+            this.#log(`[STANDING] Hot-reloaded instructions from disk (${this.#instructions.length} total)`);
+            return true;
+        } catch (err) {
+            this.#log(`[STANDING] Reload check failed: ${err.message}`);
+            return false;
+        }
     }
 
     get(id) {
@@ -482,6 +498,7 @@ export class StandingInstructionManager {
                 }
             }
             this.#instructions = loaded;
+            this.#lastKnownMtimeMs = statSync(this.#persistPath).mtimeMs;
         } catch (error) {
             this.#log(`[STANDING] Failed to load ${this.#persistPath}: ${error.message}`);
             this.#instructions = [];
@@ -499,6 +516,7 @@ export class StandingInstructionManager {
             mkdirSync(dirname(this.#persistPath), { recursive: true });
             writeFileSync(tmpPath, JSON.stringify(payload, null, 2));
             renameSync(tmpPath, this.#persistPath);
+            this.#lastKnownMtimeMs = statSync(this.#persistPath).mtimeMs;
         } catch (error) {
             this.#log(`[STANDING] Failed to save ${this.#persistPath}: ${error.message}`);
         }

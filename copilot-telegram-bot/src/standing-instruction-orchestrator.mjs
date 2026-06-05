@@ -177,6 +177,9 @@ export class StandingInstructionOrchestrator {
     #evaluateCron() {
         if (this.isPaused) return;
         try {
+            // Hot-reload instructions if the file was modified externally
+            this.#manager.reloadIfChanged();
+
             const allInstructions = this.#manager.list();
             for (const inst of allInstructions) {
                 if (!inst.enabled) continue;
