@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.24.2] — 2026-06-05
+
+### Changed
+- **`/standing` list ID as copyable code** — instruction IDs now render as inline `<code>` in Telegram, making them tap-to-copy on mobile
+- Standing list output now uses HTML parse mode for proper formatting
+
 ## [0.24.1] — 2026-06-05
 
 ### Fixed

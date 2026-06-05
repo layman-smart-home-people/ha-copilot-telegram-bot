@@ -3,6 +3,7 @@
 // ============================================================
 
 import { normalizeModeId, fullModeUri } from "./acp.mjs";
+import { escapeHtml } from "./formatter.mjs";
 
 export function parseSlashCommand(text, botUsername) {
     const match = text.match(/^\/([a-zA-Z0-9_]+)(?:@([a-zA-Z0-9_]+))?\s*([\s\S]*)?$/);
@@ -671,12 +672,12 @@ export async function handleSlashCommand(ctx, command, args) {
                     const expiryInfo = inst.expires_at
                         ? `\n   Expires: ${new Date(inst.expires_at).toLocaleString()}`
                         : "";
-                    text += `${status} ${inst.description}\n`;
-                    text += `   ${inst.action.type} | ${triggerDesc}${lastFired}${expiryInfo}\n`;
-                    text += `   ID: ${inst.id}\n\n`;
+                    text += `${status} ${escapeHtml(inst.description)}\n`;
+                    text += `   ${inst.action.type} | ${escapeHtml(triggerDesc)}${lastFired}${expiryInfo}\n`;
+                    text += `   ID: <code>${escapeHtml(inst.id)}</code>\n\n`;
                 }
-                text += `Commands: /standing pause|resume|mute|enable|disable|delete <id|all>`;
-                reply(text);
+                text += `Commands: /standing pause|resume|mute|enable|disable|delete &lt;id|all&gt;`;
+                telegram.enqueue(() => telegram.sendMessage(chatId, text, "HTML"));
                 return true;
             }
             default:
