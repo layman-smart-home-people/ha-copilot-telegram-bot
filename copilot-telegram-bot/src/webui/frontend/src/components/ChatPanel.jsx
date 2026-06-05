@@ -300,8 +300,8 @@ export default function ChatPanel({ toast }) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={connected ? "Type a message… (Enter to send)" : "Connecting to Copilot…"}
-          disabled={!connected && !busy}
+          placeholder={connected ? "Type a message… (Enter to send)" : "Type a message… (will auto-connect)"}
+          disabled={false}
           rows={1}
           style={{
             flex: 1,

@@ -864,6 +864,13 @@ export class WebUIServer {
 
         this.#chatSseClients.add(res);
         req.on("close", () => this.#chatSseClients.delete(res));
+
+        // Auto-initialize chat ACP on first SSE connection
+        if (!this.#chatAcp?.alive && !this.#chatInitPromise) {
+            this.#ensureChatAcp().catch((err) => {
+                this.#log(`[WEBUI-CHAT] Auto-init failed: ${err.message}`);
+            });
+        }
     }
 
     async #apiChatSend(res, body) {

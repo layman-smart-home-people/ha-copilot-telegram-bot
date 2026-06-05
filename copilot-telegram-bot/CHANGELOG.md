@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.28.2] — 2026-06-06
+
+### Fixed
+- **WebUI chat always disconnected** — chat ACP was lazily initialized only on message send, but the textarea was disabled when disconnected, creating a deadlock. Now auto-initializes the chat ACP when the SSE stream connects, and allows typing while disconnected.
+
 ## [0.28.1] — 2026-06-05
 
 ### Fixed
