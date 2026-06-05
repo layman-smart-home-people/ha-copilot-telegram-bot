@@ -16,6 +16,7 @@ import { loadConfig } from "./config.mjs";
 import { HAEventListener } from "./ha-events.mjs";
 import { StandingInstructionManager } from "./standing-instructions.mjs";
 import { StandingInstructionOrchestrator } from "./standing-instruction-orchestrator.mjs";
+import { WebUIServer } from "./webui/server.mjs";
 
 // --- Set timezone from HA system before any Date operations ---
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
@@ -256,6 +257,22 @@ async function main() {
         log(`Standing instruction orchestrator failed to start: ${err.message}`);
     });
 
+    // Start Web UI server (ingress)
+    const webui = new WebUIServer({ port: 8099, log });
+    webui.attach({
+        bridge,
+        orchestrator,
+        scopeMgr,
+        config,
+        acp,
+        telegram,
+        startedAt: Date.now(),
+    });
+    webui.start().catch(err => {
+        log(`Web UI server failed to start: ${err.message}`);
+    });
+    _webui = webui;
+
     // Idle timeout
     let idleTimer = null;
     if (config.idleTimeoutMinutes > 0) {
@@ -288,11 +305,18 @@ async function main() {
 let _bridge = null; // set during main() for shutdown access
 let _scopeMgr = null;
 let _orchestrator = null;
+let _webui = null;
 
 async function shutdown(signal) {
     log(`Received ${signal}, shutting down...`);
 
     const timer = setTimeout(() => process.exit(0), 5000);
+
+    try {
+        if (_webui) await _webui.stop();
+    } catch (err) {
+        log(`WebUI shutdown error: ${err.message}`);
+    }
 
     try {
         if (_orchestrator) await _orchestrator.stop();

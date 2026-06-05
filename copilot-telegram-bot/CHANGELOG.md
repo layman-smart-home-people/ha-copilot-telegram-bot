@@ -2,6 +2,16 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.25.0] — 2026-06-05
+
+### Added
+- **Web UI Dashboard (Phase 1)** — HA Ingress-based dashboard accessible from the sidebar
+  - **Status dashboard** — bot uptime, Copilot/HA connection status, module health, scope counts
+  - **Standing Instructions manager** — full CRUD: create, edit, delete, enable/disable toggle
+  - **Agent Docs editor** — view/edit IDENTITY.md, MEMORY.md, TASKS.md, SKILLS.md, and daily logs
+  - Dark theme, responsive, mobile-friendly, zero npm dependencies
+  - Auto-refreshing status cards (15s interval)
+
 ## [0.24.5] — 2026-06-05
 
 ### Fixed
