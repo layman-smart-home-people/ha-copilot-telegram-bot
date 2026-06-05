@@ -125,7 +125,7 @@ export class StandingInstructionManager {
         let next = null;
 
         for (const instruction of this.#instructions) {
-            if (!instruction.enabled || instruction.trigger.type !== "timer" || instruction.last_triggered_at) continue;
+            if (!instruction.enabled || this.#isExpired(instruction) || this.#isExhausted(instruction) || instruction.trigger.type !== "timer" || instruction.last_triggered_at) continue;
             const fireAt = Date.parse(instruction.trigger.fire_at);
             if (!Number.isFinite(fireAt) || fireAt <= now) continue;
             if (!next || fireAt < Date.parse(next.trigger.fire_at)) next = instruction;

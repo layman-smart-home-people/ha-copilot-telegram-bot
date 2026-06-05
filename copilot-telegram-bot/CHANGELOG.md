@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.24.5] — 2026-06-05
+
+### Fixed
+- **`getNextTimer` missing expiry/exhaustion checks** — expired or exhausted timer instructions could occupy the "next timer" slot, blocking valid timers behind them
+
 ## [0.24.4] — 2026-06-05
 
 ### Fixed
