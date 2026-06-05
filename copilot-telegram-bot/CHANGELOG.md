@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.24.4] — 2026-06-05
+
+### Fixed
+- **Git pre-installed in Docker image** — added `git` to Dockerfile apt packages so the agent can commit/push without manual installation each session
+
 ## [0.24.3] — 2026-06-05
 
 ### Added

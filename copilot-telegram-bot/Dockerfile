@@ -3,7 +3,7 @@ FROM ${BUILD_FROM}
 
 # Install Node.js 22 (LTS) from NodeSource and jq
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gnupg jq \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg git jq \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
