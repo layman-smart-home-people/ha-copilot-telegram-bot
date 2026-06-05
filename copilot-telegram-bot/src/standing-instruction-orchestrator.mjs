@@ -19,6 +19,8 @@ export class StandingInstructionOrchestrator {
     #started = false;
     #startedAt = null;
     #triggerCount = 0;
+    #boundStateHandler = null;
+    #boundErrorHandler = null;
 
     constructor({ eventListener, manager, bridge, telegram, ownerChatId, log }) {
         this.#eventListener = eventListener;
@@ -56,10 +58,12 @@ export class StandingInstructionOrchestrator {
         this.#log("[STANDING] Orchestrator starting...");
 
         // Wire HA event listener
-        this.#eventListener.on("state_changed", (event) => this.#onStateChanged(event));
-        this.#eventListener.on("error", (err) => {
+        this.#boundStateHandler = (event) => this.#onStateChanged(event);
+        this.#boundErrorHandler = (err) => {
             this.#log(`[STANDING] HA event error: ${err.message}`);
-        });
+        };
+        this.#eventListener.on("state_changed", this.#boundStateHandler);
+        this.#eventListener.on("error", this.#boundErrorHandler);
 
         try {
             await this.#eventListener.start();
@@ -97,6 +101,15 @@ export class StandingInstructionOrchestrator {
             await this.#eventListener.stop();
         } catch {}
 
+        if (this.#boundStateHandler) {
+            this.#eventListener.removeListener("state_changed", this.#boundStateHandler);
+            this.#boundStateHandler = null;
+        }
+        if (this.#boundErrorHandler) {
+            this.#eventListener.removeListener("error", this.#boundErrorHandler);
+            this.#boundErrorHandler = null;
+        }
+
         this.#log("[STANDING] Orchestrator stopped");
     }
 
@@ -125,12 +138,19 @@ export class StandingInstructionOrchestrator {
         }
     }
 
+    #isInCooldown(instruction) {
+        if (!instruction.last_triggered_at) return false;
+        const cooldownMs = (instruction.cooldown_seconds || 0) * 1000;
+        return cooldownMs > 0 && Date.now() - Date.parse(instruction.last_triggered_at) < cooldownMs;
+    }
+
     #evaluateCron() {
         try {
             const now = new Date();
             const cronInstructions = this.#manager.getCronInstructions();
 
             for (const instruction of cronInstructions) {
+                if (this.#isInCooldown(instruction)) continue;
                 if (this.#manager.cronMatches(instruction.trigger.expression, now)) {
                     this.#log(`[STANDING] Cron matched: "${instruction.description}" (${instruction.id})`);
                     this.#manager.markTriggered(instruction.id);
@@ -152,6 +172,7 @@ export class StandingInstructionOrchestrator {
             const expired = this.#manager.getExpiredTimers();
 
             for (const instruction of expired) {
+                if (this.#isInCooldown(instruction)) continue;
                 this.#log(`[STANDING] Timer expired: "${instruction.description}" (${instruction.id})`);
                 this.#manager.markTriggered(instruction.id);
                 this.#triggerCount++;

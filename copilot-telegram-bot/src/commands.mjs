@@ -597,7 +597,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 const uptimeStr = formatUptime(st.uptime);
 
                 if (instructions.length === 0) {
-                    let text = `📋 *Standing Instructions*\n\n`;
+                    let text = `📋 Standing Instructions\n\n`;
                     text += `📡 HA Events: ${st.haConnected ? "🟢 connected" : "🔴 disconnected"}\n`;
                     text += `⏱️ Uptime: ${uptimeStr}\n`;
                     text += `🎯 Triggers fired: ${st.triggerCount}\n\n`;
@@ -606,7 +606,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     return true;
                 }
 
-                let text = `📋 *Standing Instructions* (${st.enabled}/${st.total} active)\n`;
+                let text = `📋 Standing Instructions (${st.enabled}/${st.total} active)\n`;
                 text += `📡 HA Events: ${st.haConnected ? "🟢" : "🔴"} | ⏱️ ${uptimeStr} | 🎯 ${st.triggerCount} fired\n\n`;
                 for (const inst of instructions) {
                     const status = inst.enabled ? "✅" : "⏸️";
@@ -618,11 +618,11 @@ export async function handleSlashCommand(ctx, command, args) {
                     const lastFired = inst.last_triggered_at
                         ? `\n   Last: ${new Date(inst.last_triggered_at).toLocaleString()}`
                         : "";
-                    text += `${status} *${inst.description}*\n`;
+                    text += `${status} ${inst.description}\n`;
                     text += `   ${inst.action.type} | ${triggerDesc}${lastFired}\n`;
-                    text += `   \`${inst.id.slice(0, 8)}\`\n\n`;
+                    text += `   ${inst.id.slice(0, 8)}\n\n`;
                 }
-                text += "_Commands: /standing enable|disable|delete <id>_";
+                text += `Commands: /standing enable|disable|delete <id>`;
                 reply(text);
                 return true;
             }
@@ -636,6 +636,7 @@ export async function handleSlashCommand(ctx, command, args) {
 }
 
 function formatUptime(seconds) {
+    if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 0) return "unknown";
     if (seconds < 60) return `${seconds}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
     const h = Math.floor(seconds / 3600);
