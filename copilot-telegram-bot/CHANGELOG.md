@@ -2,6 +2,41 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.23.0] — 2026-06-05
+
+### Added
+- **Standing Instructions Orchestrator** — event-driven agent wake-up system:
+  - HA WebSocket event listener subscribes to `state_changed` events
+  - Persistent instruction store at `/data/standing_instructions.json`
+  - `state_change`, `cron`, and `timer` trigger types
+  - `wake_agent` (inject prompt) and `notify` (send message) action types
+  - Cooldown enforcement across all trigger types
+  - One-shot instructions (auto-disable after first trigger)
+  - Numeric threshold triggers (`above`/`below`) for temperature, humidity, power sensors
+  - Global pause/resume and timed mute (`/standing pause|resume|mute 2h`)
+  - Immediate notification before agent wake-up ("🔔 ... ⏳ Processing...")
+  - Separate scope key for standing instruction prompts (no queue merge with user messages)
+- **Agent Persistent Memory** — OpenClaw-style identity & memory system:
+  - `/config/.agent/IDENTITY.md` — agent personality, responsibilities, rules
+  - `/config/.agent/MEMORY.md` — curated long-term memory (agent self-maintained)
+  - `/config/.agent/TASKS.md` — active/interrupted/pending task tracking
+  - `/config/.agent/SKILLS.md` — schema docs for standing instructions
+  - `/config/.agent/memory/YYYY-MM-DD.md` — daily logs (today + yesterday loaded)
+  - Injected into preamble on first message of each session
+- **`/standing` slash command** — manage standing instructions from Telegram:
+  - List all with status, trigger info, last fired time, uptime
+  - Enable/disable/delete individual instructions
+  - Pause/resume/mute globally
+  - Orchestrator status in `/status` menu with inline button
+- **`Bridge.injectSystemPrompt()`** — public method to wake agent with system prompts
+- **Deploy script** — `/config/scripts/update-copilot-bot.sh` for one-command updates
+
+### Fixed
+- Event listener leak on start/stop cycles (bound handler cleanup)
+- Cooldown enforcement for cron and timer triggers (was only state_change)
+- Markdown syntax in plain-text replies (reply() has no parseMode)
+- `formatUptime()` guard against non-numeric input
+
 ## [0.21.0] — 2026-05-28
 
 ### Added
