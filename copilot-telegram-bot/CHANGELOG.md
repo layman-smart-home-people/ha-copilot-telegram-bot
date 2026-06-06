@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.29.0] — 2026-06-06
+
+### Changed
+- **Phase 0 refactor: in-place bridge.mjs decomposition** — extracted 5 named private methods from monolithic handlers to make code boundaries visible for upcoming modularization:
+  - `#handlePermissionRequest` / `#handlePlanApproval` — from 190-line `permission_request` event handler
+  - `#handleACPExit` — from 70-line `exit` event handler
+  - `#handleElicitationRequest` — from 70-line `elicitation_request` event handler
+  - `#handleEditedMessage` — from 95-line `edited_message` branch in `#processUpdate`
+  - `#ensureScopeSession` — from 70-line session switching block in `#queuePrompt`
+- **Formalized ScopeState** — 4 runtime-mutated properties (`pendingElicitation`, `_toolJustEnded`, `_toolJustEndedThought`, `activeRef`) now declared in constructor with proper defaults and cleaned up in `reset()`
+- **Removed dead code** — unused `required` Set in multi-field elicitation path
+
 ## [0.28.2] — 2026-06-06
 
 ### Fixed

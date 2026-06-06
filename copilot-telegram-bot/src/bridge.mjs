@@ -667,74 +667,7 @@ export class Bridge {
 
         // Process exit — handle crash recovery
         acp.on("exit", ({ code, signal }) => {
-            this.#stopTyping();
-            const scope = getScope();
-            const ref = getRef();
-            if (scope) {
-                if (scope.composer?.active) {
-                    scope.composer.abort("Copilot process exited unexpectedly").catch(() => {});
-                    scope.composer = null;
-                }
-                scope.activeTools.clear();
-                this.#flushMessageBuffer(() => scope, () => ref);
-
-                // Cancel any pending elicitation
-                if (scope.pendingElicitation) {
-                    const { requestId, resolve } = scope.pendingElicitation;
-                    if (requestId) {
-                        try { acp.respondElicitation(requestId, "cancel"); } catch {}
-                    }
-                    if (typeof resolve === "function") resolve(undefined);
-                    scope.pendingElicitation = null;
-                }
-                // Cancel any pending button menus for this chat
-                const chatId = ref?.chatId;
-                if (chatId && this.#buttons) {
-                    this.#buttons.cancelForChat(chatId, "🛑 Session ended");
-                }
-
-                // Cancel any queued MCP questions
-                this.#cancelQuestionQueue("Session ended");
-            }
-
-            if (tag === "primary") {
-                // Crash recovery: reject any active prompt so the queue doesn't wedge
-                if (this.#promptActive) {
-                    this.#promptActive = false;
-                    this.#activeRef = null;
-                    this.#activeScope = null;
-                    this.#scopeMgr?.clearActive();
-                    // Drain the queue — notify users that queued messages were lost
-                    const dropped = this.#promptQueue.length;
-                    this.#promptQueue = [];
-                    if (dropped > 0) {
-                        this.#broadcastAdmin(`⚠️ ${dropped} queued message(s) dropped due to Copilot exit.`);
-                    }
-                }
-
-                // Don't broadcast exit if it was intentional (code 0 or null = SIGTERM)
-                if (code !== 0 && code !== null) {
-                    this.#broadcastAdmin(`⚠️ Copilot process exited (code: ${code}). Send a message to restart.`);
-                }
-            } else {
-                // Overflow exit — clean up overflow state
-                this.#overflowScope = null;
-                this.#overflowRef = null;
-                if (this.#acpMgr) this.#acpMgr.release("overflow");
-                if (code !== 0 && code !== null) {
-                    this.#log(`Overflow ACP crashed (code: ${code}). Will respawn on next demand.`);
-                }
-            }
-
-            // Clear stale mode/model from scope
-            const exitScope = getScope();
-            if (exitScope) {
-                exitScope.mode = "";
-                exitScope.model = "";
-                exitScope.promptRunning = false;
-                exitScope.acpTag = null;
-            }
-            this.#refreshStatusIfAlive().catch(() => {});
+            this.#handleACPExit(code, signal, acp, getScope, getRef, tag);
         });
 
         acp.on("error", (err) => {
@@ -749,189 +682,7 @@ export class Bridge {
             if (getSwitching()) return;
             const scope = getScope();
             if (!scope) return;
-            this.#log(`Permission request [${tag}]: ${JSON.stringify(req)}`);
-            const { requestId } = req;
-
-            // Extract tool identification from the new session/request_permission format
-            const toolCall = req.toolCall || {};
-            const rawInput = toolCall.rawInput || {};
-            const toolTitle = toolCall.title || "";
-            const domain = rawInput.domain || "";
-            const service = rawInput.service || "";
-            const entityId = rawInput.entity_id || "";
-            const tool = domain && service ? `ha_${domain}_${service}` :
-                         toolTitle.toLowerCase().includes("call service") ? "ha_call_service" :
-                         req.toolName || req.tool || req.name || "unknown_tool";
-            const desc = entityId ? `${domain}.${service} → ${entityId}` :
-                         toolTitle || "";
-
-            // Plan approval / mode switch — special UX with dynamic option buttons
-            if (toolCall.kind === "switch_mode") {
-                const options = req.options || [];
-                if (options.length === 0) {
-                    this.#log('Plan approval: no options provided');
-                    acp.respondPermission(requestId, "reject_once");
-                    return;
-                }
-                const targetRef = getRef();
-                const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
-                if (!chatId || !this.#buttons) {
-                    const fallbackId = options.find(o => o.kind === "allow_once")?.optionId || options[0]?.optionId;
-                    if (fallbackId) acp.respondPermission(requestId, fallbackId);
-                    return;
-                }
-
-                // Extract plan content from toolCall.content
-                let planSummary = "";
-                if (Array.isArray(toolCall.content)) {
-                    for (const c of toolCall.content) {
-                        const text = c?.content?.text || c?.text || "";
-                        if (text) planSummary += (planSummary ? "\n" : "") + text;
-                    }
-                }
-
-                const header = toolTitle || "📋 Ready for implementation";
-                // Truncate plan summary accounting for header
-                const maxSummary = 3800 - header.length;
-                if (planSummary.length > maxSummary) planSummary = planSummary.slice(0, maxSummary) + "…";
-                const label = planSummary
-                    ? `📋 ${header}\n\n${planSummary}`
-                    : `📋 ${header}`;
-
-                // Build buttons from dynamic options — one per row for clarity
-                const encodedUserId = this.#encodeCallbackUserId(targetRef?.userId);
-                const rows = options.map(opt => {
-                    const icon = opt.kind === "reject_once" || opt.kind === "reject_always" ? "❌"
-                               : opt.kind === "allow_always" ? "🚀"
-                               : "✅";
-                    const val = encodedUserId ? `perm:${encodedUserId}:${opt.optionId}` : opt.optionId;
-                    return [{ text: `${icon} ${opt.name}`, value: val }];
-                });
-
-                if (scope.composer) scope.composer.setInteractionPending("plan");
-                let selected, permMsgId;
-                try {
-                    ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
-                        chatId, label, rows,
-                        { timeoutMs: 0, timeoutText: "📋 Plan approval cancelled" }
-                    ));
-                } finally {
-                    if (scope.composer) scope.composer.setInteractionPending(null);
-                }
-
-                const selectedOption = this.#unwrapPermissionSelection(selected);
-                if (selectedOption) {
-                    acp.respondPermission(requestId, selectedOption);
-                    const chosenName = options.find(o => o.optionId === selectedOption)?.name || selectedOption;
-                    this.#log(`Plan approval: ${chosenName}`);
-                    if (permMsgId) {
-                        try {
-                            await this.#buttons.finalize(chatId, permMsgId, `📋 ${chosenName}`);
-                        } catch {}
-                    }
-                } else {
-                    // Timeout/cancelled — respond with reject
-                    const rejectId = options.find(o => o.kind === "reject_once")?.optionId || "reject_once";
-                    acp.respondPermission(requestId, rejectId);
-                    this.#log(`Plan approval cancelled/timed out`);
-                }
-                return;
-            }
-
-            // Allow-all mode: skip all permission prompts
-            if (scope.allowAll) {
-                const options = req.options || [];
-                const allowId = options.find(o => o.kind === "allow_always")?.optionId || "allow_always";
-                acp.respondPermission(requestId, allowId);
-                this.#log(`Permission auto-approved (allow-all mode): ${tool} (${desc})`);
-                return;
-            }
-
-            // Policy: auto-approve read-only HA tools + standard copilot tools
-            const readOnlyTools = new Set([
-                "ha_search_entities", "ha_get_state", "ha_get_history",
-                "ha_deep_search", "ha_get_overview", "ha_get_entity_state",
-                "ha_search_automations", "ha_get_automation",
-            ]);
-            const isReadOnly = readOnlyTools.has(tool) || !tool.startsWith("ha_");
-
-            const options = req.options || [];
-            const findOption = (kind) => options.find(o => o.kind === kind)?.optionId;
-            const allowOnceId = findOption("allow_once") || "allow_once";
-            const allowAlwaysId = findOption("allow_always") || "allow_always";
-            const rejectOnceId = findOption("reject_once") || "reject_once";
-
-            // Per-user per-scope grants
-            const ref = getRef();
-            const userId = ref?.userId;
-            if (isReadOnly || (userId && scope.isToolGranted(userId, tool))) {
-                acp.respondPermission(requestId, allowAlwaysId);
-                this.#log(`Permission auto-approved: ${tool} (${desc})`);
-                return;
-            }
-
-            // Ask user via inline buttons
-            const targetRef = getRef();
-            const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
-            if (!chatId || !this.#buttons) {
-                acp.respondPermission(requestId, rejectOnceId);
-                this.#log(`Permission denied (no chat): ${tool}`);
-                return;
-            }
-
-            const label = desc ? `${tool}\n${desc}` : tool;
-            const encodedUserId = this.#encodeCallbackUserId(targetRef?.userId);
-            const allowOnceValue = encodedUserId ? `perm:${encodedUserId}:${allowOnceId}` : allowOnceId;
-            const allowAlwaysValue = encodedUserId ? `perm:${encodedUserId}:${allowAlwaysId}` : allowAlwaysId;
-            const rejectOnceValue = encodedUserId ? `perm:${encodedUserId}:${rejectOnceId}` : rejectOnceId;
-            const rows = [
-                [
-                    { text: "✅ Allow once", value: allowOnceValue },
-                    { text: "✅ Always allow", value: allowAlwaysValue },
-                    { text: "❌ Deny", value: rejectOnceValue },
-                ],
-            ];
-            if (scope.composer) scope.composer.setInteractionPending("permission");
-            let selected, permMsgId;
-            try {
-                ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
-                    chatId,
-                    `🔐 Permission request:\n${label}`,
-                    rows,
-                    { timeoutMs: 0 }
-                ));
-            } finally {
-                if (scope.composer) scope.composer.setInteractionPending(null);
-            }
-
-            const selectedOption = this.#unwrapPermissionSelection(selected);
-            if (selectedOption === allowOnceId || selectedOption === allowAlwaysId) {
-                if (selectedOption === allowAlwaysId && userId) {
-                    scope.grantTool(userId, tool);
-                }
-                acp.respondPermission(requestId, selectedOption);
-                this.#log(`Permission granted (${selectedOption}): ${tool}`);
-                if (permMsgId) {
-                    try {
-                        await this.#buttons.finalize(chatId, permMsgId, `✅ Allowed: ${desc || tool}`);
-                    } catch (err) {
-                        this.#log(`Error finalizing allow message: ${err.message}`);
-                    }
-                }
-            } else {
-                acp.respondPermission(requestId, rejectOnceId);
-                this.#log(`Permission denied: ${tool} (permMsgId=${permMsgId})`);
-                try {
-                    if (permMsgId) {
-                        this.#log(`Finalizing deny message: chat=${chatId} msg=${permMsgId}`);
-                        await this.#buttons.finalize(chatId, permMsgId, `❌ Denied: ${desc || tool}`);
-                    } else {
-                        this.#log(`No permMsgId for deny feedback`);
-                    }
-                } catch (err) {
-                    this.#log(`Error finalizing deny message: ${err.message}`);
-                }
-            }
+            await this.#handlePermissionRequest(req, acp, scope, getRef, tag);
         });
 
         // Capture session data (models, modes) from session events
@@ -998,68 +749,337 @@ export class Bridge {
                 acp.respondElicitation(req.requestId, "cancel");
                 return;
             }
-            if (scope.pendingElicitation) {
-                acp.respondElicitation(req.requestId, "cancel");
-                this.#log(`Rejected concurrent elicitation (another pending)`);
-                return;
-            }
-            this.#log(`Elicitation [${tag}]: ${req.message}`);
-
-            const targetRef = getRef();
-            const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
-            if (!chatId) {
-                acp.respondElicitation(req.requestId, "cancel");
-                return;
-            }
-
-            const schema = req.requestedSchema;
-            const props = schema?.properties || {};
-            const propNames = Object.keys(props);
-
-            // Single-property shortcut (most common case)
-            if (propNames.length === 1) {
-                const propName = propNames[0];
-                const propSchema = props[propName];
-                const result = await this.#elicitSingleField(
-                    chatId, req.requestId, req.message, propName, propSchema, scope
-                );
-                if (result !== undefined) {
-                    acp.respondElicitation(req.requestId, "accept", { [propName]: result });
-                }
-                // If undefined, response was already sent (decline/cancel)
-                return;
-            }
-
-            // Multi-field: collect answers sequentially
-            if (propNames.length > 1) {
-                const content = {};
-                const required = new Set(schema.required || []);
-                for (const propName of propNames) {
-                    const propSchema = props[propName];
-                    const fieldMsg = propSchema.title
-                        ? `${req.message}\n\n${propSchema.title}${propSchema.description ? `\n${propSchema.description}` : ""}`
-                        : req.message;
-                    const result = await this.#elicitSingleField(
-                        chatId, req.requestId, fieldMsg, propName, propSchema, scope
-                    );
-                    if (result === undefined) return; // cancelled
-                    content[propName] = result;
-                }
-                acp.respondElicitation(req.requestId, "accept", content);
-                return;
-            }
-
-            // Empty schema — just show message with OK button
-            if (this.#buttons) {
-                const { value } = await this.#buttons.prompt(chatId, `❓ ${req.message}`, [
-                    [{ text: "✅ OK", value: "ok" }, { text: "❌ Cancel", value: "cancel" }]
-                ]);
-                acp.respondElicitation(req.requestId, value === "ok" ? "accept" : "decline", {});
-            } else {
-                acp.respondElicitation(req.requestId, "accept", {});
-            }
+            await this.#handleElicitationRequest(req, acp, scope, getRef, tag);
         });
     }  // end of #wireACPEvents
+
+    // --- Extracted ACP event handlers ---
+
+    /** Handle permission_request events from ACP. */
+    async #handlePermissionRequest(req, acp, scope, getRef, tag) {
+        this.#log(`Permission request [${tag}]: ${JSON.stringify(req)}`);
+        const { requestId } = req;
+
+        // Extract tool identification from the new session/request_permission format
+        const toolCall = req.toolCall || {};
+        const rawInput = toolCall.rawInput || {};
+        const toolTitle = toolCall.title || "";
+        const domain = rawInput.domain || "";
+        const service = rawInput.service || "";
+        const entityId = rawInput.entity_id || "";
+        const tool = domain && service ? `ha_${domain}_${service}` :
+                     toolTitle.toLowerCase().includes("call service") ? "ha_call_service" :
+                     req.toolName || req.tool || req.name || "unknown_tool";
+        const desc = entityId ? `${domain}.${service} → ${entityId}` :
+                     toolTitle || "";
+
+        // Plan approval / mode switch — special UX with dynamic option buttons
+        if (toolCall.kind === "switch_mode") {
+            await this.#handlePlanApproval(req, acp, scope, getRef, tag);
+            return;
+        }
+
+        // Allow-all mode: skip all permission prompts
+        if (scope.allowAll) {
+            const options = req.options || [];
+            const allowId = options.find(o => o.kind === "allow_always")?.optionId || "allow_always";
+            acp.respondPermission(requestId, allowId);
+            this.#log(`Permission auto-approved (allow-all mode): ${tool} (${desc})`);
+            return;
+        }
+
+        // Policy: auto-approve read-only HA tools + standard copilot tools
+        const readOnlyTools = new Set([
+            "ha_search_entities", "ha_get_state", "ha_get_history",
+            "ha_deep_search", "ha_get_overview", "ha_get_entity_state",
+            "ha_search_automations", "ha_get_automation",
+        ]);
+        const isReadOnly = readOnlyTools.has(tool) || !tool.startsWith("ha_");
+
+        const options = req.options || [];
+        const findOption = (kind) => options.find(o => o.kind === kind)?.optionId;
+        const allowOnceId = findOption("allow_once") || "allow_once";
+        const allowAlwaysId = findOption("allow_always") || "allow_always";
+        const rejectOnceId = findOption("reject_once") || "reject_once";
+
+        // Per-user per-scope grants
+        const ref = getRef();
+        const userId = ref?.userId;
+        if (isReadOnly || (userId && scope.isToolGranted(userId, tool))) {
+            acp.respondPermission(requestId, allowAlwaysId);
+            this.#log(`Permission auto-approved: ${tool} (${desc})`);
+            return;
+        }
+
+        // Ask user via inline buttons
+        const targetRef = getRef();
+        const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
+        if (!chatId || !this.#buttons) {
+            acp.respondPermission(requestId, rejectOnceId);
+            this.#log(`Permission denied (no chat): ${tool}`);
+            return;
+        }
+
+        const label = desc ? `${tool}\n${desc}` : tool;
+        const encodedUserId = this.#encodeCallbackUserId(targetRef?.userId);
+        const allowOnceValue = encodedUserId ? `perm:${encodedUserId}:${allowOnceId}` : allowOnceId;
+        const allowAlwaysValue = encodedUserId ? `perm:${encodedUserId}:${allowAlwaysId}` : allowAlwaysId;
+        const rejectOnceValue = encodedUserId ? `perm:${encodedUserId}:${rejectOnceId}` : rejectOnceId;
+        const rows = [
+            [
+                { text: "✅ Allow once", value: allowOnceValue },
+                { text: "✅ Always allow", value: allowAlwaysValue },
+                { text: "❌ Deny", value: rejectOnceValue },
+            ],
+        ];
+        if (scope.composer) scope.composer.setInteractionPending("permission");
+        let selected, permMsgId;
+        try {
+            ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
+                chatId,
+                `🔐 Permission request:\n${label}`,
+                rows,
+                { timeoutMs: 0 }
+            ));
+        } finally {
+            if (scope.composer) scope.composer.setInteractionPending(null);
+        }
+
+        const selectedOption = this.#unwrapPermissionSelection(selected);
+        if (selectedOption === allowOnceId || selectedOption === allowAlwaysId) {
+            if (selectedOption === allowAlwaysId && userId) {
+                scope.grantTool(userId, tool);
+            }
+            acp.respondPermission(requestId, selectedOption);
+            this.#log(`Permission granted (${selectedOption}): ${tool}`);
+            if (permMsgId) {
+                try {
+                    await this.#buttons.finalize(chatId, permMsgId, `✅ Allowed: ${desc || tool}`);
+                } catch (err) {
+                    this.#log(`Error finalizing allow message: ${err.message}`);
+                }
+            }
+        } else {
+            acp.respondPermission(requestId, rejectOnceId);
+            this.#log(`Permission denied: ${tool} (permMsgId=${permMsgId})`);
+            try {
+                if (permMsgId) {
+                    this.#log(`Finalizing deny message: chat=${chatId} msg=${permMsgId}`);
+                    await this.#buttons.finalize(chatId, permMsgId, `❌ Denied: ${desc || tool}`);
+                } else {
+                    this.#log(`No permMsgId for deny feedback`);
+                }
+            } catch (err) {
+                this.#log(`Error finalizing deny message: ${err.message}`);
+            }
+        }
+    }
+
+    /** Handle plan approval (switch_mode permission requests). */
+    async #handlePlanApproval(req, acp, scope, getRef, tag) {
+        const { requestId } = req;
+        const toolCall = req.toolCall || {};
+        const toolTitle = toolCall.title || "";
+        const options = req.options || [];
+
+        if (options.length === 0) {
+            this.#log('Plan approval: no options provided');
+            acp.respondPermission(requestId, "reject_once");
+            return;
+        }
+        const targetRef = getRef();
+        const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
+        if (!chatId || !this.#buttons) {
+            const fallbackId = options.find(o => o.kind === "allow_once")?.optionId || options[0]?.optionId;
+            if (fallbackId) acp.respondPermission(requestId, fallbackId);
+            return;
+        }
+
+        // Extract plan content from toolCall.content
+        let planSummary = "";
+        if (Array.isArray(toolCall.content)) {
+            for (const c of toolCall.content) {
+                const text = c?.content?.text || c?.text || "";
+                if (text) planSummary += (planSummary ? "\n" : "") + text;
+            }
+        }
+
+        const header = toolTitle || "📋 Ready for implementation";
+        const maxSummary = 3800 - header.length;
+        if (planSummary.length > maxSummary) planSummary = planSummary.slice(0, maxSummary) + "…";
+        const label = planSummary
+            ? `📋 ${header}\n\n${planSummary}`
+            : `📋 ${header}`;
+
+        // Build buttons from dynamic options — one per row for clarity
+        const encodedUserId = this.#encodeCallbackUserId(targetRef?.userId);
+        const rows = options.map(opt => {
+            const icon = opt.kind === "reject_once" || opt.kind === "reject_always" ? "❌"
+                       : opt.kind === "allow_always" ? "🚀"
+                       : "✅";
+            const val = encodedUserId ? `perm:${encodedUserId}:${opt.optionId}` : opt.optionId;
+            return [{ text: `${icon} ${opt.name}`, value: val }];
+        });
+
+        if (scope.composer) scope.composer.setInteractionPending("plan");
+        let selected, permMsgId;
+        try {
+            ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
+                chatId, label, rows,
+                { timeoutMs: 0, timeoutText: "📋 Plan approval cancelled" }
+            ));
+        } finally {
+            if (scope.composer) scope.composer.setInteractionPending(null);
+        }
+
+        const selectedOption = this.#unwrapPermissionSelection(selected);
+        if (selectedOption) {
+            acp.respondPermission(requestId, selectedOption);
+            const chosenName = options.find(o => o.optionId === selectedOption)?.name || selectedOption;
+            this.#log(`Plan approval: ${chosenName}`);
+            if (permMsgId) {
+                try {
+                    await this.#buttons.finalize(chatId, permMsgId, `📋 ${chosenName}`);
+                } catch {}
+            }
+        } else {
+            const rejectId = options.find(o => o.kind === "reject_once")?.optionId || "reject_once";
+            acp.respondPermission(requestId, rejectId);
+            this.#log(`Plan approval cancelled/timed out`);
+        }
+    }
+
+    /** Handle ACP process exit — crash recovery and state cleanup. */
+    #handleACPExit(code, signal, acp, getScope, getRef, tag) {
+        this.#stopTyping();
+        const scope = getScope();
+        const ref = getRef();
+        if (scope) {
+            if (scope.composer?.active) {
+                scope.composer.abort("Copilot process exited unexpectedly").catch(() => {});
+                scope.composer = null;
+            }
+            scope.activeTools.clear();
+            this.#flushMessageBuffer(() => scope, () => ref);
+
+            // Cancel any pending elicitation
+            if (scope.pendingElicitation) {
+                const { requestId, resolve } = scope.pendingElicitation;
+                if (requestId) {
+                    try { acp.respondElicitation(requestId, "cancel"); } catch {}
+                }
+                if (typeof resolve === "function") resolve(undefined);
+                scope.pendingElicitation = null;
+            }
+            // Cancel any pending button menus for this chat
+            const chatId = ref?.chatId;
+            if (chatId && this.#buttons) {
+                this.#buttons.cancelForChat(chatId, "🛑 Session ended");
+            }
+
+            // Cancel any queued MCP questions
+            this.#cancelQuestionQueue("Session ended");
+        }
+
+        if (tag === "primary") {
+            // Crash recovery: reject any active prompt so the queue doesn't wedge
+            if (this.#promptActive) {
+                this.#promptActive = false;
+                this.#activeRef = null;
+                this.#activeScope = null;
+                this.#scopeMgr?.clearActive();
+                const dropped = this.#promptQueue.length;
+                this.#promptQueue = [];
+                if (dropped > 0) {
+                    this.#broadcastAdmin(`⚠️ ${dropped} queued message(s) dropped due to Copilot exit.`);
+                }
+            }
+
+            if (code !== 0 && code !== null) {
+                this.#broadcastAdmin(`⚠️ Copilot process exited (code: ${code}). Send a message to restart.`);
+            }
+        } else {
+            // Overflow exit — clean up overflow state
+            this.#overflowScope = null;
+            this.#overflowRef = null;
+            if (this.#acpMgr) this.#acpMgr.release("overflow");
+            if (code !== 0 && code !== null) {
+                this.#log(`Overflow ACP crashed (code: ${code}). Will respawn on next demand.`);
+            }
+        }
+
+        // Clear stale mode/model from scope
+        const exitScope = getScope();
+        if (exitScope) {
+            exitScope.mode = "";
+            exitScope.model = "";
+            exitScope.promptRunning = false;
+            exitScope.acpTag = null;
+        }
+        this.#refreshStatusIfAlive().catch(() => {});
+    }
+
+    /** Handle elicitation_request events from ACP (structured questions). */
+    async #handleElicitationRequest(req, acp, scope, getRef, tag) {
+        if (scope.pendingElicitation) {
+            acp.respondElicitation(req.requestId, "cancel");
+            this.#log(`Rejected concurrent elicitation (another pending)`);
+            return;
+        }
+        this.#log(`Elicitation [${tag}]: ${req.message}`);
+
+        const targetRef = getRef();
+        const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
+        if (!chatId) {
+            acp.respondElicitation(req.requestId, "cancel");
+            return;
+        }
+
+        const schema = req.requestedSchema;
+        const props = schema?.properties || {};
+        const propNames = Object.keys(props);
+
+        // Single-property shortcut (most common case)
+        if (propNames.length === 1) {
+            const propName = propNames[0];
+            const propSchema = props[propName];
+            const result = await this.#elicitSingleField(
+                chatId, req.requestId, req.message, propName, propSchema, scope
+            );
+            if (result !== undefined) {
+                acp.respondElicitation(req.requestId, "accept", { [propName]: result });
+            }
+            return;
+        }
+
+        // Multi-field: collect answers sequentially
+        if (propNames.length > 1) {
+            const content = {};
+            for (const propName of propNames) {
+                const propSchema = props[propName];
+                const fieldMsg = propSchema.title
+                    ? `${req.message}\n\n${propSchema.title}${propSchema.description ? `\n${propSchema.description}` : ""}`
+                    : req.message;
+                const result = await this.#elicitSingleField(
+                    chatId, req.requestId, fieldMsg, propName, propSchema, scope
+                );
+                if (result === undefined) return; // cancelled
+                content[propName] = result;
+            }
+            acp.respondElicitation(req.requestId, "accept", content);
+            return;
+        }
+
+        // Empty schema — just show message with OK button
+        if (this.#buttons) {
+            const { value } = await this.#buttons.prompt(chatId, `❓ ${req.message}`, [
+                [{ text: "✅ OK", value: "ok" }, { text: "❌ Cancel", value: "cancel" }]
+            ]);
+            acp.respondElicitation(req.requestId, value === "ok" ? "accept" : "decline", {});
+        } else {
+            acp.respondElicitation(req.requestId, "accept", {});
+        }
+    }
 
     // --- UDS IPC server for tg-ux MCP ask_user tool ---
 
@@ -1832,6 +1852,99 @@ export class Bridge {
         }
     }
 
+    /** Handle an edited Telegram message — update queue, cancel+resubmit, or send correction. */
+    async #handleEditedMessage(edited) {
+        const editedText = edited.text || edited.caption || "";
+        const messageId = edited.message_id;
+        const chatId = edited.chat.id;
+
+        if (!editedText.trim()) return;
+
+        this.#log(`Edited message: chat=${chatId} msg=${messageId} text="${editedText.substring(0, 50)}"`);
+
+        // Check if this message is still in the prompt queue (not yet processing)
+        const queueIdx = this.#promptQueue.findIndex(p => p.messageId === messageId);
+        if (queueIdx !== -1) {
+            const entry = this.#promptQueue[queueIdx];
+            const ref = entry.ref;
+            const prefix = this.#getPrefix(ref);
+            entry.text = prefix + editedText;
+            this.#log(`Updated queued prompt with edited text for msg=${messageId}`);
+            this.#telegram.enqueue(() =>
+                this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
+            );
+            return;
+        }
+
+        // Check if currently being processed (same message) — cancel and resubmit
+        if (this.#activeRef && messageId === this.#activeRef.triggerMessageId) {
+            this.#log(`Edit to active message msg=${messageId} — cancelling current prompt`);
+            this.#editCancelled = true;
+            try {
+                if (this.#acp?.alive) await this.#acp.cancel();
+            } catch (err) {
+                this.#log(`Cancel during edit failed: ${err.message}`);
+            }
+            const scope = this.#activeScope;
+            if (scope?.composer?.active) {
+                await scope.composer.abort("✏️ Message edited — reprocessing...");
+                scope.composer = null;
+            }
+            const editRef = makeRef(chatId, edited.message_thread_id || null, null, edited.chat.type);
+            editRef.userId = edited.from?.id;
+            editRef.username = edited.from?.username || edited.from?.first_name;
+            editRef.firstName = edited.from?.first_name || null;
+            editRef.triggerMessageId = messageId;
+            if (this.#scopeMgr) editRef.scopeKey = this.#scopeMgr.resolveKey(editRef);
+            const editPrefix = this.#getPrefix(editRef);
+            this.#promptQueue.unshift({
+                text: editPrefix + editedText,
+                opts: {},
+                ref: editRef,
+                messageId,
+                scopeKey: editRef.scopeKey,
+            });
+            this.#telegram.enqueue(() =>
+                this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
+            );
+            return;
+        }
+
+        // Message was already processed — send correction as new prompt
+        const userId = edited.from?.id;
+        const threadId = edited.message_thread_id || null;
+        if (userId == null) return;
+
+        // Auth check
+        if (this.#pairing) {
+            if (!this.#pairing.isPaired(userId)) {
+                this.#log(`Ignoring edit from unpaired user: ${userId}`);
+                return;
+            }
+        } else {
+            if (!this.#allowedChatIds.includes(userId)) {
+                this.#log(`Ignoring edit from unauthorized user: ${userId}`);
+                return;
+            }
+        }
+
+        const ref = makeRef(chatId, threadId, null, edited.chat.type);
+        ref.userId = userId;
+        ref.username = edited.from?.username || edited.from?.first_name;
+
+        if (this.#scopeMgr) {
+            ref.scopeKey = this.#scopeMgr.resolveKey(ref);
+        }
+
+        const prefix = this.#getPrefix(ref);
+        const correctionPrompt = prefix + `[CORRECTION — The user edited their previous message. This is NOT a new request. Do NOT re-execute any actions already taken. Just acknowledge the correction or adjust your previous response if needed.]\nCorrected message: ${editedText}`;
+
+        this.#telegram.enqueue(() =>
+            this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
+        );
+        await this.#queuePrompt(correctionPrompt, {}, ref, messageId);
+    }
+
     async #processUpdate(update) {
         // Handle callback queries (inline keyboard buttons)
         if (update.callback_query) {
@@ -1847,101 +1960,7 @@ export class Bridge {
 
         // Handle edited messages
         if (update.edited_message) {
-            const edited = update.edited_message;
-            const editedText = edited.text || edited.caption || "";
-            const messageId = edited.message_id;
-            const chatId = edited.chat.id;
-
-            if (!editedText.trim()) return; // ignore non-text edits
-
-            this.#log(`Edited message: chat=${chatId} msg=${messageId} text="${editedText.substring(0, 50)}"`);
-
-            // Check if this message is still in the prompt queue (not yet processing)
-            const queueIdx = this.#promptQueue.findIndex(p => p.messageId === messageId);
-            if (queueIdx !== -1) {
-                // Update the queued entry's text
-                const entry = this.#promptQueue[queueIdx];
-                const ref = entry.ref;
-                const prefix = this.#getPrefix(ref);
-                entry.text = prefix + editedText;
-                this.#log(`Updated queued prompt with edited text for msg=${messageId}`);
-                this.#telegram.enqueue(() =>
-                    this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
-                );
-                return;
-            }
-
-            // Check if currently being processed (same message) — cancel and resubmit
-            if (this.#activeRef && messageId === this.#activeRef.triggerMessageId) {
-                this.#log(`Edit to active message msg=${messageId} — cancelling current prompt`);
-                this.#editCancelled = true;
-                try {
-                    // Cancel the ACP turn
-                    if (this.#acp?.alive) await this.#acp.cancel();
-                } catch (err) {
-                    this.#log(`Cancel during edit failed: ${err.message}`);
-                }
-                // Abort composer with notice
-                const scope = this.#activeScope;
-                if (scope?.composer?.active) {
-                    await scope.composer.abort("✏️ Message edited — reprocessing...");
-                    scope.composer = null;
-                }
-                // Queue the edited text as a fresh prompt (will run after finally block clears promptActive)
-                const editRef = makeRef(chatId, edited.message_thread_id || null, null, edited.chat.type);
-                editRef.userId = edited.from?.id;
-                editRef.username = edited.from?.username || edited.from?.first_name;
-                editRef.firstName = edited.from?.first_name || null;
-                editRef.triggerMessageId = messageId;
-                if (this.#scopeMgr) editRef.scopeKey = this.#scopeMgr.resolveKey(editRef);
-                const editPrefix = this.#getPrefix(editRef);
-                this.#promptQueue.unshift({
-                    text: editPrefix + editedText,
-                    opts: {},
-                    ref: editRef,
-                    messageId,
-                    scopeKey: editRef.scopeKey,
-                });
-                this.#telegram.enqueue(() =>
-                    this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
-                );
-                return;
-            }
-
-            // Message was already processed — send correction as new prompt
-            const userId = edited.from?.id;
-            const threadId = edited.message_thread_id || null;
-            if (userId == null) return;
-
-            // Auth check
-            if (this.#pairing) {
-                if (!this.#pairing.isPaired(userId)) {
-                    this.#log(`Ignoring edit from unpaired user: ${userId}`);
-                    return;
-                }
-            } else {
-                if (!this.#allowedChatIds.includes(userId)) {
-                    this.#log(`Ignoring edit from unauthorized user: ${userId}`);
-                    return;
-                }
-            }
-
-            const ref = makeRef(chatId, threadId, null, edited.chat.type);
-            ref.userId = userId;
-            ref.username = edited.from?.username || edited.from?.first_name;
-
-            if (this.#scopeMgr) {
-                ref.scopeKey = this.#scopeMgr.resolveKey(ref);
-            }
-
-            const prefix = this.#getPrefix(ref);
-            const correctionPrompt = prefix + `[CORRECTION — The user edited their previous message. This is NOT a new request. Do NOT re-execute any actions already taken. Just acknowledge the correction or adjust your previous response if needed.]\nCorrected message: ${editedText}`;
-
-            // Set reaction before queueing so it doesn't get overwritten by the queue's final ✅
-            this.#telegram.enqueue(() =>
-                this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
-            );
-            await this.#queuePrompt(correctionPrompt, {}, ref, messageId);
+            await this.#handleEditedMessage(update.edited_message);
             return;
         }
 
@@ -2287,6 +2306,80 @@ export class Bridge {
         this.#transport.enqueueSend(ref, "Unsupported message type.");
     }
 
+    // --- Session management ---
+
+    /**
+     * Ensure the scope has a valid ACP session (switch or create).
+     * Returns true if ready, false if failed (caller should return early).
+     */
+    async #ensureScopeSession(scope, scopeKey, ref) {
+        if (scope.sessionId) {
+            // Check if we need to switch sessions
+            if (this.#scopeMgr && this.#scopeMgr.needsSwitch(scopeKey)) {
+                this.#switching = true;
+                try {
+                    this.#log(`Switching session to ${scope.sessionId} for ${scopeKey}`);
+                    await this.#acp.loadSession(scope.sessionId);
+                    this.#scopeMgr.setActive(scopeKey);
+                } catch (err) {
+                    this.#log(`Session load failed for ${scope.sessionId}: ${err.message} — creating new session`);
+                    try {
+                        const result = await this.#acp.newSession({
+                            cwd: this.#config.workingDirectory || "/config",
+                        });
+                        scope.sessionId = result.sessionId;
+                        if (ref) ref.sessionId = result.sessionId;
+                        scope.preambleSent = false;
+                        if (this.#scopeMgr) this.#scopeMgr.setActive(scopeKey);
+                    } catch (createErr) {
+                        this.#log(`Fallback session create failed: ${createErr.message}`);
+                        const msg = `⚠️ Could not create session: ${createErr.message}`;
+                        if (scope.composer?.active) {
+                            await scope.composer.abort(msg);
+                            scope.composer = null;
+                        } else if (ref) {
+                            this.#transport.enqueueSend(ref, msg);
+                        }
+                        this.#promptActive = false;
+                        this.#activeRef = null;
+                        this.#activeScope = null;
+                        this.#scopeMgr?.clearActive();
+                        return false;
+                    }
+                } finally {
+                    this.#switching = false;
+                }
+            }
+        } else {
+            // New scope — create session
+            try {
+                this.#log(`Auto-creating session for scope ${scopeKey}`);
+                const result = await this.#acp.newSession({
+                    cwd: this.#config.workingDirectory || "/config",
+                });
+                scope.sessionId = result.sessionId;
+                if (ref) ref.sessionId = result.sessionId;
+                scope.preambleSent = false;
+                if (this.#scopeMgr) this.#scopeMgr.setActive(scopeKey);
+            } catch (err) {
+                this.#log(`Auto-create session failed: ${err.message}`);
+                const msg = `⚠️ Failed to create session: ${err.message}`;
+                if (scope.composer?.active) {
+                    await scope.composer.abort(msg);
+                    scope.composer = null;
+                } else if (ref) {
+                    this.#transport.enqueueSend(ref, msg);
+                }
+                this.#promptActive = false;
+                this.#activeRef = null;
+                this.#activeScope = null;
+                this.#scopeMgr?.clearActive();
+                return false;
+            }
+        }
+        return true;
+    }
+
     // --- Prompt queue (one at a time) ---
 
     async #queuePrompt(text, opts = {}, ref = null, messageId = null) {
@@ -2377,71 +2470,8 @@ export class Bridge {
         try {
             // Session switching for scope-based sessions
             if (scope && this.#acp.alive) {
-                if (scope.sessionId) {
-                    // Check if we need to switch sessions
-                    if (this.#scopeMgr && this.#scopeMgr.needsSwitch(scopeKey)) {
-                        this.#switching = true;
-                        try {
-                            this.#log(`Switching session to ${scope.sessionId} for ${scopeKey}`);
-                            await this.#acp.loadSession(scope.sessionId);
-                            this.#scopeMgr.setActive(scopeKey);
-                        } catch (err) {
-                            this.#log(`Session load failed for ${scope.sessionId}: ${err.message} — creating new session`);
-                            // Old session gone — create a fresh one
-                            try {
-                                const result = await this.#acp.newSession({
-                                    cwd: this.#config.workingDirectory || "/config",
-                                });
-                                scope.sessionId = result.sessionId;
-                                if (ref) ref.sessionId = result.sessionId;
-                                scope.preambleSent = false;
-                                if (this.#scopeMgr) this.#scopeMgr.setActive(scopeKey);
-                            } catch (createErr) {
-                                this.#log(`Fallback session create failed: ${createErr.message}`);
-                                const msg = `⚠️ Could not create session: ${createErr.message}`;
-                                if (scope.composer?.active) {
-                                    await scope.composer.abort(msg);
-                                    scope.composer = null;
-                                } else if (ref) {
-                                    this.#transport.enqueueSend(ref, msg);
-                                }
-                                this.#promptActive = false;
-                                this.#activeRef = null;
-                                this.#activeScope = null;
-                                this.#scopeMgr?.clearActive();
-                                return;
-                            }
-                        } finally {
-                            this.#switching = false;
-                        }
-                    }
-                } else {
-                    // New scope — create session
-                    try {
-                        this.#log(`Auto-creating session for scope ${scopeKey}`);
-                        const result = await this.#acp.newSession({
-                            cwd: this.#config.workingDirectory || "/config",
-                        });
-                        scope.sessionId = result.sessionId;
-                        ref.sessionId = result.sessionId;
-                        scope.preambleSent = false;
-                        if (this.#scopeMgr) this.#scopeMgr.setActive(scopeKey);
-                    } catch (err) {
-                        this.#log(`Auto-create session failed: ${err.message}`);
-                        const msg = `⚠️ Failed to create session: ${err.message}`;
-                        if (scope.composer?.active) {
-                            await scope.composer.abort(msg);
-                            scope.composer = null;
-                        } else if (ref) {
-                            this.#transport.enqueueSend(ref, msg);
-                        }
-                        this.#promptActive = false;
-                        this.#activeRef = null;
-                        this.#activeScope = null;
-                        this.#scopeMgr?.clearActive();
-                        return;
-                    }
-                }
+                const sessionOk = await this.#ensureScopeSession(scope, scopeKey, ref);
+                if (!sessionOk) return;
             }
 
             if (scopeKey?.startsWith("group:")) {

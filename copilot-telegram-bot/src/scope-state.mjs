@@ -54,10 +54,19 @@ export class ScopeState {
         // Scope-local allow-all toggle
         this.allowAll = false;
 
+        // Pending elicitation/ask_user state — set when waiting for user input
+        // Shape: { requestId, propName, schema, resolve } or { reserved: true } or null
+        this.pendingElicitation = null;
+
+        // Newline injection flags — signal that a newline should be added
+        // before the next text/thought chunk following a tool call
+        this._toolJustEnded = false;
+        this._toolJustEndedThought = false;
+
         // Per-scope prompt serialization
         this.promptQueue = [];       // queued prompts for this scope
         this.promptRunning = false;  // true while this scope's prompt is in-flight
-        this.activeRef = null;       // conversation ref for current prompt
+        this.activeRef = null;       // conversation ref for current prompt / UDS resolution
         this.acpTag = null;          // 'primary' | 'overflow' | null
 
         // Activity tracking for LRU eviction
@@ -91,6 +100,8 @@ export class ScopeState {
         this.turnToolCount = 0;
         this.turnToolErrors = 0;
         this.lastBotMessageId = null;
+        this._toolJustEnded = false;
+        this._toolJustEndedThought = false;
 
         // Clean up per-scope prompt state
         this.promptRunning = false;
