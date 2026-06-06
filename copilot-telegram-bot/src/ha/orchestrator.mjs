@@ -343,21 +343,38 @@ export class StandingInstructionOrchestrator {
                 `Instruction: "${instruction.description}"\n` +
                 `Trigger: ${contextSummary}\n` +
                 `Agent prompt: ${action.prompt}`;
-            if (this.#ownerChatId) {
-                const isBusy = this.#bridge.promptActive;
-                const statusMsg = isBusy
-                    ? `🔔 ${instruction.description}\n⏳ Queued — will process after current task`
-                    : `🔔 ${instruction.description}\n⏳ Processing...`;
-                this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(this.#ownerChatId, statusMsg)
-                ).catch(err => {
-                    log.warn(`Failed to send wake notification: ${err.message}`);
+
+            // Route through background pipeline (overflow ACP) if available,
+            // otherwise fall back to primary queue via injectSystemPrompt
+            const useBackground = typeof this.#bridge.injectBackgroundPrompt === "function";
+            if (useBackground) {
+                if (this.#ownerChatId) {
+                    this.#telegram.enqueue(() =>
+                        this.#telegram.sendMessage(this.#ownerChatId, `🔔 ${instruction.description}\n⏳ Processing...`)
+                    ).catch(err => {
+                        log.warn(`Failed to send wake notification: ${err.message}`);
+                    });
+                }
+                this.#bridge.injectBackgroundPrompt(prompt, this.#ownerChatId, {
+                    priority: 1,
+                    description: instruction.description,
+                });
+            } else {
+                if (this.#ownerChatId) {
+                    const isBusy = this.#bridge.promptActive;
+                    const statusMsg = isBusy
+                        ? `🔔 ${instruction.description}\n⏳ Queued — will process after current task`
+                        : `🔔 ${instruction.description}\n⏳ Processing...`;
+                    this.#telegram.enqueue(() =>
+                        this.#telegram.sendMessage(this.#ownerChatId, statusMsg)
+                    ).catch(err => {
+                        log.warn(`Failed to send wake notification: ${err.message}`);
+                    });
+                }
+                this.#bridge.injectSystemPrompt(prompt, this.#ownerChatId).catch(err => {
+                    log.error(`Failed to wake agent: ${err.message}`);
                 });
             }
-            // Fire-and-forget — don't await agent completion
-            this.#bridge.injectSystemPrompt(prompt, this.#ownerChatId).catch(err => {
-                log.error(`Failed to wake agent: ${err.message}`);
-            });
             return;
         }
         case "notify": {

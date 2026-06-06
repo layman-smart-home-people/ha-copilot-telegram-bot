@@ -81,6 +81,12 @@ export class Orchestrator {
     #lastProcessedScope = null;
     #lastProcessedAt = 0;
 
+    // --- Background task queue (overflow ACP) ---
+    #backgroundQueue = [];
+    #backgroundActive = false;
+    static #BACKGROUND_QUEUE_MAX = 5;
+    static #BACKGROUND_WATCHDOG_MS = 5 * 60 * 1000; // 5 minutes
+
     // Prompt watchdog (auto-cancel hung prompts)
     #watchdogTimer = null;
     #heartbeatTimer = null;
@@ -314,6 +320,187 @@ export class Orchestrator {
         this.#queuePrompt(prefix + text, {}, ref).catch(err => {
             log.error(`Injected prompt failed: ${err.message}`);
         });
+    }
+
+    // --- Background task pipeline (overflow ACP) ---
+
+    /**
+     * Enqueue a background task to run on the overflow ACP.
+     * Falls back to primary queue if overflow is disabled.
+     * @param {string} prompt - The prompt text to send
+     * @param {string|number} chatId - Where to deliver results
+     * @param {object} [options]
+     * @param {number} [options.priority=2] - 1=high (SI), 2=normal (agent)
+     * @param {string} [options.description=""] - Short description for status
+     */
+    injectBackgroundPrompt(prompt, chatId, { priority = 2, description = "Background task" } = {}) {
+        if (!this.#acpMgr?.overflowEnabled) {
+            log.info("Background task falling back to primary queue (overflow disabled)");
+            return this.injectSystemPrompt(prompt, chatId);
+        }
+
+        if (this.#backgroundQueue.length >= Orchestrator.#BACKGROUND_QUEUE_MAX) {
+            log.warn("Background queue full, rejecting task");
+            if (chatId) {
+                this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(chatId, `⚠️ Background queue full (${Orchestrator.#BACKGROUND_QUEUE_MAX}) — task rejected.\n${description}`)
+                ).catch(() => {});
+            }
+            return;
+        }
+
+        const taskId = `bg-${Date.now().toString(36)}`;
+        const task = { prompt, chatId, priority, description, taskId, createdAt: Date.now() };
+
+        // Insert by priority (lower number = higher priority, jump ahead of lower-priority items)
+        const insertIdx = this.#backgroundQueue.findIndex(t => t.priority > priority);
+        if (insertIdx === -1) {
+            this.#backgroundQueue.push(task);
+        } else {
+            this.#backgroundQueue.splice(insertIdx, 0, task);
+        }
+
+        log.info(`Background task queued: ${taskId} "${description}" (priority=${priority}, queue=${this.#backgroundQueue.length})`);
+
+        // Start processing if not already running
+        if (!this.#backgroundActive) {
+            this.#processBackgroundQueue().catch(err => {
+                log.error(`Background queue processing error: ${err.message}`);
+            });
+        }
+    }
+
+    /** Background queue status for /status display. */
+    get backgroundStatus() {
+        return {
+            queueLength: this.#backgroundQueue.length,
+            active: this.#backgroundActive,
+            tasks: this.#backgroundQueue.map(t => ({
+                taskId: t.taskId,
+                description: t.description,
+                priority: t.priority,
+                age: Math.floor((Date.now() - t.createdAt) / 1000),
+            })),
+        };
+    }
+
+    async #processBackgroundQueue() {
+        if (this.#backgroundActive) return;
+        this.#backgroundActive = true;
+
+        try {
+            while (this.#backgroundQueue.length > 0) {
+                const task = this.#backgroundQueue.shift();
+                await this.#executeBackgroundTask(task);
+            }
+        } finally {
+            this.#backgroundActive = false;
+        }
+    }
+
+    async #executeBackgroundTask(task) {
+        const { prompt, chatId, taskId, description } = task;
+        const startTime = Date.now();
+        log.info(`Background task starting: ${taskId} "${description}"`);
+
+        try {
+            // Acquire overflow ACP (spawns if needed)
+            const result = await this.#acpMgr.acquireOrSpawn("background:task");
+            if (!result) {
+                log.warn(`No overflow ACP available for ${taskId} — falling back to primary`);
+                this.injectSystemPrompt(prompt, chatId);
+                return;
+            }
+
+            const { acp: overflowAcp, tag } = result;
+            this.#acpMgr.claim(tag, "background:task");
+
+            // Create fresh session for task isolation
+            try {
+                await overflowAcp.newSession({
+                    cwd: this.#config.workingDirectory || "/config",
+                });
+            } catch (err) {
+                log.warn(`Failed to create overflow session for ${taskId}: ${err.message}`);
+                this.#acpMgr.release(tag);
+                this.injectSystemPrompt(prompt, chatId);
+                return;
+            }
+
+            // Set up text collector (separate from wired overflow handlers)
+            const textChunks = [];
+            const onText = (text) => textChunks.push(text);
+            overflowAcp.on("text_chunk", onText);
+
+            // Build preamble with agent context
+            const fullPrompt = this.#buildBackgroundPreamble() + "\n\n" + prompt;
+
+            // 5-minute watchdog
+            let timedOut = false;
+            const watchdog = setTimeout(() => {
+                timedOut = true;
+                log.warn(`Background task ${taskId} timed out — killing overflow ACP`);
+                overflowAcp.stop().catch(() => {});
+            }, Orchestrator.#BACKGROUND_WATCHDOG_MS);
+            watchdog.unref?.();
+
+            try {
+                await overflowAcp.prompt(fullPrompt, {});
+            } catch (err) {
+                if (timedOut) {
+                    if (chatId) {
+                        this.#telegram.enqueue(() =>
+                            this.#telegram.sendMessage(chatId, `⚠️ Background task timed out (5 min)\n_${description}_`)
+                        ).catch(() => {});
+                    }
+                    return;
+                }
+                throw err;
+            } finally {
+                clearTimeout(watchdog);
+                overflowAcp.off("text_chunk", onText);
+                this.#acpMgr.release(tag);
+            }
+
+            // Deliver results
+            const fullText = textChunks.join("");
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            log.info(`Background task completed: ${taskId} in ${elapsed}s (${fullText.length} chars)`);
+
+            if (fullText.trim() && chatId) {
+                const header = `📋 *Background Task* (${elapsed}s)\n_${description}_\n\n`;
+                const content = header + fullText;
+                const chunks = chunkMessage(content);
+                for (const chunk of chunks) {
+                    const html = markdownToTelegramHtml(chunk);
+                    await this.#telegram.enqueue(() =>
+                        this.#telegram.sendMessage(chatId, html, "HTML")
+                    );
+                }
+            } else if (!fullText.trim()) {
+                log.info(`Background task ${taskId} produced no output`);
+            }
+
+        } catch (err) {
+            log.error(`Background task ${taskId} failed: ${err.message}`);
+            if (chatId) {
+                this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(chatId, `❌ Background task failed\n_${description}_\n\n${err.message}`)
+                ).catch(() => {});
+            }
+        }
+    }
+
+    #buildBackgroundPreamble() {
+        const parts = [
+            "You are running in background mode. Do not attempt user interaction — no ask_user, no questions, no confirmations. Report findings directly and concisely.",
+            "You have access to HA MCP tools (ha-mcp) and standing instruction tools (si_*). Use them to complete your task.",
+        ];
+        const agentContext = this.#agentMemory.buildContext();
+        if (agentContext) {
+            parts.push("---\nAgent context:\n" + agentContext);
+        }
+        return parts.join("\n\n");
     }
 
     #resolveScopeKey(scope, ref = null) {

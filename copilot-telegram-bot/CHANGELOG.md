@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.46.0] — 2026-06-07
+
+### Added
+- **Background prompt pipeline** — Dedicated background task queue and processing loop for the overflow ACP. SI `wake_agent` now routes through `injectBackgroundPrompt()` which runs tasks on a separate ACP process, leaving the primary interactive pipeline free for user conversations. Features:
+  - Priority-based queue (SI=high, agent=normal), max 5 tasks
+  - 5-minute watchdog per task with auto-kill and user notification
+  - Fresh ACP session per task for isolation
+  - Background-specific preamble (no user interaction, report directly)
+  - Falls back to primary queue if overflow is disabled or unavailable
+  - Results delivered as single formatted Telegram message on completion
+
 ## [0.45.0] — 2026-06-07
 
 ### Added
