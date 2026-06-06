@@ -2,6 +2,25 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.37.0] — 2026-06-06
+
+### Added
+- **Prompt watchdog timer** — auto-cancels hung prompts after 10 minutes (SI-triggered) or 30 minutes (user-interactive). When the watchdog fires:
+  1. Attempts graceful `session/cancel` RPC
+  2. Waits 15s grace period for ACP to respond
+  3. Force-kills ACP process if still stuck
+  4. Auto-restarts ACP and processes any preserved queue items
+  5. Notifies admin about the timeout with diagnostics
+- **Prompt heartbeat logging** — logs ACP liveness every 60s during active prompts: elapsed time, time since last ACP message, active tools, pending RPCs, queue depth
+- **ACP liveness tracking** — `lastMessageAt`, `lastMessageType`, `pendingCount`, `pid` getters on ACPClient for diagnostics
+- **Queue preservation on intentional kills** — when the watchdog or force-cancel kills ACP, queued messages are preserved (not dropped) and reprocessed after restart. Unexpected crashes still drop the queue.
+- **Status context enriched** — `/status` now shows prompt elapsed time, ACP last message age/type, queue depth
+
+### Changed
+- **`cancelActivePromptForScope`** now accepts `force: true` option to cancel regardless of scope
+- **ACP exit handler** distinguishes intentional kills (preserve queue) from crashes (drop queue) via `#intentionalKill` flag
+- **Prompt generation counter** prevents stale watchdog force-cancel from killing a subsequent innocent prompt
+
 ## [0.36.1] — 2026-06-06
 
 ### Fixed

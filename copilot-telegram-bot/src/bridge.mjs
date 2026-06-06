@@ -27,6 +27,12 @@ const TYPING_DEBOUNCE_MS = 60000;
 const PHOTO_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 
+// Prompt watchdog: auto-cancel hung prompts
+const SI_PROMPT_TIMEOUT_MS = 10 * 60 * 1000;   // 10 minutes for SI-triggered prompts
+const USER_PROMPT_TIMEOUT_MS = 30 * 60 * 1000;  // 30 minutes for user-interactive prompts
+const CANCEL_GRACE_MS = 15_000;                  // 15s after cancel before force-kill
+const HEARTBEAT_INTERVAL_MS = 60_000;            // log heartbeat every 60s during active prompt
+
 export class Bridge {
     #telegram;
     #acp;        // primary ACP instance (shorthand)
@@ -71,6 +77,13 @@ export class Bridge {
     #lastProcessedScope = null;
     #lastProcessedAt = 0;
     #userMessageTimes = new Map(); // userId → [timestamps]
+
+    // Prompt watchdog (auto-cancel hung prompts)
+    #watchdogTimer = null;
+    #heartbeatTimer = null;
+    #promptStartedAt = 0;
+    #promptGeneration = 0;  // incremented on each prompt; prevents stale force-cancel
+    #intentionalKill = false; // set true before force-killing ACP to preserve queue
 
 
     // Prompt builder (extracted module)
@@ -299,13 +312,13 @@ export class Bridge {
     }
 
     async cancelActivePromptForScope(scope, ref = null, opts = {}) {
-        const { notifyIfMissing = true } = opts;
+        const { notifyIfMissing = true, force = false } = opts;
         const requestedKey = this.#resolveScopeKey(scope, ref);
 
         // Cancel any queued questions for this scope
         this.#interactiveFlows.cancelQuestionQueue("User cancelled");
 
-        if (this.#promptActive && (!requestedKey || this.#activeScope?.key === requestedKey)) {
+        if (this.#promptActive && (force || !requestedKey || this.#activeScope?.key === requestedKey)) {
             await this.#acp.cancel();
             return true;
         }
@@ -314,6 +327,102 @@ export class Bridge {
             this.#transport.enqueueSend(ref, "ℹ️ No active request in this conversation to cancel.");
         }
         return false;
+    }
+
+    /**
+     * Force-cancel the active prompt. Attempts graceful cancel first,
+     * then kills the ACP process if it doesn't respond within CANCEL_GRACE_MS.
+     * @param {string} reason - why we're cancelling
+     * @param {number} generation - the prompt generation that triggered this cancel
+     */
+    async #forceCancel(reason, generation) {
+        if (!this.#promptActive) return;
+        log.warn(`Force cancel: ${reason} (generation=${generation})`);
+
+        // Attempt graceful cancel
+        try {
+            await this.#acp.cancel();
+        } catch (err) {
+            log.warn(`Cancel RPC failed: ${err.message}`);
+        }
+
+        // Check if the original prompt already ended (cancel worked or prompt completed)
+        if (this.#promptGeneration !== generation) {
+            log.info("Force cancel: prompt generation changed — cancel was effective, skipping kill");
+            return;
+        }
+
+        // Wait for the prompt to finish gracefully
+        if (this.#promptActive && this.#acp.alive) {
+            log.info(`Waiting ${CANCEL_GRACE_MS / 1000}s for graceful cancellation...`);
+            await new Promise(r => setTimeout(r, CANCEL_GRACE_MS));
+        }
+
+        // Re-check generation — a new prompt may have started during grace period
+        if (this.#promptGeneration !== generation) {
+            log.info("Force cancel: prompt generation changed during grace period — aborting kill");
+            return;
+        }
+
+        // If still stuck, kill the ACP process
+        if (this.#promptActive && this.#acp.alive) {
+            log.error("Prompt still active after cancel grace period — killing ACP process");
+            this.#intentionalKill = true;
+            try {
+                await this.#acp.stop();
+            } catch (err) {
+                log.error(`ACP force-kill error: ${err.message}`);
+            }
+        }
+    }
+
+    /** Start watchdog and heartbeat timers for the active prompt. */
+    #startPromptWatchdog(scopeKey) {
+        this.#promptStartedAt = Date.now();
+        const generation = this.#promptGeneration;
+        const isStanding = scopeKey?.startsWith("standing:");
+        const timeoutMs = isStanding ? SI_PROMPT_TIMEOUT_MS : USER_PROMPT_TIMEOUT_MS;
+
+        // Watchdog: force-cancel after timeout
+        this.#watchdogTimer = setTimeout(() => {
+            const elapsed = ((Date.now() - this.#promptStartedAt) / 60000).toFixed(1);
+            const lastSeen = this.#acp.lastMessageAt
+                ? `${((Date.now() - this.#acp.lastMessageAt) / 1000).toFixed(0)}s ago (${this.#acp.lastMessageType})`
+                : "never";
+            const msg = `Prompt timeout after ${elapsed}min — scope=${scopeKey}, ACP last seen: ${lastSeen}, pending RPCs: ${this.#acp.pendingCount}`;
+            log.error(`⏰ ${msg}`);
+
+            // Notify user
+            this.#broadcastAdmin(`⏰ Prompt watchdog triggered\n${msg}\nForce-cancelling...`);
+
+            this.#forceCancel(`watchdog timeout (${elapsed}min)`, generation).catch(err => {
+                log.error(`Force cancel from watchdog failed: ${err.message}`);
+            });
+        }, timeoutMs);
+        this.#watchdogTimer.unref?.();
+
+        // Heartbeat: periodic health logging during active prompts
+        this.#heartbeatTimer = setInterval(() => {
+            const elapsed = ((Date.now() - this.#promptStartedAt) / 1000).toFixed(0);
+            const lastSeen = this.#acp.lastMessageAt
+                ? `${((Date.now() - this.#acp.lastMessageAt) / 1000).toFixed(0)}s ago (${this.#acp.lastMessageType})`
+                : "never";
+            const tools = this.#activeScope?.activeTools?.size || 0;
+            log.info(`💓 Prompt heartbeat: scope=${scopeKey}, elapsed=${elapsed}s, ACP last msg: ${lastSeen}, active tools: ${tools}, pending RPCs: ${this.#acp.pendingCount}, queue: ${this.#promptQueue.length}`);
+        }, HEARTBEAT_INTERVAL_MS);
+        this.#heartbeatTimer.unref?.();
+    }
+
+    /** Clear watchdog and heartbeat timers. */
+    #clearPromptWatchdog() {
+        if (this.#watchdogTimer) {
+            clearTimeout(this.#watchdogTimer);
+            this.#watchdogTimer = null;
+        }
+        if (this.#heartbeatTimer) {
+            clearInterval(this.#heartbeatTimer);
+            this.#heartbeatTimer = null;
+        }
     }
 
     // --- Status menu (delegated to StatusMenu module) ---
@@ -619,16 +728,29 @@ export class Bridge {
         }
 
         if (tag === "primary") {
-            // Crash recovery: reject any active prompt so the queue doesn't wedge
+            // Clear watchdog timers — ACP is gone
+            this.#clearPromptWatchdog();
+
             if (this.#promptActive) {
                 this.#promptActive = false;
                 this.#activeRef = null;
                 this.#activeScope = null;
                 this.#scopeMgr?.clearActive();
-                const dropped = this.#promptQueue.length;
-                this.#promptQueue = [];
-                if (dropped > 0) {
-                    this.#broadcastAdmin(`⚠️ ${dropped} queued message(s) dropped due to Copilot exit.`);
+
+                if (this.#intentionalKill) {
+                    // Intentional kill (watchdog/force-cancel) — preserve queue for restart
+                    this.#intentionalKill = false;
+                    const preserved = this.#promptQueue.length;
+                    if (preserved > 0) {
+                        log.info(`Preserved ${preserved} queued message(s) after intentional ACP kill`);
+                    }
+                } else {
+                    // Unexpected crash — drop queue (session state lost)
+                    const dropped = this.#promptQueue.length;
+                    this.#promptQueue = [];
+                    if (dropped > 0) {
+                        this.#broadcastAdmin(`⚠️ ${dropped} queued message(s) dropped due to Copilot crash.`);
+                    }
                 }
             }
 
@@ -697,6 +819,10 @@ export class Bridge {
             bridge: this,
             config: this.#config,
             promptActive: this.#promptActive,
+            promptElapsed: this.#promptActive && this.#promptStartedAt ? Math.round((Date.now() - this.#promptStartedAt) / 1000) : null,
+            acpLastMessageAge: this.#acp?.lastMessageAt ? Math.round((Date.now() - this.#acp.lastMessageAt) / 1000) : null,
+            acpLastMessageType: this.#acp?.lastMessageType || null,
+            queueDepth: this.#promptQueue.length,
         };
     }
 
@@ -1572,6 +1698,12 @@ export class Bridge {
         }
         this.#promptActive = true;
 
+        // Increment prompt generation (prevents stale force-cancel from killing subsequent prompts)
+        this.#promptGeneration++;
+
+        // Start prompt watchdog and heartbeat
+        this.#startPromptWatchdog(scopeKey);
+
         // Resolve scope for this prompt
         const scope = scopeKey && this.#scopeMgr ? this.#scopeMgr.getOrCreate(scopeKey) : null;
 
@@ -1643,6 +1775,9 @@ export class Bridge {
                 }
             }
         } finally {
+            // Clear watchdog and heartbeat timers
+            this.#clearPromptWatchdog();
+
             // Set reaction on user's message — response delivered
             // Skip if this prompt was cancelled due to an edit (the resubmitted prompt will set it)
             if (ref && messageId && !this.#editCancelled) {
@@ -1665,6 +1800,18 @@ export class Bridge {
 
             // Process queued prompts
             if (this.#promptQueue.length > 0) {
+                // If ACP was killed (watchdog/force-cancel), restart before processing queue
+                if (!this.#acp.alive) {
+                    try {
+                        log.info("Restarting ACP to process preserved queue...");
+                        await this.startCopilot();
+                    } catch (err) {
+                        log.error(`ACP restart failed — dropping ${this.#promptQueue.length} queued message(s): ${err.message}`);
+                        this.#broadcastAdmin(`⚠️ ACP restart failed. ${this.#promptQueue.length} queued message(s) dropped.`);
+                        this.#promptQueue = [];
+                        return;
+                    }
+                }
                 let nextIndex = 0;
                 if (this.#lastProcessedScope && Date.now() - this.#lastProcessedAt < 5000) {
                     const affinityIndex = this.#promptQueue.findIndex((entry) => entry.scopeKey === this.#lastProcessedScope);
@@ -2054,6 +2201,7 @@ export class Bridge {
 
     cleanup() {
         this.#stopTyping();
+        this.#clearPromptWatchdog();
         const scope = this.#activeScope;
         if (scope) scope.activeTools.clear();
         if (scope?.messageFlushTimer) clearTimeout(scope.messageFlushTimer);

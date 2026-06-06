@@ -38,6 +38,8 @@ export class ACPClient extends EventEmitter {
     #dead = false;
     #config;
     #authMethods = [];
+    #lastMessageAt = 0;   // timestamp of last message received from ACP
+    #lastMessageType = ""; // type of last message (for diagnostics)
 
     constructor(config) {
         super();
@@ -48,6 +50,10 @@ export class ACPClient extends EventEmitter {
     get alive() { return this.#process && !this.#dead; }
     get authMethods() { return this.#authMethods; }
     get tag() { return this.#config.tag || "primary"; }
+    get lastMessageAt() { return this.#lastMessageAt; }
+    get lastMessageType() { return this.#lastMessageType; }
+    get pendingCount() { return this.#pending.size; }
+    get pid() { return this.#process?.pid ?? null; }
 
     // --- Lifecycle ---
 
@@ -410,10 +416,13 @@ export class ACPClient extends EventEmitter {
     }
 
     #handleMessage(msg) {
-        // Log incoming ACP messages (summary only for frequent types)
+        // Track liveness — update on every message from ACP
         const methodOrType = msg.method || (msg.result !== undefined ? "response" : "unknown");
         const sessionUpdate = msg.params?.update?.sessionUpdate || "";
         const brief = sessionUpdate ? `${methodOrType}/${sessionUpdate}` : methodOrType;
+        this.#lastMessageAt = Date.now();
+        this.#lastMessageType = brief;
+
         // Only log full JSON for non-frequent messages (skip chunks, agent_thought)
         const isFrequent = sessionUpdate === "agent_message_chunk" || sessionUpdate === "agent_thought_chunk";
         if (!isFrequent) {
