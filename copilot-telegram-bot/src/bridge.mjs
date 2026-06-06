@@ -4,14 +4,14 @@
 // Handles message routing, typing indicators, tool call bubbles,
 // file attachments, and session lifecycle.
 
-import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "./formatter.mjs";
+import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "./transport/telegram/formatter.mjs";
 import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
-import { normalizeModeId } from "./acp.mjs";
-import { ButtonManager } from "./buttons.mjs";
-import { ResponseComposer } from "./response-composer.mjs";
-import { formatError } from "./errors.mjs";
-import { MessageTransport, makeRef } from "./transport.mjs";
-import { AgentMemory } from "./agent-memory.mjs";
+import { normalizeModeId } from "./ai/copilot/acp-client.mjs";
+import { ButtonManager } from "./transport/telegram/buttons.mjs";
+import { ResponseComposer } from "./transport/telegram/response-composer.mjs";
+import { formatError } from "./core/errors.mjs";
+import { MessageTransport, makeRef } from "./transport/telegram/transport-ref.mjs";
+import { AgentMemory } from "./core/agent-memory.mjs";
 import { createLogger } from "./logger.mjs";
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";

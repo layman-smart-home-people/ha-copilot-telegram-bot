@@ -5,10 +5,10 @@
 // Primary is always alive while bot is running.
 // Overflow is spawned on demand when primary is busy, reaped after idle.
 
-import { ACPClient } from "./acp.mjs";
+import { ACPClient } from "./acp-client.mjs";
 import { mkdirSync, existsSync, copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createLogger } from "./logger.mjs";
+import { createLogger } from "../../logger.mjs";
 
 const OVERFLOW_SPAWN_COOLDOWN_MS = 5000; // min time between overflow spawns
 const log = createLogger("acp-mgr");

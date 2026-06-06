@@ -6,16 +6,16 @@
 // via the Agent Client Protocol (ACP).
 
 import { existsSync } from "node:fs";
-import { ACPClient } from "./acp.mjs";
-import { TelegramClient } from "./telegram.mjs";
+import { ACPClient } from "./ai/copilot/acp-client.mjs";
+import { TelegramClient } from "./transport/telegram/client.mjs";
 import { Bridge } from "./bridge.mjs";
-import { PairingManager } from "./pairing.mjs";
-import { ScopeManager } from "./scope-manager.mjs";
-import { SessionManager } from "./sessions.mjs";
+import { PairingManager } from "./core/pairing.mjs";
+import { ScopeManager } from "./core/scope-manager.mjs";
+import { SessionManager } from "./core/sessions.mjs";
 import { loadConfig } from "./config.mjs";
-import { HAEventListener } from "./ha-events.mjs";
-import { StandingInstructionManager } from "./standing-instructions.mjs";
-import { StandingInstructionOrchestrator } from "./standing-instruction-orchestrator.mjs";
+import { HAEventListener } from "./ha/events.mjs";
+import { StandingInstructionManager } from "./ha/standing-instructions.mjs";
+import { StandingInstructionOrchestrator } from "./ha/orchestrator.mjs";
 import { WebUIServer } from "./webui/server.mjs";
 import { createLogger, setLogLevel } from "./logger.mjs";
 

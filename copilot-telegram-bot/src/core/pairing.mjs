@@ -6,7 +6,7 @@
 
 import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { createLogger } from "./logger.mjs";
+import { createLogger } from "../logger.mjs";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No 0/O/1/I confusion
 const CODE_LENGTH = 6;

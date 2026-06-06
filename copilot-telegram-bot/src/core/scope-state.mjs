@@ -7,7 +7,7 @@
 // - Forum per topic
 
 import { ChatHistory } from "./history.mjs";
-import { normalizeModeId } from "./acp.mjs";
+import { normalizeModeId } from "../ai/copilot/acp-client.mjs";
 
 const HISTORY_MAX = 50;
 

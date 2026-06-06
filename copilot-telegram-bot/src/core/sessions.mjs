@@ -5,8 +5,8 @@
 // of topics and session switching.
 
 import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
-import { refKey } from "./transport.mjs";
-import { createLogger } from "./logger.mjs";
+import { refKey } from "../transport/telegram/transport-ref.mjs";
+import { createLogger } from "../logger.mjs";
 
 const log = createLogger("session");
 

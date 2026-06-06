@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { createLogger } from "./logger.mjs";
+import { createLogger } from "../logger.mjs";
 
 const DEFAULT_PERSIST_PATH = "/data/standing_instructions.json";
 const DEFAULT_COOLDOWN_SECONDS = 300;

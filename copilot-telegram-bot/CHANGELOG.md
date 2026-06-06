@@ -2,6 +2,16 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.31.0] — 2026-06-06
+
+### Changed
+- **Phase 2: Modular directory structure** — moved 18 standalone modules from flat `src/` into domain directories:
+  - `src/core/` — errors, history, scope-state, scope-manager, sessions, pairing, agent-memory
+  - `src/transport/telegram/` — client (was telegram.mjs), formatter, buttons, transport-ref (was transport.mjs), response-composer
+  - `src/ai/copilot/` — acp-client (was acp.mjs), acp-manager, mcp-server (was tg-mcp-server.mjs)
+  - `src/ha/` — events (was ha-events.mjs), standing-instructions, orchestrator (was standing-instruction-orchestrator.mjs)
+- All import paths updated across 14 files. No logic changes — pure structural reorganization.
+
 ## [0.30.4] — 2026-06-06
 
 ### Changed

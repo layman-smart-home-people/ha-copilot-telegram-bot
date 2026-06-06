@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { ChatHistory } from "./history.mjs";
 import { ScopeState } from "./scope-state.mjs";
-import { createLogger } from "./logger.mjs";
+import { createLogger } from "../logger.mjs";
 
 const log = createLogger("scope");
 

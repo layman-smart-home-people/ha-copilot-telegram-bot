@@ -8,7 +8,7 @@
 // 4. Final answer with collapsed tool steps
 
 import { escapeHtml, markdownToTelegramHtml, chunkMessage, stripHtmlKeepStructure } from "./formatter.mjs";
-import { createLogger } from "./logger.mjs";
+import { createLogger } from "../../logger.mjs";
 
 const EDIT_MIN_CHARS = 50;          // min new chars before editing (private chat)
 const EDIT_MIN_INTERVAL_MS = 1500;  // min time between edits

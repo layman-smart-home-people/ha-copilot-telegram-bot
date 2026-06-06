@@ -7,7 +7,7 @@
 
 import { existsSync, readFileSync, readdirSync, mkdirSync, cpSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createLogger } from "./logger.mjs";
+import { createLogger } from "../logger.mjs";
 
 const DEFAULT_AGENT_DIR = "/config/copilot-telegram-bot";
 const LEGACY_AGENT_DIR = "/config/.agent";

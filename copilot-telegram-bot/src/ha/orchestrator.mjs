@@ -5,7 +5,7 @@
 // to evaluate triggers and wake the agent or send notifications.
 
 import { watch } from "node:fs";
-import { createLogger } from "./logger.mjs";
+import { createLogger } from "../logger.mjs";
 
 const CRON_CHECK_INTERVAL_MS = 60_000;
 const TIMER_CHECK_INTERVAL_MS = 15_000;

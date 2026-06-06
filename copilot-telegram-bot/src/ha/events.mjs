@@ -6,7 +6,7 @@
 // re-emits normalized events via EventEmitter.
 
 import { EventEmitter } from "node:events";
-import { createLogger } from "./logger.mjs";
+import { createLogger } from "../logger.mjs";
 
 const DEFAULT_URL = "ws://supervisor/core/websocket";
 const INITIAL_BACKOFF_MS = 1000;

@@ -2,8 +2,8 @@
 // Slash Command Handler
 // ============================================================
 
-import { normalizeModeId, fullModeUri } from "./acp.mjs";
-import { escapeHtml } from "./formatter.mjs";
+import { normalizeModeId, fullModeUri } from "./ai/copilot/acp-client.mjs";
+import { escapeHtml } from "./transport/telegram/formatter.mjs";
 import { createLogger } from "./logger.mjs";
 
 const log = createLogger('commands');

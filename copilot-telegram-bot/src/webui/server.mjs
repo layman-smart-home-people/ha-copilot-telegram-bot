@@ -8,8 +8,8 @@ import http from "node:http";
 import { readFileSync, readdirSync, statSync, readFile, writeFile } from "node:fs";
 import { join, extname, resolve, basename, dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
-import { ACPClient } from "../acp.mjs";
-import { AgentMemory } from "../agent-memory.mjs";
+import { ACPClient } from "../ai/copilot/acp-client.mjs";
+import { AgentMemory } from "../core/agent-memory.mjs";
 import { createLogger } from "../logger.mjs";
 
 const STATIC_DIR = new URL("./dist/", import.meta.url).pathname;
