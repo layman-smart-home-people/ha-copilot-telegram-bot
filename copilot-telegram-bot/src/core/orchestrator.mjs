@@ -163,6 +163,7 @@ export class Orchestrator {
             getAllowedChatIds: () => this.#allowedChatIds,
             getPairing: () => this.#pairing,
             getStandingOrchestrator: () => this.standingOrchestrator,
+            getBackgroundStatus: () => this.backgroundStatus,
         });
 
         this.#lifecycle = new CopilotLifecycle({
@@ -832,6 +833,15 @@ export class Orchestrator {
             // Track tool for /skills discovery
             if (toolName && !this.#knownTools.has(toolName) && this.#knownTools.size < 200) {
                 this.#knownTools.set(toolName, desc || toolName);
+            }
+            // Detect task(mode: "background") — warn that results will be lost
+            if (toolName === "task" && args) {
+                try {
+                    const parsed = typeof args === "string" ? JSON.parse(args) : args;
+                    if (parsed?.mode === "background") {
+                        log.warn(`⚠️ Agent used task(mode: "background") — results will be lost when prompt completes. Should use background_task MCP tool instead.`);
+                    }
+                } catch {}
             }
         });
 

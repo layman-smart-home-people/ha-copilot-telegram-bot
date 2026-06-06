@@ -2,6 +2,13 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.48.0] — 2026-06-07
+
+### Added
+- **Background queue in `/status`** — Status menu now shows background task queue state (idle/running, queue count) via `getBackgroundStatus` callback.
+- **`task(background)` detection** — tool_start event handler detects when agent uses built-in `task(mode: "background")` and logs a warning about lost results.
+- **Final implementation report** — Comprehensive HTML report at `/local/background-agents-final-report.html` summarizing all 6 phases.
+
 ## [0.47.0] — 2026-06-07
 
 ### Added

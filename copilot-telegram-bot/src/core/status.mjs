@@ -21,6 +21,7 @@ export class StatusMenu {
     #getAllowedChatIds;
     #getPairing;
     #getStandingOrchestrator;
+    #getBackgroundStatus;
 
     // Mutable state — public for Bridge callback handler access
     statusMsg = null;       // { chatId, messageId, createdAt, scopeKey }
@@ -38,8 +39,9 @@ export class StatusMenu {
      * @param {Function} opts.getAllowedChatIds - returns allowed chat IDs array
      * @param {Function} opts.getPairing - returns PairingManager or null
      * @param {Function} opts.getStandingOrchestrator - returns StandingInstructionOrchestrator or null
+     * @param {Function} [opts.getBackgroundStatus] - returns background queue status object
      */
-    constructor({ telegram, acp, config, scopeMgr, getActiveScope, getModels, getModes, getAllowedChatIds, getPairing, getStandingOrchestrator }) {
+    constructor({ telegram, acp, config, scopeMgr, getActiveScope, getModels, getModes, getAllowedChatIds, getPairing, getStandingOrchestrator, getBackgroundStatus }) {
         this.#telegram = telegram;
         this.#acp = acp;
         this.#config = config;
@@ -50,6 +52,7 @@ export class StatusMenu {
         this.#getAllowedChatIds = getAllowedChatIds;
         this.#getPairing = getPairing;
         this.#getStandingOrchestrator = getStandingOrchestrator;
+        this.#getBackgroundStatus = getBackgroundStatus || null;
     }
 
     /** Show the status menu in a chat, dismissing any previous one. */
@@ -181,6 +184,16 @@ export class StatusMenu {
             const enabled = instructions.filter(i => i.enabled).length;
             const haWs = standingOrchestrator.eventListener.connected ? "🟢" : "🔴";
             lines.push(`📡 HA Events: ${haWs} | Standing: ${enabled}/${instructions.length} active`);
+        }
+
+        // Background task queue status
+        if (this.#getBackgroundStatus) {
+            const bg = this.#getBackgroundStatus();
+            if (bg) {
+                const bgIcon = bg.active ? "🔄" : "💤";
+                const queueInfo = bg.queueLength > 0 ? ` (${bg.queueLength} queued)` : "";
+                lines.push(`${bgIcon} Background: ${bg.active ? "running" : "idle"}${queueInfo}`);
+            }
         }
 
         lines.push(`📱 Telegram: connected`);
