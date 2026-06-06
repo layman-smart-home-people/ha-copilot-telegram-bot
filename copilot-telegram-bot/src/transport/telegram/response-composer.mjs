@@ -26,6 +26,7 @@ export class ResponseComposer {
     #editTimer = null;
     #finalized = false;
     #editRetries = 0;
+    #editGeneration = 0;  // incremented on finalize/abort to invalidate stale retries
     #startTime = null;
     #interactionPending = null; // null | "permission" | "question" | "plan"
     #elapsedTimer = null;
@@ -52,6 +53,8 @@ export class ResponseComposer {
         this.#lastEditedText = "";
         this.#lastEditTime = 0;
         this.#finalized = false;
+        this.#editGeneration = 0;
+        this.#editRetries = 0;
         this.#startTime = Date.now();
         this.#interactionPending = null;        this.#thoughtBuffer = "";
         this.#thoughtActive = true;
@@ -188,6 +191,7 @@ export class ResponseComposer {
     async finalize(fullText) {
         if (this.#finalized) return [];
         this.#finalized = true;
+        this.#editGeneration++;
         if (this.#editTimer) { clearTimeout(this.#editTimer); this.#editTimer = null; }
         if (this.#elapsedTimer) { clearTimeout(this.#elapsedTimer); this.#elapsedTimer = null; }
 
@@ -233,6 +237,7 @@ export class ResponseComposer {
         if (this.#editTimer) { clearTimeout(this.#editTimer); this.#editTimer = null; }
         if (this.#elapsedTimer) { clearTimeout(this.#elapsedTimer); this.#elapsedTimer = null; }
         this.#finalized = true;
+        this.#editGeneration++;
 
         if (this.#messageId && errorMsg) {
             await this.#editMessage(`⚠️ ${escapeHtml(errorMsg)}`);
@@ -541,7 +546,12 @@ export class ResponseComposer {
                 const match = err?.message?.match(/retry after (\d+)/i);
                 const retryMs = (match ? parseInt(match[1], 10) : 2) * 1000;
                 log.warn(`rate limited, retry ${this.#editRetries}/3 in ${retryMs}ms`);
-                setTimeout(() => this.#editMessage(html), retryMs);
+                const gen = this.#editGeneration;
+                setTimeout(() => {
+                    // Discard stale retry if composer was finalized/aborted since scheduling
+                    if (this.#editGeneration !== gen) return;
+                    this.#editMessage(html);
+                }, retryMs);
             } else {
                 log.warn(`edit error: ${err.message}`);
             }

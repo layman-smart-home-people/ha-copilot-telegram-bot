@@ -192,8 +192,6 @@ export class StandingInstructionOrchestrator {
                     old_state: event.old_state,
                     new_state: event.new_state,
                 };
-                this.#manager.markTriggered(instruction.id);
-                this.#triggerCount++;
                 this.#gateAndExecute(instruction, context).catch(err => {
                     log.error(`Error executing "${instruction.description}": ${err.message}`);
                 });
@@ -234,8 +232,6 @@ export class StandingInstructionOrchestrator {
                 if (this.#isInCooldown(instruction)) continue;
                 if (this.#manager.cronMatches(instruction.trigger.expression, now)) {
                     log.info(`Cron matched: "${instruction.description}" (${instruction.id})`);
-                    this.#manager.markTriggered(instruction.id);
-                    this.#triggerCount++;
                     this.#gateAndExecute(instruction, {
                         trigger_type: "cron",
                         expression: instruction.trigger.expression,
@@ -259,8 +255,6 @@ export class StandingInstructionOrchestrator {
             for (const instruction of expired) {
                 if (this.#isInCooldown(instruction)) continue;
                 log.info(`Timer expired: "${instruction.description}" (${instruction.id})`);
-                this.#manager.markTriggered(instruction.id);
-                this.#triggerCount++;
                 this.#gateAndExecute(instruction, {
                     trigger_type: "timer",
                     fire_at: instruction.trigger.fire_at,
@@ -287,6 +281,11 @@ export class StandingInstructionOrchestrator {
                 return;
             }
         }
+
+        // Mark triggered AFTER conditions pass — ensures one-shot/max_triggers/cooldown
+        // only consume when the action actually runs.
+        this.#manager.markTriggered(instruction.id);
+        this.#triggerCount++;
 
         this.#processChain(instruction);
         await this.#executeActions(instruction, context);

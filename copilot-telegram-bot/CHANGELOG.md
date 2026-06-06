@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.38.1] — 2026-06-06
+
+### Fixed
+- **One-shot SI consumed on condition failure** — `markTriggered()` was called before conditions were evaluated, so a one-shot SI would get disabled even when its conditions failed and no action ran. Now marks triggered only after conditions pass, immediately before action execution. Affects all trigger types (state_change, cron, timer).
+- **Rate-limit retry overwrites final answer** — when Telegram returned 429 during a progress edit, the delayed retry could fire after `finalize()` and overwrite the final answer with stale progress HTML. Added edit generation counter; retries are discarded if the composer has been finalized or aborted since scheduling.
+
 ## [0.38.0] — 2026-06-06
 
 ### Fixed
