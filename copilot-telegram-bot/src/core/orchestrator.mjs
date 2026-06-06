@@ -1,29 +1,30 @@
 // ============================================================
-// Bridge — Telegram ↔ Copilot ACP Orchestrator
+// Orchestrator — Telegram ↔ Copilot ACP Coordination Hub
 // ============================================================
-// Handles message routing, typing indicators, tool call bubbles,
-// file attachments, and session lifecycle.
+// Renamed from bridge.mjs (Phase 5). Central orchestrator that owns
+// the prompt queue, ACP event wiring, session lifecycle, and
+// message routing between Telegram and Copilot.
 
-import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "./transport/telegram/formatter.mjs";
-import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
-import { normalizeModeId } from "./ai/copilot/acp-client.mjs";
-import { ButtonManager } from "./transport/telegram/buttons.mjs";
-import { ResponseComposer } from "./transport/telegram/response-composer.mjs";
-import { formatError } from "./core/errors.mjs";
-import { MessageTransport, makeRef } from "./transport/telegram/transport-ref.mjs";
-import { AgentMemory } from "./core/agent-memory.mjs";
-import { PromptBuilder, sanitizePinnedInstruction } from "./ai/copilot/prompt-builder.mjs";
-import { CopilotLifecycle } from "./ai/copilot/lifecycle.mjs";
-import { PermissionHandler } from "./ai/copilot/permissions.mjs";
-import { InteractiveFlows } from "./ai/copilot/interactive-flows.mjs";
-import { StatusMenu } from "./core/status.mjs";
-import { ToolNotifications } from "./core/tool-notifications.mjs";
-import { TelegramAdapter } from "./transport/telegram/adapter.mjs";
-import { eventLog } from "./core/event-log.mjs";
-import { metrics } from "./core/metrics.mjs";
-import { createLogger } from "./logger.mjs";
+import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "../transport/telegram/formatter.mjs";
+import { parseSlashCommand, handleSlashCommand } from "../commands.mjs";
+import { normalizeModeId } from "../ai/copilot/acp-client.mjs";
+import { ButtonManager } from "../transport/telegram/buttons.mjs";
+import { ResponseComposer } from "../transport/telegram/response-composer.mjs";
+import { formatError } from "./errors.mjs";
+import { MessageTransport, makeRef } from "../transport/telegram/transport-ref.mjs";
+import { AgentMemory } from "./agent-memory.mjs";
+import { PromptBuilder, sanitizePinnedInstruction } from "../ai/copilot/prompt-builder.mjs";
+import { CopilotLifecycle } from "../ai/copilot/lifecycle.mjs";
+import { PermissionHandler } from "../ai/copilot/permissions.mjs";
+import { InteractiveFlows } from "../ai/copilot/interactive-flows.mjs";
+import { StatusMenu } from "./status.mjs";
+import { ToolNotifications } from "./tool-notifications.mjs";
+import { TelegramAdapter } from "../transport/telegram/adapter.mjs";
+import { eventLog } from "./event-log.mjs";
+import { metrics } from "./metrics.mjs";
+import { createLogger } from "../logger.mjs";
 
-const log = createLogger('bridge');
+const log = createLogger('orchestrator');
 
 const TYPING_INTERVAL_MS = 4000;
 const TYPING_DEBOUNCE_MS = 60000;
@@ -36,7 +37,7 @@ const USER_PROMPT_TIMEOUT_MS = 30 * 60 * 1000;  // 30 minutes for user-interacti
 const CANCEL_GRACE_MS = 15_000;                  // 15s after cancel before force-kill
 const HEARTBEAT_INTERVAL_MS = 60_000;            // log heartbeat every 60s during active prompt
 
-export class Bridge {
+export class Orchestrator {
     #telegram;
     #acp;        // primary ACP instance (shorthand)
     #acpMgr;     // ACPManager for multi-ACP support

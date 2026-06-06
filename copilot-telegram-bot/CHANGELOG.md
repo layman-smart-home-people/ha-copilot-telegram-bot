@@ -2,6 +2,14 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.41.0] — 2026-06-06
+
+### Changed
+- **Phase 5 refactor (steps 2–5)**: Renamed `src/bridge.mjs` → `src/core/orchestrator.mjs`, class `Bridge` → `Orchestrator`. All import paths updated. bridge.mjs is now deleted — the refactor's symbolic milestone. 🎉
+  - Logger module name changed from `bridge` to `orchestrator` for consistency.
+  - Local variable names (`bridge`) in index.mjs, commands.mjs, ha/orchestrator.mjs, webui/server.mjs remain unchanged (they hold Orchestrator instances via injection, no import-level coupling).
+  - Historical "Extracted from bridge.mjs" comments in extracted modules preserved as documentation.
+
 ## [0.40.0] — 2026-06-06
 
 ### Changed

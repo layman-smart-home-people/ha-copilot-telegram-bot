@@ -8,7 +8,7 @@
 import { existsSync } from "node:fs";
 import { ACPClient } from "./ai/copilot/acp-client.mjs";
 import { TelegramClient } from "./transport/telegram/client.mjs";
-import { Bridge } from "./bridge.mjs";
+import { Orchestrator } from "./core/orchestrator.mjs";
 import { PairingManager } from "./core/pairing.mjs";
 import { ScopeManager } from "./core/scope-manager.mjs";
 import { SessionManager } from "./core/sessions.mjs";
@@ -209,7 +209,7 @@ async function main() {
         protectedKeys: ownerProtectedKeys,
     });
 
-    const bridge = new Bridge({
+    const bridge = new Orchestrator({
         telegram,
         acp,
         config,
