@@ -71,54 +71,42 @@ The agent should periodically distill key information from daily logs into this 
 
 const SKILLS_DEFAULT = `# Agent Skills Reference
 
-## MCP Tool Quick Reference
+## MCP Tools (ha-mcp)
 
-You have 82+ ha-mcp tools available. **Always use these instead of curl.** Full schemas are in your tool definitions — this is a recall index. Use \`tool_search_tool_regex\` to find tools not listed here.
+You have 80+ MCP tools for Home Assistant. **Always use these instead of curl** — they handle auth, pagination, and error formatting automatically. Full schemas are already in your tool definitions.
 
-### 🔍 Search & State
-- \`ha_search_entities\` — fuzzy search entities by name, domain, area
-- \`ha_get_state\` — get current state & attributes of an entity
-- \`ha_get_overview\` — system-wide overview of areas, devices, entities
-- \`ha_deep_search\` — search inside automation/script/dashboard configs
+### Finding tools
+Use \`tool_search_tool_regex\` to discover tools by pattern:
+- \`ha_.*service\` → service-related tools
+- \`ha_.*entit\` → entity tools
+- \`ha_.*automat\` → automation tools
+- \`ha_.*dashboard\` → dashboard tools
 
-### 🎮 Control
-- \`ha_call_service\` — call any HA service (turn_on, set_temperature, etc.)
+### Most-used tools
+- \`ha_get_state\` — get current state & attributes of one or more entities
+- \`ha_search_entities\` — fuzzy search entities by name, domain, area, label
+- \`ha_call_service\` — call any HA service (light.turn_on, climate.set_temperature, etc.)
 - \`ha_bulk_control\` — control multiple devices in one call
-
-### 📊 Dashboards
-- \`ha_config_get_dashboard\` — get dashboard config + config_hash
-- \`ha_config_set_dashboard\` — update dashboard (supports python_transform)
-
-### ⚙️ Automations & Scripts
+- \`ha_get_history\` — entity state history over a time range
+- \`ha_eval_template\` — render Jinja2 templates server-side
 - \`ha_config_get_automation\` / \`ha_config_set_automation\` — read/write automations
-- \`ha_config_get_script\` / \`ha_config_set_script\` — read/write scripts
+- \`ha_config_get_dashboard\` — get live dashboard config + config_hash
+- \`ha_config_set_dashboard\` — update dashboard (supports python_transform for surgical edits)
+- \`ha_get_overview\` — system-wide overview of areas, devices, entities
+- \`ha_deep_search\` — search inside automation/script/dashboard configs for entity references
+- \`ha_check_config\` / \`ha_reload_core\` — validate config and reload domains
 
-### 📦 Entity & Device Registry
-- \`ha_get_entity\` / \`ha_set_entity\` — read/update entity registry
-- \`ha_get_device\` / \`ha_update_device\` — read/update device registry
-
-### 🏠 Areas & Organization
-- \`ha_config_list_areas\` / \`ha_set_area_or_floor\` — manage areas and floors
-- \`ha_config_set_label\` / \`ha_config_set_group\` — labels and groups
-
-### 🛠️ System & Utilities
-- \`ha_eval_template\` — render Jinja2 templates
-- \`ha_get_history\` — entity history data
-- \`ha_get_logs\` — HA log entries
-- \`ha_check_config\` / \`ha_restart\` / \`ha_reload_core\` — config validation and reload
-- \`ha_get_system_health\` — system health info
-
-### 📅 Calendar & Todo
-- \`ha_config_get_calendar_events\` / \`ha_config_set_calendar_event\` — calendar management
-- \`ha_get_todo\` / \`ha_set_todo_item\` — todo list management
-
-### 🗃️ HACS & Add-ons
-- \`ha_hacs_search\` / \`ha_hacs_download\` — search and install HACS integrations
-- \`ha_get_addon\` / \`ha_manage_addon\` — add-on info and control
-
-### 📂 Filesystem & Backup
-- \`ha_read_file\` / \`ha_write_file\` / \`ha_list_files\` — file operations
-- \`ha_backup_create\` / \`ha_backup_restore\` — backup management
+### All tool categories (search to discover)
+- **Entities & state** — get, search, set, remove, history
+- **Services & control** — call, bulk control, list services, fire events
+- **Automations, scripts, scenes** — full CRUD + traces
+- **Dashboards & resources** — get/set config, manage JS/CSS resources
+- **Helpers** — input_boolean, input_number, input_select, etc.
+- **Areas, floors, zones, labels, groups, categories** — organize topology
+- **Devices & integrations** — registry, enable/disable
+- **Calendar & todo** — events and task lists
+- **HACS & add-ons** — search, install, manage
+- **System** — health, logs, restart, reload, backups, YAML config, blueprints, energy, updates
 
 ---
 

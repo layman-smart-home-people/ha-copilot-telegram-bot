@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.30.4] — 2026-06-06
+
+### Changed
+- **Slimmed SKILLS_DEFAULT to hybrid tool index** — replaced full 82-tool listing with top ~12 most-used tools + category map + `tool_search_tool_regex` discovery guidance. MCP already injects all tool schemas into context; docs now focus on behavioral nudging rather than redundant cataloging.
+
 ## [0.30.3] — 2026-06-06
 
 ### Changed
