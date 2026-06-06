@@ -2,6 +2,13 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.30.3] — 2026-06-06
+
+### Changed
+- **Optimized default agent docs for MCP tool discovery** — restructured IDENTITY_DEFAULT and SKILLS_DEFAULT templates. SKILLS.md now includes a categorized MCP tool quick reference (82+ tools), tg-ux-ask_user guide, and condensed standing instructions schema. Agents will naturally prefer ha-mcp tools over raw curl/REST API calls.
+- **Reduced default context size** — SKILLS_DEFAULT reduced from ~11KB (standing instructions only) to ~4.5KB while covering all capabilities. Total agent context injection reduced by ~29%.
+- **Added tool preference hierarchy** — IDENTITY_DEFAULT now explicitly states "use ha-mcp tools for all HA interactions — curl is a last resort only"
+
 ## [0.30.2] — 2026-06-06
 
 ### Added

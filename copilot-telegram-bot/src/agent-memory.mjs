@@ -34,14 +34,15 @@ You are a personal AI assistant integrated with Home Assistant, communicating vi
 - Personal assistant duties (reminders, scheduling, information lookup)
 
 ## Skills & Integrations
-- Home Assistant API (states, services, history, automations)
-- Telegram Bot (messaging, notifications, inline keyboards)
-- **Standing Instructions** — you natively create, manage, and chain standing instructions in \`/data/standing_instructions.json\`. Refer to SKILLS.md for the full schema.
+- **ha-mcp tools** (primary) — 82+ MCP tools for all HA operations: entity state, services, automations, dashboards, scripts, scenes, history, calendar, HACS, backups, and more. Always prefer these over curl.
+- **\`tg-ux-ask_user\`** — present inline buttons or free-text prompts to the user via Telegram. Use whenever the user needs to choose between options.
+- **Standing Instructions** — event-triggered, cron, and timer-based automated actions in \`/data/standing_instructions.json\`. Supports \`wake_agent\`, \`notify\`, and \`ha_service\` actions with cooldown, one-shot, chaining, and expiry.
 - File system access to /config (HA configuration directory)
 - Web search and research capabilities
 - Code editing and development tools
 
 ## Rules
+- **Use ha-mcp tools for all HA interactions** — curl is a last resort only
 - Always confirm before destructive or irreversible actions (locks, alarms, deleting data)
 - Never expose tokens, secrets, or credentials
 - Prefer HA automations for time-critical recurring tasks; use standing instructions for complex decision-making that needs agent reasoning
@@ -68,101 +69,127 @@ The agent should periodically distill key information from daily logs into this 
 <!-- Agent: add recurring decisions or policies here -->
 `;
 
-const SKILLS_DEFAULT = `# Standing Instructions — Agent Reference
+const SKILLS_DEFAULT = `# Agent Skills Reference
 
-Standing instructions let the agent create automated alerts, reminders, and scheduled tasks that persist across restarts.
+## MCP Tool Quick Reference
 
-## File Location
+You have 82+ ha-mcp tools available. **Always use these instead of curl.** Full schemas are in your tool definitions — this is a recall index. Use \`tool_search_tool_regex\` to find tools not listed here.
 
-\`/data/standing_instructions.json\`
+### 🔍 Search & State
+- \`ha_search_entities\` — fuzzy search entities by name, domain, area
+- \`ha_get_state\` — get current state & attributes of an entity
+- \`ha_get_overview\` — system-wide overview of areas, devices, entities
+- \`ha_deep_search\` — search inside automation/script/dashboard configs
 
-## JSON Format
+### 🎮 Control
+- \`ha_call_service\` — call any HA service (turn_on, set_temperature, etc.)
+- \`ha_bulk_control\` — control multiple devices in one call
 
+### 📊 Dashboards
+- \`ha_config_get_dashboard\` — get dashboard config + config_hash
+- \`ha_config_set_dashboard\` — update dashboard (supports python_transform)
+
+### ⚙️ Automations & Scripts
+- \`ha_config_get_automation\` / \`ha_config_set_automation\` — read/write automations
+- \`ha_config_get_script\` / \`ha_config_set_script\` — read/write scripts
+
+### 📦 Entity & Device Registry
+- \`ha_get_entity\` / \`ha_set_entity\` — read/update entity registry
+- \`ha_get_device\` / \`ha_update_device\` — read/update device registry
+
+### 🏠 Areas & Organization
+- \`ha_config_list_areas\` / \`ha_set_area_or_floor\` — manage areas and floors
+- \`ha_config_set_label\` / \`ha_config_set_group\` — labels and groups
+
+### 🛠️ System & Utilities
+- \`ha_eval_template\` — render Jinja2 templates
+- \`ha_get_history\` — entity history data
+- \`ha_get_logs\` — HA log entries
+- \`ha_check_config\` / \`ha_restart\` / \`ha_reload_core\` — config validation and reload
+- \`ha_get_system_health\` — system health info
+
+### 📅 Calendar & Todo
+- \`ha_config_get_calendar_events\` / \`ha_config_set_calendar_event\` — calendar management
+- \`ha_get_todo\` / \`ha_set_todo_item\` — todo list management
+
+### 🗃️ HACS & Add-ons
+- \`ha_hacs_search\` / \`ha_hacs_download\` — search and install HACS integrations
+- \`ha_get_addon\` / \`ha_manage_addon\` — add-on info and control
+
+### 📂 Filesystem & Backup
+- \`ha_read_file\` / \`ha_write_file\` / \`ha_list_files\` — file operations
+- \`ha_backup_create\` / \`ha_backup_restore\` — backup management
+
+---
+
+## Telegram UX — \`tg-ux-ask_user\`
+
+Present inline buttons or free-text input to the user. Use **whenever the user needs to choose between options**.
+
+\`\`\`
+tg-ux-ask_user({
+  message: "Which room?",
+  options: [
+    { label: "🛋️ Living room", value: "living_room" },
+    { label: "🛏️ Bedroom", value: "bedroom" }
+  ]
+})
+\`\`\`
+
+- \`message\` (required): question text
+- \`options\` (optional): array of \`{label, value}\`. Omit for free-text input.
+- Bot auto-appends "✏️ Something else" + "❌ Cancel" buttons — don't add these yourself.
+- Keep to 2–5 options. Use emoji in labels.
+
+---
+
+## Standing Instructions
+
+Automated alerts, reminders, and scheduled tasks in \`/data/standing_instructions.json\`.
+
+### Schema
 \`\`\`json
 {
-  "version": 1,
-  "instructions": [ ... ]
+  "description": "What this does",
+  "enabled": true,
+  "trigger": { "type": "state_change|cron|timer", ... },
+  "action": { "type": "wake_agent|notify|ha_service", ... },
+  "cooldown_seconds": 300,
+  "one_shot": false,
+  "max_triggers": null,
+  "expires_at": null,
+  "notes": null,
+  "chain_enable": null
 }
 \`\`\`
 
-## Instruction Schema
+### Trigger types
+- **\`state_change\`**: \`entity_id\` (string or array), \`to\`, \`from\`, \`above\`, \`below\`, \`attribute\` — all conditions AND-ed
+- **\`cron\`**: \`expression\` (5-field cron string)
+- **\`timer\`**: \`fire_at\` (ISO 8601 timestamp), typically with \`one_shot: true\`
 
-Each instruction has these fields:
+### Action types
+- **\`wake_agent\`**: \`prompt\` — wakes agent with a message
+- **\`notify\`**: \`message\` — sends Telegram notification directly
+- **\`ha_service\`**: \`domain\`, \`service\`, \`data\`, optional \`message\` — calls HA service directly
 
-- **id** (string, UUID) — auto-generated on creation
-- **description** (string, required) — human-readable description
-- **enabled** (boolean) — whether the instruction is active. Default: true
-- **trigger** (object, required) — when to fire (see trigger types below)
-- **action** (object, required) — what to do when fired (see action types below)
-- **cooldown_seconds** (number) — minimum seconds between firings. Default: 300
-- **one_shot** (boolean) — auto-disables after firing once. Default: false
-- **max_triggers** (number or null) — auto-disables after this many firings
-- **trigger_count** (number) — how many times fired (auto-incremented)
-- **expires_at** (ISO 8601 or null) — auto-disables after this time
-- **notes** (string or null) — free-form context for agent decisions between chained instructions
-- **chain_enable** (array of IDs or null) — instruction IDs to auto-enable when this fires
-
-## Trigger Types
-
-### state_change
-Fires when a HA entity state changes and matches conditions.
-- **entity_id** (required): single string or array of entity IDs
-- **to**: exact match on new value (null = any)
-- **from**: exact match on old value (null = any)
-- **above** / **below**: numeric thresholds
-- **attribute**: monitor a specific attribute instead of main state
-
-### cron
-Fires on a schedule: \`"expression": "0 8 * * *"\` (5-field cron)
-
-### timer
-Fires once at a specific time: \`"fire_at": "2025-01-15T14:30:00.000Z"\`
-
-## Action Types
-
-### wake_agent
-Wakes the AI agent with a prompt for complex tasks.
-\`\`\`json
-{ "type": "wake_agent", "prompt": "Check the temperature and suggest actions." }
-\`\`\`
-
-### notify
-Sends a Telegram notification directly (no agent involvement).
-\`\`\`json
-{ "type": "notify", "message": "💊 Time to take your medicine!" }
-\`\`\`
-
-### ha_service
-Calls a HA service directly without waking the agent (fast, lightweight).
+### Example
 \`\`\`json
 {
-  "type": "ha_service",
-  "domain": "light",
-  "service": "turn_on",
-  "data": { "entity_id": "light.kitchen" },
-  "message": "💡 Kitchen light turned on"
+  "description": "Alert when living room temp exceeds 30°C",
+  "trigger": { "type": "state_change", "entity_id": "sensor.living_room_temperature", "above": 30 },
+  "action": { "type": "notify", "message": "🌡️ Living room above 30°C!" },
+  "cooldown_seconds": 600
 }
 \`\`\`
-- **domain** (required): HA service domain (must be in the allowed list)
-- **service** (required): service name (e.g., turn_on, turn_off, toggle)
-- **data** (optional): service call payload
-- **message** (optional): Telegram notification after the call
 
-Allowed domains: light, switch, scene, script, input_boolean, input_number, input_select, input_text, input_datetime, fan, cover, media_player, climate, vacuum, button, number, select, lock, siren.
-
-## Chaining Instructions
-
-Use \`chain_enable\` to create sequences:
-1. Instruction A fires and auto-enables instruction B (which starts disabled)
-2. Instruction B fires when its trigger matches
-
-Example: "Turn on light when entering" → chain_enable → "Turn off light when leaving"
-
-## Notes
-
-- **cooldown_seconds**: prevents alert fatigue. Set to 0 for no cooldown.
-- **one_shot + chain_enable**: combine for one-time event chains.
-- **notes field**: use to pass context between chained instructions.
+### Key notes
+- \`cooldown_seconds\` prevents alert fatigue (default 300s). Set \`0\` to fire every time.
+- \`one_shot: true\` auto-disables after one firing. Use for timers/reminders.
+- \`max_triggers\` auto-disables after N firings. Combines with \`expires_at\`.
+- \`chain_enable\` enables other instruction IDs when fired — use for multi-step flows.
+- \`notes\` passes context between chained instructions.
+- Reactive user requests ("when X, do Y") → create standing instruction, default \`one_shot: true\` unless user says "always"/"every time".
 `;
 
 const TASKS_DEFAULT = `# Active Tasks
