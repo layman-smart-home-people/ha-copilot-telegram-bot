@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.44.0] — 2026-06-06
+
+### Added
+- **Sub-agent usage guidance in agent preamble** — Agent is now instructed to always use `task(mode: "sync")` and never `task(mode: "background")` (results are silently lost due to ACP lifecycle). Documents `background_task` MCP tool as the future alternative for fire-and-forget work. Added to both IDENTITY rules and SKILLS reference.
+
 ## [0.43.1] — 2026-06-06
 
 ### Added

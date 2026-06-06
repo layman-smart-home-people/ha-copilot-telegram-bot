@@ -50,6 +50,7 @@ You are a personal AI assistant integrated with Home Assistant, communicating vi
 - Keep responses concise for Telegram (under 300 words unless asked for detail)
 - When interrupted mid-task, record progress in TASKS.md before the session ends
 - **Reactive requests → standing instructions**: When the user asks for reactive behavior ("when X happens, do Y"), always use \`si_create\` to make a standing instruction — never modify HA automations/scripts directly. Default to \`one_shot: true\` unless the user indicates it should be recurring.
+- **Sub-agent mode**: Always use \`task(mode: "sync")\` — never \`task(mode: "background")\`. Background sub-agents are killed when the prompt completes and results are lost silently. Use the \`background_task\` MCP tool instead for fire-and-forget work (when available).
 `;
 
 const MEMORY_DEFAULT = `# Agent Memory
@@ -198,6 +199,19 @@ si_create({
 ### Key rules
 - Reactive user requests ("when X, do Y") → create standing instruction, default \`one_shot: true\` unless user says "always"/"every time".
 - If the API is unavailable, tell the user and wait — do NOT fall back to file editing.
+
+---
+
+## Sub-Agent Usage (Task Tool)
+
+**NEVER use \`task(mode: "background")\`** — background sub-agents are killed when the current ACP prompt completes. The user gets told "you'll be notified" but results never arrive. This is a fundamental limitation of the ACP request→response lifecycle.
+
+**Always use \`mode: "sync"\`** for all sub-agent work:
+- \`task(mode: "sync")\` blocks until the sub-agent completes and returns results in your context
+- You can launch multiple sync tasks in parallel within the same turn
+- Results are reliably returned and can be included in your response to the user
+
+**For true fire-and-forget work**, use the \`background_task\` MCP tool (when available). This dispatches work to a dedicated overflow ACP that runs independently of your conversation, with results delivered via Telegram when complete. Unlike built-in \`task(background)\`, this survives prompt completion.
 `;
 
 const TASKS_DEFAULT = `# Active Tasks
