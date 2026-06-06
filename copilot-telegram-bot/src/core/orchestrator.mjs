@@ -6,7 +6,7 @@
 // message routing between Telegram and Copilot.
 
 import { markdownToTelegramHtml, chunkMessage, describeToolCall } from "../transport/telegram/formatter.mjs";
-import { parseSlashCommand, handleSlashCommand } from "../commands.mjs";
+import { parseSlashCommand, handleSlashCommand } from "./commands.mjs";
 import { normalizeModeId } from "../ai/copilot/acp-client.mjs";
 import { ButtonManager } from "../transport/telegram/buttons.mjs";
 import { ResponseComposer } from "../transport/telegram/response-composer.mjs";
@@ -947,21 +947,26 @@ export class Orchestrator {
             chatIds: this.#allowedChatIds,
             ref,
             scope,
-            startCopilot: () => this.startCopilot(),
-            stopCopilot: () => this.stopCopilot(),
-            restartCopilot: () => this.restartCopilot(),
+            host: {
+                submitSlashCommand: (r, t) => this.submitSlashCommand(r, t),
+                showStatusMenu: (cid, s) => this.showStatusMenu(cid, s),
+                cancelActivePromptForScope: (...a) => this.cancelActivePromptForScope(...a),
+                submitRetry: (r, t) => this.submitRetry(r, t),
+                resetPreamble: () => this.resetPreamble(),
+                startCopilot: () => this.startCopilot(),
+                stopCopilot: () => this.stopCopilot(),
+                restartCopilot: () => this.restartCopilot(),
+                standingOrchestrator: this.standingOrchestrator,
+            },
             buttons: this.#buttons,
             models: this.#models,
             modes: this.#modes,
             history: scope?.history || null,
-            currentModel: scope?.model || "",
-            currentMode: scope?.mode || "",
             availableCommands: this.#availableCommands,
             knownTools: this.#knownTools,
             pairing: this.#pairing,
             sessionMgr: this.#sessionMgr,
             scopeMgr: this.#scopeMgr,
-            bridge: this,
             config: this.#config,
             promptActive: this.#promptActive,
             promptElapsed: this.#promptActive && this.#promptStartedAt ? Math.round((Date.now() - this.#promptStartedAt) / 1000) : null,

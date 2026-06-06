@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.42.0] — 2026-06-06
+
+### Changed
+- **Phase 6 refactor**: Cleaned up commands.mjs — moved to `src/core/commands.mjs`.
+  - Defined `CommandHost` JSDoc interface — commands now receive a focused `host` object instead of the raw orchestrator instance. Host exposes only 9 methods/properties commands actually use.
+  - Removed unused `currentModel` and `currentMode` from command context (were destructured but never read).
+  - Consolidated lifecycle methods (`startCopilot`/`stopCopilot`/`restartCopilot`) onto the host interface.
+  - Updated import paths in orchestrator.mjs and adapter.mjs.
+
 ## [0.41.0] — 2026-06-06
 
 ### Changed

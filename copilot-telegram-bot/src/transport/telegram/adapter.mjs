@@ -8,7 +8,7 @@
 // The adapter delegates prompt execution and ACP lifecycle
 // to the orchestrator (bridge) via purpose-specific methods.
 
-import { handleSlashCommand } from "../../commands.mjs";
+import { handleSlashCommand } from "../../core/commands.mjs";
 import { makeRef } from "./transport-ref.mjs";
 import { extractCallbackTargetUserId } from "../../ai/copilot/permissions.mjs";
 import { createLogger } from "../../logger.mjs";

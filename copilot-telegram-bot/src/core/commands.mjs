@@ -1,10 +1,28 @@
 // ============================================================
 // Slash Command Handler
 // ============================================================
+// Moved to core/ in Phase 6. Commands interact with the
+// orchestrator through a focused CommandHost interface,
+// not the full orchestrator instance.
 
-import { normalizeModeId, fullModeUri } from "./ai/copilot/acp-client.mjs";
-import { escapeHtml } from "./transport/telegram/formatter.mjs";
-import { createLogger } from "./logger.mjs";
+import { normalizeModeId, fullModeUri } from "../ai/copilot/acp-client.mjs";
+import { escapeHtml } from "../transport/telegram/formatter.mjs";
+import { createLogger } from "../logger.mjs";
+
+/**
+ * @typedef {object} CommandHost
+ * Focused interface the orchestrator provides to command handlers.
+ * Replaces the raw bridge/orchestrator back-reference.
+ * @property {(ref: object, text: string) => void} submitSlashCommand
+ * @property {(chatId: number, scope: object) => Promise<void>} showStatusMenu
+ * @property {(scope: object, ref: object, opts?: object) => Promise<boolean>} cancelActivePromptForScope
+ * @property {(ref: object, text: string) => void} submitRetry
+ * @property {() => void} resetPreamble
+ * @property {() => Promise<void>} startCopilot
+ * @property {() => Promise<void>} stopCopilot
+ * @property {() => Promise<void>} restartCopilot
+ * @property {object|null} standingOrchestrator
+ */
 
 const log = createLogger('commands');
 
@@ -20,7 +38,7 @@ export function parseSlashCommand(text, botUsername) {
 
 export async function handleSlashCommand(ctx, command, args) {
     const { acp, telegram, transport, chatId, chatIds, ref, scope, scopeMgr, buttons, models, modes, history,
-            currentModel, currentMode, availableCommands, knownTools, pairing, sessionMgr, bridge, config, promptActive } = ctx;
+            availableCommands, knownTools, pairing, sessionMgr, host, config, promptActive } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {
         for (const cid of chatIds) {
@@ -80,7 +98,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     reply(apTarget === "autopilot" ? "🤖 Autopilot ON" : "💬 Autopilot OFF (agent mode)");
                 } catch {
                     // Autopilot may fail due to permission service — fall back to prompt
-                    bridge.submitSlashCommand(ref, apTarget === "autopilot" ? "/autopilot on" : "/autopilot off");
+                    host.submitSlashCommand(ref, apTarget === "autopilot" ? "/autopilot on" : "/autopilot off");
                 }
                 return true;
             }
@@ -93,14 +111,14 @@ export async function handleSlashCommand(ctx, command, args) {
                         await acp.setConfigOption("mode", fullModeUri("agent"));
                         reply("💬 Plan mode OFF (agent mode)");
                     } catch {
-                        bridge.submitSlashCommand(ref, "/autopilot off");
+                        host.submitSlashCommand(ref, "/autopilot off");
                     }
                 } else {
                     try {
                         await acp.setConfigOption("mode", fullModeUri("plan"));
                         reply("📝 Plan mode ON");
                     } catch {
-                        bridge.submitSlashCommand(ref, "/plan");
+                        host.submitSlashCommand(ref, "/plan");
                     }
                 }
                 return true;
@@ -113,7 +131,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     await acp.setConfigOption("mode", fullModeUri("autopilot"));
                     reply("🚀 Fleet (autopilot) mode ON");
                 } catch {
-                    bridge.submitSlashCommand(ref, "/autopilot on");
+                    host.submitSlashCommand(ref, "/autopilot on");
                 }
                 return true;
             }
@@ -135,11 +153,11 @@ export async function handleSlashCommand(ctx, command, args) {
                             // Fall back to prompt-based command
                             const short = normalizeModeId(selected);
                             if (short === "plan") {
-                                bridge.submitSlashCommand(ref, "/plan");
+                                host.submitSlashCommand(ref, "/plan");
                             } else if (short === "autopilot") {
-                                bridge.submitSlashCommand(ref, "/autopilot on");
+                                host.submitSlashCommand(ref, "/autopilot on");
                             } else {
-                                bridge.submitSlashCommand(ref, "/autopilot off");
+                                host.submitSlashCommand(ref, "/autopilot off");
                             }
                         }
                     }
@@ -155,7 +173,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     reply("⚠️ No session yet in this conversation.");
                     return true;
                 }
-                bridge.submitSlashCommand(ref, "/compact");
+                host.submitSlashCommand(ref, "/compact");
                 return true;
             }
             case "model": {
@@ -167,7 +185,7 @@ export async function handleSlashCommand(ctx, command, args) {
                         await acp.setConfigOption("model", modelId);
                         reply(`✅ Model → ${modelId}`);
                     } catch {
-                        bridge.submitSlashCommand(ref, `/model ${modelId}`);
+                        host.submitSlashCommand(ref, `/model ${modelId}`);
                     }
                 };
                 if (args) {
@@ -203,11 +221,11 @@ export async function handleSlashCommand(ctx, command, args) {
                     reply("⚠️ No session yet in this conversation.");
                     return true;
                 }
-                bridge.submitSlashCommand(ref, "/usage");
+                host.submitSlashCommand(ref, "/usage");
                 return true;
             }
             case "status": {
-                await bridge.showStatusMenu(chatId, scope);
+                await host.showStatusMenu(chatId, scope);
                 return true;
             }
             case "start":
@@ -231,7 +249,7 @@ export async function handleSlashCommand(ctx, command, args) {
                         reply(`🔄 Started a new session for ${scopeLabel}.`);
                     } else {
                         reply("🚀 Starting Copilot...");
-                        await ctx.startCopilot?.();
+                        await host.startCopilot();
                         scope.sessionId = acp?.sessionId || null;
                         if (ref) ref.sessionId = scope.sessionId;
                         if (scopeMgr && scopeKey) scopeMgr.setActive(scopeKey);
@@ -241,7 +259,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 }
                 if (args === "stop" || args === "kill") {
                     if (acp?.alive) {
-                        await ctx.stopCopilot?.();
+                        await host.stopCopilot();
                         broadcast("⏹️ Copilot stopped");
                     } else {
                         reply("⚠️ Copilot not running");
@@ -258,14 +276,14 @@ export async function handleSlashCommand(ctx, command, args) {
             case "stop":
             case "cancel": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
-                if (!bridge?.promptActive) {
+                if (!promptActive) {
                     reply("⚠️ No active request to cancel.");
                     return true;
                 }
-                // Route through bridge.cancelActivePromptForScope for proper cleanup
+                // Route through host.cancelActivePromptForScope for proper cleanup
                 // (clears question queue, handles scope-aware cancellation)
                 try {
-                    const cancelled = await bridge.cancelActivePromptForScope(scope, ref, { force: true, notifyIfMissing: false });
+                    const cancelled = await host.cancelActivePromptForScope(scope, ref, { force: true, notifyIfMissing: false });
                     if (!cancelled) {
                         // Fallback: direct cancel if scope routing didn't match
                         await acp.cancel();
@@ -285,13 +303,13 @@ export async function handleSlashCommand(ctx, command, args) {
                 const lastUser = scopeHistory.getLastUserMessage();
                 if (!lastUser) { reply("⚠️ No previous message to retry"); return true; }
                 // Cancel current operation if it belongs to this scope, then resend
-                if (acp?.alive && bridge?.promptActive && (!scopeMgr || scopeMgr.activeScope === scope)) {
+                if (acp?.alive && promptActive && (!scopeMgr || scopeMgr.activeScope === scope)) {
                     try { await acp.cancel(); } catch {}
                 }
                 reply(`🔄 Retrying: "${lastUser.length > 60 ? lastUser.slice(0, 60) + '...' : lastUser}"`);
-                // Re-submit through bridge
-                if (bridge?.submitRetry) {
-                    bridge.submitRetry(ref, lastUser);
+                // Re-submit through host
+                if (host.submitRetry) {
+                    host.submitRetry(ref, lastUser);
                 }
                 return true;
             }
@@ -433,7 +451,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 } else {
                     // Private chat: just restart session
                     broadcast("🔄 Creating new session...");
-                    await ctx.restartCopilot?.();
+                    await host.restartCopilot();
                 }
                 return true;
             }
@@ -523,12 +541,12 @@ export async function handleSlashCommand(ctx, command, args) {
                 return true;
             }
             case "allowall": {
-                if (!scope || !bridge) { reply("⚠️ Not available"); return true; }
+                if (!scope || !host) { reply("⚠️ Not available"); return true; }
                 const enabled = (args === "off" || args === "false") ? false
                     : (args === "on" || args === "true") ? true
                     : !scope.allowAll;
                 scope.allowAll = enabled;
-                bridge.resetPreamble();
+                host.resetPreamble();
                 reply(enabled
                     ? `🔓 Allow-all ON for ${scopeLabel}`
                     : `🔐 Allow-all OFF for ${scopeLabel}`);
@@ -570,7 +588,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     reply(`🔄 Session cleared for ${scopeLabel}.`);
                 } else {
                     reply("🚀 Starting Copilot...");
-                    await ctx.startCopilot?.();
+                    await host.startCopilot();
                     scope.sessionId = acp?.sessionId || null;
                     if (ref) ref.sessionId = scope.sessionId;
                     if (scopeMgr && scopeKey) scopeMgr.setActive(scopeKey);
@@ -579,7 +597,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 return true;
             }
             case "standing": {
-                const orch = bridge?.standingOrchestrator;
+                const orch = host.standingOrchestrator;
                 if (!orch) {
                     reply("⚠️ Standing instructions not available");
                     return true;
