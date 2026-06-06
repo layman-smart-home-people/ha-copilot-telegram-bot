@@ -2108,6 +2108,7 @@ export class Bridge {
         const ref = makeRef(chatId, threadId, null, message.chat.type);
         ref.userId = userId;
         ref.firstName = message.from?.first_name || null;
+        ref.username = message.from?.username || null;
         ref.triggerMessageId = message.message_id;
 
         // Resolve scope
@@ -2558,6 +2559,18 @@ export class Bridge {
             }
         } else {
             prefix = "[Via Telegram]\n";
+        }
+
+        // Inject sender identity so agent knows who is talking
+        if (ref) {
+            const parts = [];
+            if (ref.firstName) parts.push(`name=${ref.firstName}`);
+            if (ref.username) parts.push(`username=@${ref.username}`);
+            if (ref.userId) parts.push(`userId=${ref.userId}`);
+            if (ref.chatId) parts.push(`chatId=${ref.chatId}`);
+            if (parts.length > 0) {
+                prefix += `[Sender: ${parts.join(', ')}]\n`;
+            }
         }
 
         // Append pinned instructions if any

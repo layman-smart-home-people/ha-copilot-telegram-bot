@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.30.1] — 2026-06-06
+
+### Added
+- **Sender identity in agent prompts** — every message now includes `[Sender: name=..., username=@..., userId=..., chatId=...]` so the agent knows who is talking. Enables multi-user awareness (e.g. distinguishing Sam from Jas) and targeted notification routing.
+- **Username on regular messages** — `ref.username` was only set for edited messages; now set for all incoming messages.
+
 ## [0.30.0] — 2026-06-06
 
 ### Added
