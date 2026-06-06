@@ -86,6 +86,7 @@ const TOOLS = [
         inputSchema: {
             type: "object",
             properties: {
+                id: { type: "string", description: "Optional custom ID (kebab-case recommended). If omitted, a UUID is auto-generated. Useful for chain_enable references." },
                 description: { type: "string", description: "Human-readable description of what this instruction does" },
                 trigger: TRIGGER_SCHEMA,
                 action: ACTION_SCHEMA,

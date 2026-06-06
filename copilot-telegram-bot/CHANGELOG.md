@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.48.2] — 2026-06-07
+
+### Fixed
+- **`si_create` MCP schema missing `id` field** — Added optional `id` property to the `si_create` tool's JSON schema. The backend already supported custom IDs (since v0.48.1), but the MCP tool definition didn't advertise it, so agents couldn't discover the parameter.
+
 ## [0.48.1] — 2026-06-07
 
 ### Fixed
