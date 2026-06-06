@@ -2,6 +2,27 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.36.0] — 2026-06-06
+
+### Added
+- **Multi-action support** — `action` field now accepts an array of action objects for sequential or parallel execution
+  - New `action_mode` field: `"sequential"` (default) or `"parallel"`
+  - New `continue_on_error` field: continue executing remaining actions when one fails (default: false)
+  - Single action objects still accepted (backward compatible — auto-wrapped in array)
+- **Conditions** — optional `conditions` array evaluated between trigger match and action execution
+  - `state` — exact entity state match (e.g. `person.sam` is `home`)
+  - `numeric_state` — threshold check with `above`/`below`
+  - `time` — time range with `after`/`before` (HH:MM format, supports midnight-crossing ranges)
+  - `and`/`or`/`not` — nested combinators for complex logic
+  - Top level is implicit AND; fail-closed on evaluation errors
+- Updated MCP tool schemas (`si_create`, `si_update`) with new fields and condition schema
+- Updated agent docs with multi-action examples and condition reference
+
+### Changed
+- `ha_service` actions are now awaited (previously fire-and-forget) to support sequential ordering in multi-action
+- `ha_service` success notifications now only sent when `message` is explicitly set (previously sent `✅ description` fallback)
+- Blocked `ha_service` domains now throw errors (consistent with HTTP failures for `continue_on_error` behavior)
+
 ## [0.35.0] — 2026-06-06
 
 ### Changed

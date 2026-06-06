@@ -35,8 +35,7 @@ const TRIGGER_SCHEMA = {
 };
 
 const ACTION_SCHEMA = {
-    type: "object",
-    description: "What to do when triggered.",
+    description: "What to do when triggered. Single action object OR array of action objects for multi-action sequences.",
     properties: {
         type: {
             type: "string",
@@ -48,6 +47,30 @@ const ACTION_SCHEMA = {
         domain: { type: "string", description: "HA service domain (ha_service). Example: 'light'" },
         service: { type: "string", description: "HA service name (ha_service). Example: 'turn_on'" },
         data: { type: "object", description: "Service call data (ha_service). Example: {entity_id: 'light.bedroom'}" },
+    },
+    required: ["type"],
+};
+
+const CONDITION_SCHEMA = {
+    type: "object",
+    description: "A condition to check before executing actions. Types: state (exact entity state match), numeric_state (above/below thresholds), time (time range), and/or/not (combinators for nesting).",
+    properties: {
+        type: {
+            type: "string",
+            enum: ["state", "numeric_state", "time", "and", "or", "not"],
+            description: "Condition type",
+        },
+        entity_id: { type: "string", description: "Entity to check (state, numeric_state)" },
+        state: { type: "string", description: "Required state value (state). Example: 'home', 'on'" },
+        above: { type: "number", description: "Value must be above this (numeric_state)" },
+        below: { type: "number", description: "Value must be below this (numeric_state)" },
+        after: { type: "string", description: "Time must be after this (time). Format: HH:MM or HH:MM:SS" },
+        before: { type: "string", description: "Time must be before this (time). Format: HH:MM or HH:MM:SS" },
+        conditions: {
+            type: "array",
+            description: "Nested conditions (and/or/not). 'not' requires exactly 1 element.",
+            items: { type: "object" },
+        },
     },
     required: ["type"],
 };
@@ -64,6 +87,20 @@ const TOOLS = [
                 description: { type: "string", description: "Human-readable description of what this instruction does" },
                 trigger: TRIGGER_SCHEMA,
                 action: ACTION_SCHEMA,
+                conditions: {
+                    type: "array",
+                    items: CONDITION_SCHEMA,
+                    description: "Optional conditions checked after trigger match, before action execution. Top level is implicit AND. Use {type:'or', conditions:[...]} for OR logic. Omit or null = always execute.",
+                },
+                action_mode: {
+                    type: "string",
+                    enum: ["sequential", "parallel"],
+                    description: "How to execute multiple actions (default: sequential). Only relevant when action is an array.",
+                },
+                continue_on_error: {
+                    type: "boolean",
+                    description: "If true, continue executing remaining actions when one fails (default: false).",
+                },
                 enabled: { type: "boolean", description: "Whether to activate immediately (default: true)" },
                 cooldown_seconds: { type: "number", description: "Minimum seconds between firings (default: 300). Set 0 to fire every time." },
                 one_shot: { type: "boolean", description: "Auto-disable after first firing (default: false). Use for reminders/timers." },
@@ -110,6 +147,9 @@ const TOOLS = [
                 description: { type: "string" },
                 trigger: TRIGGER_SCHEMA,
                 action: ACTION_SCHEMA,
+                conditions: { type: "array", items: CONDITION_SCHEMA, description: "Replace conditions (null to remove)" },
+                action_mode: { type: "string", enum: ["sequential", "parallel"] },
+                continue_on_error: { type: "boolean" },
                 enabled: { type: "boolean" },
                 cooldown_seconds: { type: "number" },
                 one_shot: { type: "boolean" },

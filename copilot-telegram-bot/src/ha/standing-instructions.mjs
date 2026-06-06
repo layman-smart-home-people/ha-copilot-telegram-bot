@@ -7,6 +7,8 @@ const DEFAULT_PERSIST_PATH = "/data/standing_instructions.json";
 const DEFAULT_COOLDOWN_SECONDS = 300;
 const VALID_TRIGGER_TYPES = new Set(["state_change", "cron", "timer"]);
 const VALID_ACTION_TYPES = new Set(["wake_agent", "notify", "ha_service"]);
+const VALID_ACTION_MODES = new Set(["sequential", "parallel"]);
+const VALID_CONDITION_TYPES = new Set(["state", "numeric_state", "time", "and", "or", "not"]);
 const log = createLogger("standing");
 
 export class StandingInstructionManager {
@@ -66,7 +68,9 @@ export class StandingInstructionManager {
             ...current,
             ...changes,
             trigger: Object.hasOwn(changes, "trigger") ? this.#mergeSection(current.trigger, changes.trigger, "trigger") : current.trigger,
-            action: Object.hasOwn(changes, "action") ? this.#mergeSection(current.action, changes.action, "action") : current.action,
+            // Action and conditions are replaced entirely (not merged) — arrays don't merge sensibly
+            action: Object.hasOwn(changes, "action") ? changes.action : current.action,
+            conditions: Object.hasOwn(changes, "conditions") ? changes.conditions : current.conditions,
             id: current.id,
             created_at: current.created_at,
         };
@@ -252,7 +256,10 @@ export class StandingInstructionManager {
             description: this.#requireString(spec.description, "Instruction description is required."),
             enabled: this.#normalizeBoolean(spec.enabled, true, "Instruction enabled must be a boolean."),
             trigger: this.#normalizeTrigger(spec.trigger),
+            conditions: this.#normalizeConditions(spec.conditions),
             action: this.#normalizeAction(spec.action),
+            action_mode: this.#normalizeActionMode(spec.action_mode),
+            continue_on_error: this.#normalizeBoolean(spec.continue_on_error, false, "Instruction continue_on_error must be a boolean."),
             cooldown_seconds: this.#normalizeCooldown(spec.cooldown_seconds),
             one_shot: this.#normalizeBoolean(spec.one_shot, false, "Instruction one_shot must be a boolean."),
             expires_at: this.#normalizeNullableIsoTimestamp(
@@ -311,11 +318,22 @@ export class StandingInstructionManager {
     }
 
     #normalizeAction(action) {
+        if (Array.isArray(action)) {
+            if (action.length === 0) {
+                throw new Error("Instruction action array must not be empty.");
+            }
+            return action.map((a, i) => this.#normalizeSingleAction(a, i));
+        }
+        // Single action object — wrap in array
+        return [this.#normalizeSingleAction(action, 0)];
+    }
+
+    #normalizeSingleAction(action, index) {
         if (!action || typeof action !== "object" || Array.isArray(action)) {
-            throw new Error("Instruction action must be an object.");
+            throw new Error(`Instruction action[${index}] must be an object.`);
         }
         if (!VALID_ACTION_TYPES.has(action.type)) {
-            throw new Error(`Instruction action.type must be one of: ${Array.from(VALID_ACTION_TYPES).join(", ")}.`);
+            throw new Error(`Instruction action[${index}].type must be one of: ${Array.from(VALID_ACTION_TYPES).join(", ")}.`);
         }
 
         switch (action.type) {
@@ -340,6 +358,93 @@ export class StandingInstructionManager {
             default:
                 throw new Error(`Unsupported action type: ${action.type}.`);
         }
+    }
+
+    #normalizeActionMode(mode) {
+        if (mode == null) return "sequential";
+        if (!VALID_ACTION_MODES.has(mode)) {
+            throw new Error(`Instruction action_mode must be one of: ${Array.from(VALID_ACTION_MODES).join(", ")}.`);
+        }
+        return mode;
+    }
+
+    #normalizeConditions(conditions) {
+        if (conditions == null) return null;
+        if (!Array.isArray(conditions)) {
+            throw new Error("Instruction conditions must be an array or null.");
+        }
+        if (conditions.length === 0) return null;
+        return conditions.map((c, i) => this.#normalizeCondition(c, `conditions[${i}]`));
+    }
+
+    #normalizeCondition(condition, path) {
+        if (!condition || typeof condition !== "object" || Array.isArray(condition)) {
+            throw new Error(`${path} must be an object.`);
+        }
+        if (!VALID_CONDITION_TYPES.has(condition.type)) {
+            throw new Error(`${path}.type must be one of: ${Array.from(VALID_CONDITION_TYPES).join(", ")}.`);
+        }
+
+        switch (condition.type) {
+        case "state":
+            return {
+                type: "state",
+                entity_id: this.#requireString(condition.entity_id, `${path}.entity_id is required.`),
+                state: this.#requireString(condition.state, `${path}.state is required.`),
+            };
+        case "numeric_state": {
+            const above = this.#normalizeOptionalNumber(condition.above, `${path}.above must be a number or null.`);
+            const below = this.#normalizeOptionalNumber(condition.below, `${path}.below must be a number or null.`);
+            if (above === null && below === null) {
+                throw new Error(`${path} requires at least one of above or below.`);
+            }
+            return {
+                type: "numeric_state",
+                entity_id: this.#requireString(condition.entity_id, `${path}.entity_id is required.`),
+                above,
+                below,
+            };
+        }
+        case "time": {
+            const after = condition.after != null ? this.#normalizeTimeString(condition.after, `${path}.after`) : null;
+            const before = condition.before != null ? this.#normalizeTimeString(condition.before, `${path}.before`) : null;
+            if (after === null && before === null) {
+                throw new Error(`${path} requires at least one of after or before.`);
+            }
+            return { type: "time", after, before };
+        }
+        case "and":
+        case "or":
+            if (!Array.isArray(condition.conditions) || condition.conditions.length === 0) {
+                throw new Error(`${path}.conditions must be a non-empty array.`);
+            }
+            return {
+                type: condition.type,
+                conditions: condition.conditions.map((c, i) => this.#normalizeCondition(c, `${path}.${condition.type}[${i}]`)),
+            };
+        case "not":
+            if (!Array.isArray(condition.conditions) || condition.conditions.length !== 1) {
+                throw new Error(`${path}.conditions must be an array with exactly 1 element.`);
+            }
+            return {
+                type: "not",
+                conditions: [this.#normalizeCondition(condition.conditions[0], `${path}.not[0]`)],
+            };
+        default:
+            throw new Error(`Unsupported condition type: ${condition.type}.`);
+        }
+    }
+
+    #normalizeTimeString(value, path) {
+        const str = this.#requireString(value, `${path} must be a string in HH:MM or HH:MM:SS format.`);
+        if (!/^\d{1,2}:\d{2}(:\d{2})?$/.test(str)) {
+            throw new Error(`${path} must be in HH:MM or HH:MM:SS format.`);
+        }
+        const parts = str.split(":").map(Number);
+        if (parts[0] < 0 || parts[0] > 23 || parts[1] < 0 || parts[1] > 59 || (parts[2] != null && (parts[2] < 0 || parts[2] > 59))) {
+            throw new Error(`${path} has out-of-range values.`);
+        }
+        return str;
     }
 
     #normalizeEntityIds(entityId) {

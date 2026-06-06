@@ -10,6 +10,7 @@ import { createLogger } from "../logger.mjs";
 const CRON_CHECK_INTERVAL_MS = 60_000;
 const TIMER_CHECK_INTERVAL_MS = 15_000;
 const HA_SERVICE_TIMEOUT_MS = 15_000;
+const HA_STATE_FETCH_TIMEOUT_MS = 5_000;
 
 // Domains allowed for ha_service action without agent involvement.
 // Restricts automated service calls to safe, non-destructive domains.
@@ -185,13 +186,16 @@ export class StandingInstructionOrchestrator {
 
             for (const instruction of matches) {
                 log.info(`Matched: "${instruction.description}" (${instruction.id}) for ${event.entity_id}: ${event.old_state} → ${event.new_state}`);
-                this.#manager.markTriggered(instruction.id);
-                this.#triggerCount++;
-                this.#executeAction(instruction, {
+                const context = {
                     trigger_type: "state_change",
                     entity_id: event.entity_id,
                     old_state: event.old_state,
                     new_state: event.new_state,
+                };
+                this.#manager.markTriggered(instruction.id);
+                this.#triggerCount++;
+                this.#gateAndExecute(instruction, context).catch(err => {
+                    log.error(`Error executing "${instruction.description}": ${err.message}`);
                 });
             }
         } catch (err) {
@@ -232,10 +236,12 @@ export class StandingInstructionOrchestrator {
                     log.info(`Cron matched: "${instruction.description}" (${instruction.id})`);
                     this.#manager.markTriggered(instruction.id);
                     this.#triggerCount++;
-                    this.#executeAction(instruction, {
+                    this.#gateAndExecute(instruction, {
                         trigger_type: "cron",
                         expression: instruction.trigger.expression,
                         time: now.toISOString(),
+                    }).catch(err => {
+                        log.error(`Error executing cron "${instruction.description}": ${err.message}`);
                     });
                 }
             }
@@ -255,9 +261,11 @@ export class StandingInstructionOrchestrator {
                 log.info(`Timer expired: "${instruction.description}" (${instruction.id})`);
                 this.#manager.markTriggered(instruction.id);
                 this.#triggerCount++;
-                this.#executeAction(instruction, {
+                this.#gateAndExecute(instruction, {
                     trigger_type: "timer",
                     fire_at: instruction.trigger.fire_at,
+                }).catch(err => {
+                    log.error(`Error executing timer "${instruction.description}": ${err.message}`);
                 });
             }
         } catch (err) {
@@ -265,18 +273,63 @@ export class StandingInstructionOrchestrator {
         }
     }
 
-    #executeAction(instruction, context) {
-        const contextSummary = this.#formatContext(context);
+    async #gateAndExecute(instruction, context) {
+        // Evaluate conditions (if any) before executing actions
+        if (instruction.conditions && instruction.conditions.length > 0) {
+            try {
+                const pass = await this.#evaluateConditions(instruction.conditions);
+                if (!pass) {
+                    log.info(`Conditions not met: "${instruction.description}" (${instruction.id})`);
+                    return;
+                }
+            } catch (err) {
+                log.warn(`Condition evaluation failed for "${instruction.description}": ${err.message} — skipping action (fail-closed)`);
+                return;
+            }
+        }
 
-        // Process chain_enable — enable linked instructions
         this.#processChain(instruction);
+        await this.#executeActions(instruction, context);
+    }
 
-        switch (instruction.action.type) {
+    async #executeActions(instruction, context) {
+        const actions = instruction.action; // always an array
+        const contextSummary = this.#formatContext(context);
+        const mode = instruction.action_mode || "sequential";
+
+        if (mode === "parallel") {
+            const results = await Promise.allSettled(
+                actions.map(action => this.#executeSingleAction(action, instruction, contextSummary))
+            );
+            const failures = results.filter(r => r.status === "rejected");
+            for (const f of failures) {
+                log.error(`Action failed (parallel): ${f.reason?.message || f.reason}`);
+            }
+            if (failures.length > 0 && !instruction.continue_on_error) {
+                log.info(`${failures.length}/${actions.length} actions failed for "${instruction.description}" (continue_on_error=false)`);
+            }
+        } else {
+            for (const action of actions) {
+                try {
+                    await this.#executeSingleAction(action, instruction, contextSummary);
+                } catch (err) {
+                    log.error(`Action ${action.type} failed: ${err.message}`);
+                    if (!instruction.continue_on_error) {
+                        log.info(`Stopping action sequence for "${instruction.description}" (continue_on_error=false)`);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    async #executeSingleAction(action, instruction, contextSummary) {
+        switch (action.type) {
         case "wake_agent": {
             const prompt = `[Standing Instruction Triggered]\n` +
                 `Instruction: "${instruction.description}"\n` +
                 `Trigger: ${contextSummary}\n` +
-                `Agent prompt: ${instruction.action.prompt}`;
+                `Agent prompt: ${action.prompt}`;
             if (this.#ownerChatId) {
                 const isBusy = this.#bridge.promptActive;
                 const statusMsg = isBusy
@@ -288,42 +341,42 @@ export class StandingInstructionOrchestrator {
                     log.warn(`Failed to send wake notification: ${err.message}`);
                 });
             }
+            // Fire-and-forget — don't await agent completion
             this.#bridge.injectSystemPrompt(prompt, this.#ownerChatId).catch(err => {
                 log.error(`Failed to wake agent: ${err.message}`);
             });
-            break;
+            return;
         }
         case "notify": {
             const message = `🔔 Standing Instruction\n` +
                 `${instruction.description}\n\n` +
-                `${instruction.action.message}\n\n` +
+                `${action.message}\n\n` +
                 `Trigger: ${contextSummary}`;
             if (this.#ownerChatId) {
-                this.#telegram.enqueue(() =>
+                await this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(this.#ownerChatId, message)
-                ).catch(err => {
-                    log.warn(`Failed to send notification: ${err.message}`);
-                });
+                );
             }
-            break;
+            return;
         }
         case "ha_service": {
-            const { domain, service, data, message } = instruction.action;
+            const { domain, service, data, message } = action;
 
             if (!HA_SERVICE_ALLOWED_DOMAINS.has(domain)) {
-                log.warn(`Blocked ha_service: domain "${domain}" not in allowlist`);
+                const errMsg = `domain "${domain}" not in allowlist`;
+                log.warn(`Blocked ha_service: ${errMsg}`);
                 if (this.#ownerChatId) {
                     this.#telegram.enqueue(() =>
-                        this.#telegram.sendMessage(this.#ownerChatId, `⛔ ${instruction.description}\nBlocked: domain "${domain}" is not allowed for direct service calls. Use wake_agent instead.`)
+                        this.#telegram.sendMessage(this.#ownerChatId, `⛔ ${instruction.description}\nBlocked: ${errMsg}. Use wake_agent instead.`)
                     ).catch(() => {});
                 }
-                break;
+                throw new Error(`Blocked ha_service: ${errMsg}`);
             }
 
             const url = `${this.#haBaseUrl}/services/${domain}/${service}`;
             log.info(`Calling HA service: ${domain}.${service}`);
 
-            fetch(url, {
+            const res = await fetch(url, {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${this.#haToken}`,
@@ -331,33 +384,114 @@ export class StandingInstructionOrchestrator {
                 },
                 body: JSON.stringify(data || {}),
                 signal: AbortSignal.timeout(HA_SERVICE_TIMEOUT_MS),
-            }).then(res => {
-                if (!res.ok) {
-                    throw new Error(`HTTP ${res.status} ${res.statusText}`);
-                }
-                log.info(`HA service ${domain}.${service} called successfully`);
-                if (this.#ownerChatId) {
-                    const notifyMsg = message
-                        ? `🔔 ${instruction.description}\n${message}`
-                        : `✅ ${instruction.description}`;
-                    this.#telegram.enqueue(() =>
-                        this.#telegram.sendMessage(this.#ownerChatId, notifyMsg)
-                    ).catch(err => {
-                        log.warn(`Failed to send ha_service notification: ${err.message}`);
-                    });
-                }
-            }).catch(err => {
-                log.error(`HA service call failed: ${err.message}`);
+            });
+
+            if (!res.ok) {
+                const errMsg = `HTTP ${res.status} ${res.statusText}`;
+                log.error(`HA service ${domain}.${service} failed: ${errMsg}`);
                 if (this.#ownerChatId) {
                     this.#telegram.enqueue(() =>
-                        this.#telegram.sendMessage(this.#ownerChatId, `❌ ${instruction.description}\nService call failed: ${err.message}`)
+                        this.#telegram.sendMessage(this.#ownerChatId, `❌ ${instruction.description}\nService call failed: ${errMsg}`)
                     ).catch(() => {});
                 }
-            });
-            break;
+                throw new Error(errMsg);
+            }
+
+            log.info(`HA service ${domain}.${service} called successfully`);
+            if (this.#ownerChatId && message) {
+                this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(this.#ownerChatId, `🔔 ${instruction.description}\n${message}`)
+                ).catch(err => {
+                    log.warn(`Failed to send ha_service notification: ${err.message}`);
+                });
+            }
+            return;
         }
         default:
-            log.error(`Unknown action type: ${instruction.action.type}`);
+            log.error(`Unknown action type: ${action.type}`);
+        }
+    }
+
+    // ── Condition evaluation ──────────────────────────────────
+
+    async #evaluateConditions(conditions) {
+        // Top level is implicit AND
+        for (const condition of conditions) {
+            if (!await this.#evaluateCondition(condition)) return false;
+        }
+        return true;
+    }
+
+    async #evaluateCondition(condition) {
+        switch (condition.type) {
+        case "state": {
+            const entity = await this.#fetchEntityState(condition.entity_id);
+            if (!entity) return false;
+            return entity.state === condition.state;
+        }
+        case "numeric_state": {
+            const entity = await this.#fetchEntityState(condition.entity_id);
+            if (!entity) return false;
+            const val = parseFloat(entity.state);
+            if (!Number.isFinite(val)) return false;
+            if (condition.above !== null && val <= condition.above) return false;
+            if (condition.below !== null && val >= condition.below) return false;
+            return true;
+        }
+        case "time": {
+            const now = new Date();
+            const nowMinutes = now.getHours() * 60 + now.getMinutes();
+            const afterMinutes = condition.after !== null ? this.#parseTimeToMinutes(condition.after) : null;
+            const beforeMinutes = condition.before !== null ? this.#parseTimeToMinutes(condition.before) : null;
+
+            if (afterMinutes !== null && beforeMinutes !== null && afterMinutes > beforeMinutes) {
+                // Midnight-crossing range (e.g. after:23:00, before:02:00)
+                // True if now >= after OR now < before
+                return nowMinutes >= afterMinutes || nowMinutes < beforeMinutes;
+            }
+            // Normal range (e.g. after:08:00, before:18:00)
+            if (afterMinutes !== null && nowMinutes < afterMinutes) return false;
+            if (beforeMinutes !== null && nowMinutes >= beforeMinutes) return false;
+            return true;
+        }
+        case "and":
+            for (const c of condition.conditions) {
+                if (!await this.#evaluateCondition(c)) return false;
+            }
+            return true;
+        case "or":
+            for (const c of condition.conditions) {
+                if (await this.#evaluateCondition(c)) return true;
+            }
+            return false;
+        case "not":
+            return !await this.#evaluateCondition(condition.conditions[0]);
+        default:
+            log.warn(`Unknown condition type: ${condition.type}`);
+            return false;
+        }
+    }
+
+    #parseTimeToMinutes(timeStr) {
+        const [h, m] = timeStr.split(":").map(Number);
+        return h * 60 + m;
+    }
+
+    async #fetchEntityState(entityId) {
+        try {
+            const url = `${this.#haBaseUrl}/states/${entityId}`;
+            const res = await fetch(url, {
+                headers: { "Authorization": `Bearer ${this.#haToken}` },
+                signal: AbortSignal.timeout(HA_STATE_FETCH_TIMEOUT_MS),
+            });
+            if (!res.ok) {
+                log.warn(`Failed to fetch state for ${entityId}: HTTP ${res.status}`);
+                return null;
+            }
+            return await res.json();
+        } catch (err) {
+            log.warn(`Failed to fetch state for ${entityId}: ${err.message}`);
+            return null;
         }
     }
 
