@@ -108,6 +108,9 @@ export async function loadConfig() {
         logLevel: options.log_level || process.env.LOG_LEVEL || "info",
         version: addonVersion,
         mcpServers: [],
+        backgroundEnabled: options.background_enabled === true,
+        backgroundModel: options.background_model || "",
+        backgroundIdleMinutes: Number(options.background_idle_minutes) || 5,
     };
 
     // Try to load MCP config (copilot uses mcp-config.json)

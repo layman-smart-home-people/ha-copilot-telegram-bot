@@ -7,6 +7,7 @@
 
 import { existsSync } from "node:fs";
 import { ACPClient } from "./ai/copilot/acp-client.mjs";
+import { ACPManager } from "./ai/copilot/acp-manager.mjs";
 import { TelegramClient } from "./transport/telegram/client.mjs";
 import { Orchestrator } from "./core/orchestrator.mjs";
 import { PairingManager } from "./core/pairing.mjs";
@@ -178,15 +179,14 @@ async function main() {
         log.warn(`Failed to register commands: ${err.message}`);
     }
 
-    // Create ACP client
-    const acp = new ACPClient({
-        binary: config.copilotBinary,
-        cwd: config.workingDirectory,
-        model: config.model,
-        extraArgs: config.copilotExtraArgs,
-        copilotHome: config.copilotConfigDir,
-        permissionPolicy: config.permissionPolicy || "interactive",
+    // Create ACP Manager (manages primary + overflow ACP instances)
+    const acpMgr = new ACPManager({
+        config,
+        overflowEnabled: config.backgroundEnabled,
+        overflowIdleMinutes: config.backgroundIdleMinutes,
+        backgroundModel: config.backgroundModel,
     });
+    const acp = acpMgr.createPrimary();
 
     // Create pairing manager
     const pairing = new PairingManager({
@@ -211,7 +211,7 @@ async function main() {
 
     const bridge = new Orchestrator({
         telegram,
-        acp,
+        acpMgr,
         config,
         pairing,
         sessionMgr,

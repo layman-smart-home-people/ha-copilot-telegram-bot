@@ -29,6 +29,11 @@ export class ACPManager {
     #overflowLastSpawn = 0;
     #overflowStartPromise = null;
 
+    // Overflow config overrides
+    #overflowMcpServers;
+    #overflowExtraArgs;
+    #backgroundModel;
+
     // COPILOT_HOME paths
     #primaryHome;
     #overflowHome;
@@ -36,10 +41,29 @@ export class ACPManager {
     // Auth state
     #authenticated = false;
 
-    constructor({ config, overflowEnabled = false, overflowIdleMinutes = 5 }) {
+    // Callback when overflow is spawned
+    #onOverflowSpawned = null;
+
+    constructor({ config, overflowEnabled = false, overflowIdleMinutes = 5,
+        overflowMcpServers, overflowExtraArgs, backgroundModel }) {
         this.#config = config;
         this.#overflowEnabled = overflowEnabled;
         this.#overflowIdleMs = overflowIdleMinutes * 60 * 1000;
+        this.#backgroundModel = backgroundModel || "";
+
+        // Overflow MCP config: default to si-tools only (no tg-ux)
+        this.#overflowMcpServers = overflowMcpServers || {
+            "si-tools": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
+            },
+        };
+
+        // Overflow extra args: restrict to MCP tools, no shell.
+        // No shell quotes needed — args are passed directly via spawn (no shell expansion).
+        this.#overflowExtraArgs = overflowExtraArgs ||
+            "--allow-tool=mcp(*) --deny-tool=shell";
 
         this.#primaryHome = config.copilotConfigDir;
         this.#overflowHome = config.copilotConfigDir + "-overflow";
@@ -48,10 +72,14 @@ export class ACPManager {
     get primary() { return this.#primaryAcp; }
     get overflow() { return this.#overflowAcp; }
     get overflowEnabled() { return this.#overflowEnabled; }
+    set overflowEnabled(v) { this.#overflowEnabled = !!v; }
     get overflowAlive() { return this.#overflowAcp?.alive ?? false; }
     get primaryScopeKey() { return this.#primaryScopeKey; }
     get overflowScopeKey() { return this.#overflowScopeKey; }
     get authenticated() { return this.#authenticated; }
+
+    /** Register callback to wire overflow event handlers after spawn. */
+    set onOverflowSpawned(fn) { this.#onOverflowSpawned = fn; }
 
     /** Create the primary ACP client (does not start it). */
     createPrimary() {
@@ -187,13 +215,19 @@ export class ACPManager {
         // Prepare isolated COPILOT_HOME
         this.#prepareOverflowHome();
 
+        // Build overflow-specific extra args: base config args + overflow restrictions
+        const baseExtra = this.#config.copilotExtraArgs || "";
+        const overflowExtra = [baseExtra, this.#overflowExtraArgs].filter(Boolean).join(" ");
+
         this.#overflowAcp = new ACPClient({
             binary: this.#config.copilotBinary,
             cwd: this.#config.workingDirectory,
-            model: this.#config.model,
-            extraArgs: this.#config.copilotExtraArgs,
+            model: this.#backgroundModel || this.#config.model,
+            extraArgs: overflowExtra,
             copilotHome: this.#overflowHome,
-            permissionPolicy: this.#config.permissionPolicy || "interactive",
+            permissionPolicy: "allow_all",  // no interactive user for overflow
+            stdioMcpServers: this.#overflowMcpServers,
+            tag: "overflow",
         });
 
         // Wire exit handler to clean up
@@ -231,6 +265,11 @@ export class ACPManager {
             });
 
             log.info(`Overflow ACP started, session: ${this.#overflowAcp.sessionId}`);
+
+            // Notify orchestrator to wire event handlers
+            if (this.#onOverflowSpawned) {
+                this.#onOverflowSpawned(this.#overflowAcp);
+            }
         } catch (err) {
             try { await this.#overflowAcp?.stop(); } catch {}
             this.#overflowAcp = null;

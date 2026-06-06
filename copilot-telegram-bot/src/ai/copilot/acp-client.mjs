@@ -88,21 +88,22 @@ export class ACPClient extends EventEmitter {
         // Disable broken built-in ask_user (no TUI in headless mode).
         // Our tg-ux MCP server provides a working replacement.
         args.push("--no-ask-user");
-        // Register MCP sidecar servers for agent tools
-        const mcpConfig = JSON.stringify({
-            mcpServers: {
-                "tg-ux": {
-                    type: "stdio",
-                    command: "node",
-                    args: ["/app/src/ai/copilot/mcp-server.mjs"],
-                },
-                "si-tools": {
-                    type: "stdio",
-                    command: "node",
-                    args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
-                },
+        // Register MCP sidecar servers for agent tools.
+        // Use custom config if provided (e.g. overflow uses si-tools only),
+        // otherwise default to full tg-ux + si-tools.
+        const mcpServers = this.#config.stdioMcpServers || {
+            "tg-ux": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/mcp-server.mjs"],
             },
-        });
+            "si-tools": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
+            },
+        };
+        const mcpConfig = JSON.stringify({ mcpServers });
         args.push("--additional-mcp-config", mcpConfig);
         // interactive mode: don't pass --allow-all-tools so CLI sends permission requests
         if (this.#config.model) args.push("--model", this.#config.model);

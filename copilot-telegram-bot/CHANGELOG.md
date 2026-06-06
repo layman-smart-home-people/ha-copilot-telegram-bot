@@ -2,6 +2,14 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.45.0] — 2026-06-07
+
+### Added
+- **ACPManager wiring** — Replaced direct ACPClient instantiation with ACPManager for multi-ACP support. Primary ACP behavior unchanged; overflow ACP infrastructure now fully wired with restricted config (si-tools only MCP, `--allow-tool=mcp(*) --deny-tool=shell`).
+- **`stdioMcpServers` ACPClient option** — MCP sidecar config is now configurable per-instance instead of hardcoded, enabling overflow to use si-tools only (no tg-ux).
+- **Background config options** — `background_enabled`, `background_model`, `background_idle_minutes` addon config for controlling overflow ACP behavior.
+- **Overflow event handler wiring** — ACPManager notifies orchestrator via `onOverflowSpawned` callback to wire event handlers when overflow spawns.
+
 ## [0.44.1] — 2026-06-06
 
 ### Added

@@ -532,6 +532,13 @@ export class Orchestrator {
             tag: "primary",
         });
 
+        // Wire overflow ACP handler callback (called when overflow spawns)
+        if (this.#acpMgr) {
+            this.#acpMgr.onOverflowSpawned = (overflowAcp) => {
+                this.#wireOverflowHandlers(overflowAcp);
+            };
+        }
+
         // Start UDS server for tg-ux MCP sidecar IPC
         this.#interactiveFlows.startUdsServer();
     }
