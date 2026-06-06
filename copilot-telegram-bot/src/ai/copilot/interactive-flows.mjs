@@ -20,6 +20,7 @@ export class InteractiveFlows {
     #getOverflowScope;
     #getActiveRef;
     #getAllowedChatIds;
+    #onBackgroundTask;
 
     // UDS server for tg-ux MCP sidecar IPC
     #udsServer = null;
@@ -39,8 +40,9 @@ export class InteractiveFlows {
      * @param {Function} opts.getOverflowScope - returns current overflow scope
      * @param {Function} opts.getActiveRef - returns current active ref
      * @param {Function} opts.getAllowedChatIds - returns allowed chat IDs array
+     * @param {Function} [opts.onBackgroundTask] - callback for background_task MCP tool
      */
-    constructor({ buttons, telegram, acp, scopeMgr, getActiveScope, getOverflowScope, getActiveRef, getAllowedChatIds }) {
+    constructor({ buttons, telegram, acp, scopeMgr, getActiveScope, getOverflowScope, getActiveRef, getAllowedChatIds, onBackgroundTask }) {
         this.#buttons = buttons;
         this.#telegram = telegram;
         this.#acp = acp;
@@ -49,6 +51,7 @@ export class InteractiveFlows {
         this.#getOverflowScope = getOverflowScope;
         this.#getActiveRef = getActiveRef;
         this.#getAllowedChatIds = getAllowedChatIds;
+        this.#onBackgroundTask = onBackgroundTask || null;
     }
 
     // --- Elicitation (ACP structured questions) ---
@@ -280,7 +283,7 @@ export class InteractiveFlows {
         });
     }
 
-    // --- UDS IPC server for tg-ux MCP ask_user tool ---
+    // --- UDS IPC server for tg-ux MCP sidecar ---
 
     startUdsServer() {
         try { unlinkSync(TG_UX_SOCK); } catch {}
@@ -301,14 +304,16 @@ export class InteractiveFlows {
                     return;
                 }
                 const scopeKey = req.scopeKey;
-                log.debug(`UDS: ask_user received (scope=${scopeKey || "unknown"})`);
-                this.handleMcpAskUser(req.params || {}, scopeKey)
+                const method = req.method || "ask_user";
+                log.debug(`UDS: ${method} received (scope=${scopeKey || "unknown"})`);
+
+                this.#routeUdsRequest(method, req.params || {}, scopeKey)
                     .then((result) => {
-                        log.debug(`UDS: ask_user result (scope=${scopeKey || "unknown"}): ${result.error ? "error: " + result.error : "ok"}`);
+                        log.debug(`UDS: ${method} result (scope=${scopeKey || "unknown"}): ${result.error ? "error: " + result.error : "ok"}`);
                         try { conn.end(JSON.stringify(result)); } catch {}
                     })
                     .catch((err) => {
-                        log.debug(`UDS: ask_user error: ${err.message}`);
+                        log.debug(`UDS: ${method} error: ${err.message}`);
                         try { conn.end(JSON.stringify({ error: err.message })); } catch {}
                     });
             });
@@ -323,6 +328,56 @@ export class InteractiveFlows {
             try { chmodSync(TG_UX_SOCK, 0o600); } catch {}
             log.info(`UDS server listening on ${TG_UX_SOCK}`);
         });
+    }
+
+    async #routeUdsRequest(method, params, scopeKey) {
+        switch (method) {
+            case "ask_user":
+                return this.handleMcpAskUser(params, scopeKey);
+            case "background_task":
+                return this.#handleBackgroundTask(params, scopeKey);
+            default:
+                return { error: `Unknown UDS method: ${method}` };
+        }
+    }
+
+    #handleBackgroundTask(params, scopeKey) {
+        const { prompt, description } = params;
+        if (!prompt) return Promise.resolve({ error: "prompt is required" });
+        if (!description) return Promise.resolve({ error: "description is required" });
+
+        if (!this.#onBackgroundTask) {
+            return Promise.resolve({ error: "Background tasks not available" });
+        }
+
+        // Resolve chatId from scope for result delivery
+        let ref;
+        if (scopeKey && this.#scopeMgr) {
+            const scope = this.#scopeMgr.get(scopeKey);
+            ref = scope?.activeRef || this.#getActiveRef();
+        }
+        if (!ref) ref = this.#getActiveRef();
+        const chatId = ref?.chatId;
+        if (!chatId) return Promise.resolve({ error: "No active chat for result delivery" });
+
+        const taskId = `bg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        log.info(`Background task dispatched: ${taskId} — "${description}"`);
+
+        // Fire-and-forget: inject into background queue, return immediately
+        try {
+            this.#onBackgroundTask({
+                taskId,
+                prompt,
+                description,
+                chatId,
+                source: "mcp_tool",
+            });
+        } catch (err) {
+            log.warn(`Background task injection failed: ${err.message}`);
+            return Promise.resolve({ error: `Failed to queue: ${err.message}` });
+        }
+
+        return Promise.resolve({ taskId, status: "queued" });
     }
 
     stopUdsServer() {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Minimal MCP server for Telegram UX — raw JSON-RPC over stdio (NDJSON framing).
-// Exposes one tool: ask_user(message, options?) that routes to the bot via UDS.
+// Exposes ask_user and background_task tools that route to the bot via UDS.
 // No npm dependencies.
 
 import { createConnection } from "net";
@@ -34,6 +34,29 @@ const TOOL = {
             },
         },
         required: ["message"],
+    },
+};
+
+const BACKGROUND_TASK_TOOL = {
+    name: "background_task",
+    description:
+        "Dispatch a task to run in the background on a separate agent. " +
+        "Returns immediately with a task ID. Results are delivered to the user via Telegram when complete. " +
+        "Use for fire-and-forget work that doesn't need to be in your response. " +
+        "Provide ALL necessary context in the prompt — the background agent has no access to your conversation history.",
+    inputSchema: {
+        type: "object",
+        properties: {
+            prompt: {
+                type: "string",
+                description: "Complete, self-contained task description with all context needed",
+            },
+            description: {
+                type: "string",
+                description: "Short description for status tracking (e.g., 'Check sensor trends')",
+            },
+        },
+        required: ["prompt", "description"],
     },
 };
 
@@ -98,7 +121,7 @@ function handleInitialize(id, params) {
 }
 
 function handleToolsList(id) {
-    send(id, { tools: [TOOL] });
+    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL] });
 }
 
 async function handleToolsCall(id, params) {
@@ -107,10 +130,17 @@ async function handleToolsCall(id, params) {
         return;
     }
     const { name, arguments: args } = params;
-    if (name !== "ask_user") {
+
+    if (name === "ask_user") {
+        return handleAskUser(id, args);
+    } else if (name === "background_task") {
+        return handleBackgroundTask(id, args);
+    } else {
         sendError(id, -32602, `Unknown tool: ${name}`);
-        return;
     }
+}
+
+async function handleAskUser(id, args) {
     if (!args?.message || typeof args.message !== "string") {
         send(id, {
             content: [{ type: "text", text: "Error: message parameter is required" }],
@@ -130,6 +160,50 @@ async function handleToolsCall(id, params) {
         } else {
             send(id, {
                 content: [{ type: "text", text: result.answer ?? "" }],
+            });
+        }
+    } catch (err) {
+        send(id, {
+            content: [{ type: "text", text: `Error: ${err.message}` }],
+            isError: true,
+        });
+    } finally {
+        pendingCalls--;
+        checkExit();
+    }
+}
+
+async function handleBackgroundTask(id, args) {
+    if (!args?.prompt || typeof args.prompt !== "string") {
+        send(id, {
+            content: [{ type: "text", text: "Error: prompt parameter is required" }],
+            isError: true,
+        });
+        return;
+    }
+    if (!args?.description || typeof args.description !== "string") {
+        send(id, {
+            content: [{ type: "text", text: "Error: description parameter is required" }],
+            isError: true,
+        });
+        return;
+    }
+    log(`background_task called: "${args.description}"`);
+    pendingCalls++;
+    try {
+        const result = await callBot({
+            method: "background_task",
+            params: { prompt: args.prompt, description: args.description },
+            scopeKey: SCOPE_KEY,
+        });
+        if (result.error) {
+            send(id, {
+                content: [{ type: "text", text: `Error: ${result.error}` }],
+                isError: true,
+            });
+        } else {
+            send(id, {
+                content: [{ type: "text", text: `Task dispatched: ${result.taskId}\nStatus: ${result.status}\nResults will be delivered via Telegram when complete.` }],
             });
         }
     } catch (err) {

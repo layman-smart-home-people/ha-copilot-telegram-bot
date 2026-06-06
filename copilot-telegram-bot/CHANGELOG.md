@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.47.0] — 2026-06-07
+
+### Added
+- **`background_task` MCP tool** — New MCP tool exposed to the primary ACP agent, enabling it to dispatch fire-and-forget tasks to the overflow ACP. The agent calls `background_task(prompt, description)` and gets an immediate response with a task ID; the actual work runs on the background pipeline with results delivered via Telegram when complete. Features:
+  - Full tool definition in tg-ux MCP sidecar (`mcp-server.mjs`) with input validation
+  - Method-based UDS routing in `interactive-flows.mjs` — UDS handler now dispatches by `req.method` (`ask_user` | `background_task`) instead of hardcoding ask_user
+  - Wired to orchestrator's `injectBackgroundPrompt()` via `onBackgroundTask` callback
+  - MCP tool-generated `taskId` propagated through to orchestrator for end-to-end tracking
+  - Only available on primary ACP (overflow ACP has no tg-ux MCP — prevents recursive spawning)
+- Updated agent docs: `background_task` tool usage documented in SKILLS and identity rules
+
 ## [0.46.0] — 2026-06-07
 
 ### Added

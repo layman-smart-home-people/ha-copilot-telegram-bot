@@ -50,7 +50,7 @@ You are a personal AI assistant integrated with Home Assistant, communicating vi
 - Keep responses concise for Telegram (under 300 words unless asked for detail)
 - When interrupted mid-task, record progress in TASKS.md before the session ends
 - **Reactive requests → standing instructions**: When the user asks for reactive behavior ("when X happens, do Y"), always use \`si_create\` to make a standing instruction — never modify HA automations/scripts directly. Default to \`one_shot: true\` unless the user indicates it should be recurring.
-- **Sub-agent mode**: Always use \`task(mode: "sync")\` — never \`task(mode: "background")\`. Background sub-agents are killed when the prompt completes and results are lost silently. Use the \`background_task\` MCP tool instead for fire-and-forget work (when available).
+- **Sub-agent mode**: Always use \`task(mode: "sync")\` — never \`task(mode: "background")\`. Background sub-agents are killed when the prompt completes and results are lost silently. Use the \`background_task\` MCP tool instead for fire-and-forget work.
 `;
 
 const MEMORY_DEFAULT = `# Agent Memory
@@ -212,7 +212,15 @@ si_create({
 - You can launch multiple sync tasks in parallel within the same turn
 - Results are reliably returned and can be included in your response to the user
 
-**For true fire-and-forget work**, use the \`background_task\` MCP tool (when available). This dispatches work to a dedicated overflow ACP that runs independently of your conversation, with results delivered via Telegram when complete. Unlike built-in \`task(background)\`, this survives prompt completion.
+**For true fire-and-forget work**, use the \`background_task\` MCP tool. This dispatches work to a dedicated overflow ACP that runs independently of your conversation, with results delivered via Telegram when complete. Unlike built-in \`task(background)\`, this survives prompt completion.
+
+### \`background_task\` MCP Tool
+- **prompt** (required): Complete, self-contained task description. Include ALL context — the background agent has no access to your conversation.
+- **description** (required): Short label for status tracking (e.g., "Check sensor trends").
+- Returns immediately with \`taskId\` and \`status: "queued"\`.
+- Results are delivered to the user's Telegram chat when the background task completes.
+- Max 5 concurrent background tasks; excess tasks are rejected.
+- Background agent has HA MCP tools and file access, but NO Telegram interaction (no ask_user).
 `;
 
 const TASKS_DEFAULT = `# Active Tasks

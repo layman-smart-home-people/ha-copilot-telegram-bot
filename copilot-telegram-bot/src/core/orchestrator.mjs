@@ -189,6 +189,13 @@ export class Orchestrator {
             getOverflowScope: () => this.#overflowScope,
             getActiveRef: () => this.#activeRef,
             getAllowedChatIds: () => this.#allowedChatIds,
+            onBackgroundTask: ({ taskId, prompt, description, chatId }) => {
+                this.injectBackgroundPrompt(prompt, chatId, {
+                    priority: 2,
+                    description,
+                    taskId,
+                });
+            },
         });
 
         this.#toolNotify = new ToolNotifications({
@@ -333,7 +340,7 @@ export class Orchestrator {
      * @param {number} [options.priority=2] - 1=high (SI), 2=normal (agent)
      * @param {string} [options.description=""] - Short description for status
      */
-    injectBackgroundPrompt(prompt, chatId, { priority = 2, description = "Background task" } = {}) {
+    injectBackgroundPrompt(prompt, chatId, { priority = 2, description = "Background task", taskId: providedTaskId } = {}) {
         if (!this.#acpMgr?.overflowEnabled) {
             log.info("Background task falling back to primary queue (overflow disabled)");
             return this.injectSystemPrompt(prompt, chatId);
@@ -349,7 +356,7 @@ export class Orchestrator {
             return;
         }
 
-        const taskId = `bg-${Date.now().toString(36)}`;
+        const taskId = providedTaskId || `bg-${Date.now().toString(36)}`;
         const task = { prompt, chatId, priority, description, taskId, createdAt: Date.now() };
 
         // Insert by priority (lower number = higher priority, jump ahead of lower-priority items)
