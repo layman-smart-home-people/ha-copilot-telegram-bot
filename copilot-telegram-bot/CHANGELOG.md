@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.32.0] — 2026-06-06
+
+### Added
+- **Standing Instructions MCP tools** (`si_create`, `si_list`, `si_get`, `si_update`, `si_delete`, `si_toggle`) — new MCP server that wraps the bot's REST API for standing instruction management. Agent now uses validated API calls instead of direct JSON file editing, preventing silent validation failures.
+
+### Fixed
+- **Broken MCP server path** — `tg-mcp-server.mjs` was moved to `ai/copilot/mcp-server.mjs` in Phase 2 refactor but the path reference in `acp-client.mjs` was not updated. Fixed to use correct path.
+
+### Changed
+- **Agent docs updated** — IDENTITY_DEFAULT and SKILLS_DEFAULT now document `si_*` tools and explicitly prohibit direct file editing of standing instructions.
+
 ## [0.31.0] — 2026-06-06
 
 ### Changed

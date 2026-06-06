@@ -36,7 +36,8 @@ You are a personal AI assistant integrated with Home Assistant, communicating vi
 ## Skills & Integrations
 - **ha-mcp tools** (primary) — 82+ MCP tools for all HA operations: entity state, services, automations, dashboards, scripts, scenes, history, calendar, HACS, backups, and more. Always prefer these over curl.
 - **\`tg-ux-ask_user\`** — present inline buttons or free-text prompts to the user via Telegram. Use whenever the user needs to choose between options.
-- **Standing Instructions** — event-triggered, cron, and timer-based automated actions in \`/data/standing_instructions.json\`. Supports \`wake_agent\`, \`notify\`, and \`ha_service\` actions with cooldown, one-shot, chaining, and expiry.
+- **\`si_*\` MCP tools** — CRUD tools for standing instructions (si_create, si_list, si_get, si_update, si_delete, si_toggle). Always use these — never edit the JSON file directly.
+- **Standing Instructions** — event-triggered, cron, and timer-based automated actions. Supports \`wake_agent\`, \`notify\`, and \`ha_service\` actions with cooldown, one-shot, chaining, and expiry.
 - File system access to /config (HA configuration directory)
 - Web search and research capabilities
 - Code editing and development tools
@@ -48,7 +49,7 @@ You are a personal AI assistant integrated with Home Assistant, communicating vi
 - Prefer HA automations for time-critical recurring tasks; use standing instructions for complex decision-making that needs agent reasoning
 - Keep responses concise for Telegram (under 300 words unless asked for detail)
 - When interrupted mid-task, record progress in TASKS.md before the session ends
-- **Reactive requests → standing instructions**: When the user asks for reactive behavior ("when X happens, do Y"), always create a standing instruction — never modify HA automations/scripts directly. Default to \`one_shot: true\` unless the user indicates it should be recurring.
+- **Reactive requests → standing instructions**: When the user asks for reactive behavior ("when X happens, do Y"), always use \`si_create\` to make a standing instruction — never modify HA automations/scripts directly. Default to \`one_shot: true\` unless the user indicates it should be recurring.
 `;
 
 const MEMORY_DEFAULT = `# Agent Memory
@@ -131,53 +132,51 @@ tg-ux-ask_user({
 
 ---
 
-## Standing Instructions
+## Standing Instructions — \`si_*\` MCP tools
 
-Automated alerts, reminders, and scheduled tasks in \`/data/standing_instructions.json\`.
+Manage automated alerts, reminders, and scheduled tasks. **Always use these tools — NEVER edit \`/data/standing_instructions.json\` directly.** Direct file edits bypass validation and cause silent failures.
 
-### Schema
-\`\`\`json
-{
-  "description": "What this does",
-  "enabled": true,
-  "trigger": { "type": "state_change|cron|timer", ... },
-  "action": { "type": "wake_agent|notify|ha_service", ... },
-  "cooldown_seconds": 300,
-  "one_shot": false,
-  "max_triggers": null,
-  "expires_at": null,
-  "notes": null,
-  "chain_enable": null
-}
-\`\`\`
+### Tools
+- **\`si_create\`** — create a new instruction (bot validates and auto-fills \`id\`, \`created_at\`, etc.)
+- **\`si_list\`** — list all instructions with status
+- **\`si_get\`** — get one by ID
+- **\`si_update\`** — modify an existing instruction (partial update — only send changed fields)
+- **\`si_delete\`** — remove an instruction
+- **\`si_toggle\`** — enable/disable an instruction
 
-### Trigger types
-- **\`state_change\`**: \`entity_id\` (string or array), \`to\`, \`from\`, \`above\`, \`below\`, \`attribute\` — all conditions AND-ed
-- **\`cron\`**: \`expression\` (5-field cron string)
-- **\`timer\`**: \`fire_at\` (ISO 8601 timestamp), typically with \`one_shot: true\`
+### Required fields for \`si_create\`
+- \`description\` (string) — what this instruction does
+- \`trigger\` — one of:
+  - \`state_change\`: \`entity_id\` (string or array), optional \`to\`, \`from\`, \`above\`, \`below\`, \`attribute\`
+  - \`cron\`: \`expression\` (5-field cron string, e.g. \`"0 6 * * *"\`)
+  - \`timer\`: \`fire_at\` (ISO 8601 timestamp)
+- \`action\` — one of:
+  - \`wake_agent\`: \`prompt\` (string)
+  - \`notify\`: \`message\` (string)
+  - \`ha_service\`: \`domain\`, \`service\`, \`data\` (object), optional \`message\`
 
-### Action types
-- **\`wake_agent\`**: \`prompt\` — wakes agent with a message
-- **\`notify\`**: \`message\` — sends Telegram notification directly
-- **\`ha_service\`**: \`domain\`, \`service\`, \`data\`, optional \`message\` — calls HA service directly
+### Optional fields
+- \`enabled\` (bool, default: true)
+- \`cooldown_seconds\` (number, default: 300). Set \`0\` to fire every time.
+- \`one_shot\` (bool, default: false). Auto-disable after first firing — use for reminders/timers.
+- \`expires_at\` (ISO 8601 string). Auto-disable after this time.
+- \`max_triggers\` (number). Auto-disable after N firings.
+- \`notes\` (string). Context for chained instructions.
+- \`chain_enable\` (string array). Instruction IDs to enable when this fires.
 
 ### Example
-\`\`\`json
-{
-  "description": "Alert when living room temp exceeds 30°C",
-  "trigger": { "type": "state_change", "entity_id": "sensor.living_room_temperature", "above": 30 },
-  "action": { "type": "notify", "message": "🌡️ Living room above 30°C!" },
-  "cooldown_seconds": 600
-}
+\`\`\`
+si_create({
+  description: "Alert when living room temp exceeds 30°C",
+  trigger: { type: "state_change", entity_id: "sensor.living_room_temperature", above: 30 },
+  action: { type: "notify", message: "🌡️ Living room above 30°C!" },
+  cooldown_seconds: 600
+})
 \`\`\`
 
-### Key notes
-- \`cooldown_seconds\` prevents alert fatigue (default 300s). Set \`0\` to fire every time.
-- \`one_shot: true\` auto-disables after one firing. Use for timers/reminders.
-- \`max_triggers\` auto-disables after N firings. Combines with \`expires_at\`.
-- \`chain_enable\` enables other instruction IDs when fired — use for multi-step flows.
-- \`notes\` passes context between chained instructions.
+### Key rules
 - Reactive user requests ("when X, do Y") → create standing instruction, default \`one_shot: true\` unless user says "always"/"every time".
+- If the API is unavailable, tell the user and wait — do NOT fall back to file editing.
 `;
 
 const TASKS_DEFAULT = `# Active Tasks

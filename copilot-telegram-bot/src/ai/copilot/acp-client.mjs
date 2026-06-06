@@ -71,13 +71,18 @@ export class ACPClient extends EventEmitter {
         // Disable broken built-in ask_user (no TUI in headless mode).
         // Our tg-ux MCP server provides a working replacement.
         args.push("--no-ask-user");
-        // Register the Telegram UX MCP server so the model can ask users questions
+        // Register MCP sidecar servers for agent tools
         const mcpConfig = JSON.stringify({
             mcpServers: {
                 "tg-ux": {
                     type: "stdio",
                     command: "node",
-                    args: ["/app/src/tg-mcp-server.mjs"],
+                    args: ["/app/src/ai/copilot/mcp-server.mjs"],
+                },
+                "si-tools": {
+                    type: "stdio",
+                    command: "node",
+                    args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
                 },
             },
         });
