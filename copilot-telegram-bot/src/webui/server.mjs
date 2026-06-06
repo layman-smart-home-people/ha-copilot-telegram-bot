@@ -40,6 +40,8 @@ export class WebUIServer {
     #chatBusy = false;     // true while a prompt is in progress
     #chatSessionId = null; // current ACP session ID for web chat
     #chatInitPromise = null; // deduplicates concurrent init calls
+    #chatInitFailures = 0; // count consecutive auto-init failures
+    static #MAX_INIT_FAILURES = 3; // disable auto-init after this many consecutive failures
 
     constructor({ port = 8099 } = {}) {
         this.#port = port;
@@ -733,7 +735,10 @@ export class WebUIServer {
 
         // Deduplicate concurrent initialization calls
         if (this.#chatInitPromise) return this.#chatInitPromise;
-        this.#chatInitPromise = this.#doInitChatAcp().finally(() => {
+        this.#chatInitPromise = this.#doInitChatAcp().then((acp) => {
+            this.#chatInitFailures = 0; // reset on success
+            return acp;
+        }).finally(() => {
             this.#chatInitPromise = null;
         });
         return this.#chatInitPromise;
@@ -883,10 +888,14 @@ export class WebUIServer {
         this.#chatSseClients.add(res);
         req.on("close", () => this.#chatSseClients.delete(res));
 
-        // Auto-initialize chat ACP on first SSE connection
-        if (!this.#chatAcp?.alive && !this.#chatInitPromise) {
+        // Auto-initialize chat ACP on first SSE connection (with backoff on repeated failures)
+        if (!this.#chatAcp?.alive && !this.#chatInitPromise && this.#chatInitFailures < WebUIServer.#MAX_INIT_FAILURES) {
             this.#ensureChatAcp().catch((err) => {
-                log.warn(`Auto-init failed: ${err.message}`);
+                this.#chatInitFailures++;
+                log.warn(`Auto-init failed (${this.#chatInitFailures}/${WebUIServer.#MAX_INIT_FAILURES}): ${err.message}`);
+                if (this.#chatInitFailures >= WebUIServer.#MAX_INIT_FAILURES) {
+                    log.warn("Auto-init disabled after repeated failures. Use the chat UI to manually connect.");
+                }
             });
         }
     }

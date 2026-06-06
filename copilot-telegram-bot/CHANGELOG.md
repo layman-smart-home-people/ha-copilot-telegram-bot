@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.38.0] — 2026-06-06
+
+### Fixed
+- **Unhandled async rejection in Telegram update handler** — `#processUpdate()` now wrapped in `.catch()` to prevent unhandled promise rejections from crashing the process
+- **Permission handler hangs on error** — `.catch()` now calls `respondPermission(cancel)` so ACP doesn't hang waiting for a response that never comes
+- **Elicitation handler hangs on error** — `.catch()` now calls `respondElicitation(cancel)` with proper error handling
+- **Empty response auto-recovery** — detects 0.0s responses with no tool calls/text (session context exhaustion), automatically creates a new session and retries the prompt once. Falls back gracefully with user notification if retry also fails
+- **Watchdog restart when queue empty** — ACP now auto-restarts after watchdog kill even when no prompts are queued, preventing zombie state where ACP stays dead until next user message
+- **`/stop` bypasses question queue cleanup** — now routes through `cancelActivePromptForScope` for proper scope-aware cancellation including clearing pending interactive questions
+- **InteractiveFlows wrong ACP instance** — `#elicitSingleField` now receives the correct ACP instance as parameter instead of always using the primary ACP (fixes elicitation from overflow sessions)
+- **WebUI auto-init crash loop** — added failure counter (max 3) with backoff to prevent infinite ACP spawn/crash cycles when chat initialization repeatedly fails
+
 ## [0.37.0] — 2026-06-06
 
 ### Added

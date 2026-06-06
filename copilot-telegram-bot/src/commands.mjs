@@ -262,10 +262,14 @@ export async function handleSlashCommand(ctx, command, args) {
                     reply("⚠️ No active request to cancel.");
                     return true;
                 }
-                // Allow cancelling any active prompt (including SI-triggered ones
-                // from a different scope, e.g. standing:chatId vs dm:chatId)
+                // Route through bridge.cancelActivePromptForScope for proper cleanup
+                // (clears question queue, handles scope-aware cancellation)
                 try {
-                    await acp.cancel();
+                    const cancelled = await bridge.cancelActivePromptForScope(scope, ref, { force: true, notifyIfMissing: false });
+                    if (!cancelled) {
+                        // Fallback: direct cancel if scope routing didn't match
+                        await acp.cancel();
+                    }
                     const activeKey = scopeMgr?.activeScope?.key;
                     const isCrossScope = activeKey && scope && activeKey !== scope.key;
                     reply(isCrossScope

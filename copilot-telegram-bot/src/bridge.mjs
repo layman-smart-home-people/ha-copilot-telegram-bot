@@ -620,11 +620,14 @@ export class Bridge {
             log.debug(`ACP[${tag}]: ${text}`);
         });
 
-        acp.on("permission_request", async (req) => {
+        acp.on("permission_request", (req) => {
             if (getSwitching()) return;
             const scope = getScope();
             if (!scope) return;
-            await this.#permissionHandler.handlePermissionRequest(req, acp, scope, getRef, tag);
+            this.#permissionHandler.handlePermissionRequest(req, acp, scope, getRef, tag).catch((err) => {
+                log.error(`Permission handler error: ${err.message}`);
+                try { acp.respondPermission(req.requestId, null, true); } catch {}
+            });
         });
 
         // Capture session data (models, modes) from session events
@@ -684,14 +687,17 @@ export class Bridge {
         });
 
         // Elicitation — agent asks structured questions
-        acp.on("elicitation_request", async (req) => {
+        acp.on("elicitation_request", (req) => {
             if (getSwitching()) return;
             const scope = getScope();
             if (!scope) {
                 acp.respondElicitation(req.requestId, "cancel");
                 return;
             }
-            await this.#interactiveFlows.handleElicitationRequest(req, acp, scope, getRef, tag);
+            this.#interactiveFlows.handleElicitationRequest(req, acp, scope, getRef, tag).catch((err) => {
+                log.error(`Elicitation handler error: ${err.message}`);
+                try { acp.respondElicitation(req.requestId, "cancel"); } catch {}
+            });
         });
     }  // end of #wireACPEvents
 
@@ -778,7 +784,11 @@ export class Bridge {
         this.#statusMenu.refreshIfAlive().catch(() => {});
     }
     setupTelegramHandlers() {
-        this.#telegram.on("update", (update) => this.#processUpdate(update));
+        this.#telegram.on("update", (update) => {
+            this.#processUpdate(update).catch((err) => {
+                log.error(`Unhandled error in processUpdate: ${err.message}`);
+            });
+        });
 
         this.#telegram.on("conflict", () => {
             log.warn("Telegram 409 conflict — another process is polling this bot");
@@ -1752,7 +1762,39 @@ export class Bridge {
             const promptStartMs = Date.now();
             const result = await this.#acp.prompt(text, opts);
             const elapsed = ((Date.now() - promptStartMs) / 1000).toFixed(1);
-            log.info(`Prompt completed: ${scopeKey || 'unknown'} in ${elapsed}s (${scope?.turnToolCount || 0} tool calls${scope?.turnToolErrors ? `, ${scope.turnToolErrors} errors` : ''})`);
+            const toolCount = scope?.turnToolCount || 0;
+            const hasContent = !!(scope?.messageBuffer?.trim());
+            log.info(`Prompt completed: ${scopeKey || 'unknown'} in ${elapsed}s (${toolCount} tool calls${scope?.turnToolErrors ? `, ${scope.turnToolErrors} errors` : ''})`);
+
+            // Detect empty response (context exhaustion / backend issue)
+            // If prompt returned in <1s with no tool calls and no text, the session is likely exhausted
+            if (parseFloat(elapsed) < 1.0 && toolCount === 0 && !hasContent && scope?.sessionId) {
+                log.warn(`Empty response detected (${elapsed}s, 0 tools, no text) — session likely exhausted, creating new session`);
+                try {
+                    const newSession = await this.#acp.newSession({
+                        cwd: this.#config.workingDirectory || "/config",
+                    });
+                    scope.sessionId = newSession.sessionId;
+                    if (ref) ref.sessionId = newSession.sessionId;
+                    scope.preambleSent = false;
+                    if (this.#scopeMgr) this.#scopeMgr.setActive(scopeKey);
+                    log.info(`New session created after empty response: ${newSession.sessionId}`);
+
+                    // Retry the prompt once with the new session
+                    // Text already contains the preamble from the first attempt — reuse as-is
+                    // Mark preambleSent true so the NEXT prompt after this doesn't double it
+                    scope.preambleSent = true;
+                    const retryResult = await this.#acp.prompt(text, opts);
+                    const retryElapsed = ((Date.now() - promptStartMs) / 1000).toFixed(1);
+                    log.info(`Retry prompt completed: ${scopeKey || 'unknown'} in ${retryElapsed}s (${scope?.turnToolCount || 0} tool calls)`);
+                } catch (retryErr) {
+                    log.error(`Empty response recovery failed: ${retryErr.message}`);
+                    scope.preambleSent = false; // next prompt should include preamble
+                    if (ref) {
+                        this.#transport.enqueueSend(ref, `⚠️ Session expired. Please send your message again.`);
+                    }
+                }
+            }
         } catch (err) {
             // Skip error handling if this prompt was cancelled due to a message edit
             if (this.#editCancelled) {
@@ -1798,20 +1840,22 @@ export class Bridge {
             this.#lastProcessedAt = Date.now();
             if (this.#scopeMgr) this.#scopeMgr.clearActive();
 
-            // Process queued prompts
-            if (this.#promptQueue.length > 0) {
-                // If ACP was killed (watchdog/force-cancel), restart before processing queue
-                if (!this.#acp.alive) {
-                    try {
-                        log.info("Restarting ACP to process preserved queue...");
-                        await this.startCopilot();
-                    } catch (err) {
-                        log.error(`ACP restart failed — dropping ${this.#promptQueue.length} queued message(s): ${err.message}`);
+            // Process queued prompts or restart ACP if killed
+            if (!this.#acp.alive) {
+                // ACP was killed (watchdog/force-cancel) — restart it
+                try {
+                    log.info("Restarting ACP after intentional kill...");
+                    await this.startCopilot();
+                } catch (err) {
+                    log.error(`ACP restart failed: ${err.message}`);
+                    if (this.#promptQueue.length > 0) {
                         this.#broadcastAdmin(`⚠️ ACP restart failed. ${this.#promptQueue.length} queued message(s) dropped.`);
                         this.#promptQueue = [];
-                        return;
                     }
+                    return;
                 }
+            }
+            if (this.#promptQueue.length > 0) {
                 let nextIndex = 0;
                 if (this.#lastProcessedScope && Date.now() - this.#lastProcessedAt < 5000) {
                     const affinityIndex = this.#promptQueue.findIndex((entry) => entry.scopeKey === this.#lastProcessedScope);

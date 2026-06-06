@@ -78,7 +78,7 @@ export class InteractiveFlows {
             const propName = propNames[0];
             const propSchema = props[propName];
             const result = await this.#elicitSingleField(
-                chatId, req.requestId, req.message, propName, propSchema, scope
+                chatId, req.requestId, req.message, propName, propSchema, scope, acp
             );
             if (result !== undefined) {
                 acp.respondElicitation(req.requestId, "accept", { [propName]: result });
@@ -95,7 +95,7 @@ export class InteractiveFlows {
                     ? `${req.message}\n\n${propSchema.title}${propSchema.description ? `\n${propSchema.description}` : ""}`
                     : req.message;
                 const result = await this.#elicitSingleField(
-                    chatId, req.requestId, fieldMsg, propName, propSchema, scope
+                    chatId, req.requestId, fieldMsg, propName, propSchema, scope, acp
                 );
                 if (result === undefined) return; // cancelled
                 content[propName] = result;
@@ -120,8 +120,8 @@ export class InteractiveFlows {
      * Returns the value on accept, or undefined if cancelled/declined
      * (in which case the elicitation response is already sent).
      */
-    async #elicitSingleField(chatId, requestId, message, propName, schema, scope) {
-        const acp = this.#acp;
+    async #elicitSingleField(chatId, requestId, message, propName, schema, scope, acp) {
+        acp = acp || this.#acp;
         const title = schema.title || propName;
 
         // Enum with titles (oneOf) → inline keyboard
