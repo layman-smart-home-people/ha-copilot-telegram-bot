@@ -2,6 +2,14 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.30.2] — 2026-06-06
+
+### Added
+- **Automatic escape hatch on elicitation buttons** — every `ask_user` option list now auto-appends a "✏️ Something else" button. When tapped, the user gets a free-text prompt and can type any answer. Handled entirely within the single tool call — the agent doesn't need to know about the two-step flow.
+
+### Changed
+- **Extracted `#doAskUserFreeText`** — refactored the free-text elicitation flow into a reusable method, called by both the direct free-text path and the escape hatch path.
+
 ## [0.30.1] — 2026-06-06
 
 ### Added

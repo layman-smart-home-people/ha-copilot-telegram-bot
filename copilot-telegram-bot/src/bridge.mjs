@@ -1235,10 +1235,11 @@ export class Bridge {
 
         if (options && Array.isArray(options) && options.length > 0) {
             if (options.length <= 8) {
-                // Inline buttons — one per row + cancel
+                // Inline buttons — one per row + custom escape hatch + cancel
                 const rows = options.map((opt, i) => [
                     { text: opt.label || opt.value, value: `mcpq:${i}` },
                 ]);
+                rows.push([{ text: "✏️ Something else", value: "mcpq:custom" }]);
                 rows.push([{ text: "❌ Cancel", value: "mcpq:cancel" }]);
 
                 if (composerRef) composerRef.setInteractionPending("question");
@@ -1252,6 +1253,15 @@ export class Bridge {
                             this.#buttons.finalize(chatId, btnMsgId, `❌ Cancelled: ${message}`).catch(() => {});
                         }
                         return { error: "User cancelled" };
+                    }
+                    if (value === "mcpq:custom") {
+                        // Escape hatch — finalize button msg and fall through to free-text
+                        if (btnMsgId) {
+                            this.#buttons.finalize(chatId, btnMsgId, `✏️ Typing custom answer...`).catch(() => {});
+                        }
+                        if (scope) scope.pendingElicitation = null;
+                        if (composerRef) composerRef.setInteractionPending(null);
+                        return await this.#doAskUserFreeText(item, prefix);
                     }
                     const idx = parseInt(value.replace("mcpq:", ""), 10);
                     const answer = options[idx]?.value ?? value;
@@ -1296,39 +1306,50 @@ export class Bridge {
             }
         } else {
             // Free text — prompt and wait for next message
-            const cancelRows = [[{ text: "❌ Cancel", value: "mcpq:cancel" }]];
+            return await this.#doAskUserFreeText(item, prefix);
+        }
+    }
 
-            if (composerRef) composerRef.setInteractionPending("question");
-            try {
-                const btnPromise = this.#buttons.prompt(
-                    chatId, `❓ ${displayMsg}\n\nType your answer below:`, cancelRows,
-                    { timeoutMs: 0, ...sendOpts }
-                );
+    /** Show a free-text prompt with a cancel button and wait for typed answer. */
+    async #doAskUserFreeText(item, prefix) {
+        const { message, scope, chatId } = item;
+        const composerRef = scope?.composer;
+        const replyToMsg = composerRef?.messageId;
+        const sendOpts = replyToMsg ? { reply_to_message_id: replyToMsg } : {};
+        const displayMsg = `${prefix}${message}`;
+        const cancelRows = [[{ text: "❌ Cancel", value: "mcpq:cancel" }]];
 
-                const textPromise = new Promise((resolve) => {
-                    if (scope) {
-                        scope.pendingElicitation = {
-                            resolve, schema: { type: "string" }, propName: "answer",
-                        };
-                    }
-                });
+        if (scope) scope.pendingElicitation = { reserved: true };
+        if (composerRef) composerRef.setInteractionPending("question");
+        try {
+            const btnPromise = this.#buttons.prompt(
+                chatId, `❓ ${displayMsg}\n\nType your answer below:`, cancelRows,
+                { timeoutMs: 0, ...sendOpts }
+            );
 
-                const result = await Promise.race([
-                    btnPromise.then(r => ({ type: "button", value: r.value })),
-                    textPromise.then(v => ({ type: "text", value: v })),
-                ]);
-
-                if (result.type === "button") {
-                    if (scope) scope.pendingElicitation = null;
-                    return { error: "User cancelled" };
-                } else {
-                    this.#buttons.cancelForChat(chatId, `✅ Answered`);
-                    return { answer: result.value ?? "" };
+            const textPromise = new Promise((resolve) => {
+                if (scope) {
+                    scope.pendingElicitation = {
+                        resolve, schema: { type: "string" }, propName: "answer",
+                    };
                 }
-            } finally {
+            });
+
+            const result = await Promise.race([
+                btnPromise.then(r => ({ type: "button", value: r.value })),
+                textPromise.then(v => ({ type: "text", value: v })),
+            ]);
+
+            if (result.type === "button") {
                 if (scope) scope.pendingElicitation = null;
-                if (composerRef) composerRef.setInteractionPending(null);
+                return { error: "User cancelled" };
+            } else {
+                this.#buttons.cancelForChat(chatId, `✅ Answered`);
+                return { answer: result.value ?? "" };
             }
+        } finally {
+            if (scope) scope.pendingElicitation = null;
+            if (composerRef) composerRef.setInteractionPending(null);
         }
     }
 
