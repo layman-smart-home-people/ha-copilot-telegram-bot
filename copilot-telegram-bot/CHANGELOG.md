@@ -2,6 +2,14 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.40.0] — 2026-06-06
+
+### Changed
+- **Phase 5 refactor (steps 1–3)**: Extracted Telegram-specific code from `bridge.mjs` into `transport/telegram/adapter.mjs` (new, 458 lines). Bridge reduced from 2,401 → 2,051 lines (−350).
+  - Moved: `#handleCallbackQuery` (callback routing, changelog viewer, status:back, dismiss, slash command dispatch), `#handleMembershipChange` (group join/leave, forum detection, welcome messages), `#handleFileAttachment` (photo/document download, text extraction), `#extractReplyContext` (reply chain context building), `#checkRateLimit` (per-user rate limiting), `#notifyAdminPairingRequest/Pairing` (pairing notifications), static file type constants.
+  - Bridge retains thin delegation wrappers to maintain the same internal API for `#processUpdate` (not yet extracted).
+  - `buildCommandContext` made public for adapter access.
+
 ## [0.39.0] — 2026-06-06
 
 ### Added
