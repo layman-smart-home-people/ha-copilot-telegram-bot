@@ -13,6 +13,9 @@ const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 60000;
 const NORMAL_CLOSE_CODE = 1000;
 const STOP_TIMEOUT_MS = 5000;
+const AUTH_TIMEOUT_MS = 30_000;
+const HEARTBEAT_INTERVAL_MS = 60_000;
+const HEARTBEAT_PONG_TIMEOUT_MS = 30_000;
 const log = createLogger("ha");
 
 export class HAEventListener extends EventEmitter {
@@ -28,6 +31,10 @@ export class HAEventListener extends EventEmitter {
     #connectPromise = null;
     #connectResolve = null;
     #connectReject = null;
+    #authTimeoutTimer = null;
+    #heartbeatTimer = null;
+    #pongTimeoutTimer = null;
+    #awaitingPongId = null;
 
     constructor({
         token = process.env.SUPERVISOR_TOKEN,
@@ -68,6 +75,8 @@ export class HAEventListener extends EventEmitter {
     async stop() {
         this.#shouldReconnect = false;
         this.#clearReconnectTimer();
+        this.#clearAuthTimeout();
+        this.#stopHeartbeat();
         this.#rejectConnectPromise(new Error("HA event listener stopped"));
 
         const ws = this.#ws;
@@ -117,6 +126,16 @@ export class HAEventListener extends EventEmitter {
         this.#connected = false;
         this.#pendingRequests.clear();
 
+        // Auth timeout — if we don't get auth_ok within AUTH_TIMEOUT_MS, force close & retry
+        this.#clearAuthTimeout();
+        this.#authTimeoutTimer = setTimeout(() => {
+            this.#authTimeoutTimer = null;
+            if (!this.#connected && this.#ws === ws) {
+                log.warn(`Auth timeout after ${AUTH_TIMEOUT_MS / 1000}s — forcing reconnect`);
+                this.#safeClose(4000, "Auth timeout");
+            }
+        }, AUTH_TIMEOUT_MS);
+
         ws.addEventListener("open", () => {
             if (ws !== this.#ws) return;
             log.info("HA WS connected; waiting for auth challenge");
@@ -136,6 +155,8 @@ export class HAEventListener extends EventEmitter {
 
         ws.addEventListener("close", (event) => {
             if (ws !== this.#ws) return;
+            this.#clearAuthTimeout();
+            this.#stopHeartbeat();
             const reason = event.reason ? ` (${event.reason})` : "";
             const err = new Error(`HA WebSocket closed: ${event.code}${reason}`);
             const cleanStop = !this.#shouldReconnect && event.code === NORMAL_CLOSE_CODE;
@@ -162,12 +183,14 @@ export class HAEventListener extends EventEmitter {
             this.#send({ type: "auth", access_token: this.#token });
             break;
         case "auth_ok":
+            this.#clearAuthTimeout();
             this.#connected = true;
             this.#reconnectDelayMs = INITIAL_BACKOFF_MS;
             log.info("HA WS authenticated");
             this.emit("connected");
             this.#resolveConnectPromise();
             this.#subscribeToStateChanged();
+            this.#startHeartbeat();
             break;
         case "auth_invalid": {
             const error = new Error(`HA WebSocket auth failed: ${message.message || "auth_invalid"}`);
@@ -182,6 +205,7 @@ export class HAEventListener extends EventEmitter {
             }
             break;
         case "pong":
+            this.#handlePong(message);
             break;
         case "result":
             this.#handleResult(message);
@@ -316,6 +340,81 @@ export class HAEventListener extends EventEmitter {
         }
         if (typeof Blob !== "undefined" && data instanceof Blob) return await data.text();
         return String(data);
+    }
+
+    // ── Auth timeout ────────────────────────────────────────────
+
+    #clearAuthTimeout() {
+        if (this.#authTimeoutTimer) {
+            clearTimeout(this.#authTimeoutTimer);
+            this.#authTimeoutTimer = null;
+        }
+    }
+
+    // ── Client-side heartbeat ───────────────────────────────────
+
+    #startHeartbeat() {
+        this.#stopHeartbeat();
+        this.#heartbeatTimer = setInterval(() => {
+            if (!this.#connected || !this.#ws || this.#ws.readyState !== WebSocket.OPEN) {
+                this.#stopHeartbeat();
+                return;
+            }
+            // Clear any stale pong timeout before sending a new ping
+            if (this.#pongTimeoutTimer) {
+                clearTimeout(this.#pongTimeoutTimer);
+                this.#pongTimeoutTimer = null;
+            }
+            const id = this.#nextMessageId();
+            this.#awaitingPongId = id;
+            try {
+                this.#send({ id, type: "ping" });
+            } catch {
+                log.warn("Heartbeat ping failed — connection dead");
+                this.#stopHeartbeat();
+                this.#safeClose(4002, "Heartbeat failed");
+                return;
+            }
+            this.#pongTimeoutTimer = setTimeout(() => {
+                this.#pongTimeoutTimer = null;
+                if (this.#awaitingPongId === id) {
+                    log.warn(`Heartbeat pong timeout (${HEARTBEAT_PONG_TIMEOUT_MS / 1000}s) — forcing reconnect`);
+                    this.#awaitingPongId = null;
+                    this.#stopHeartbeat();
+                    this.#safeClose(4003, "Heartbeat pong timeout");
+                }
+            }, HEARTBEAT_PONG_TIMEOUT_MS);
+        }, HEARTBEAT_INTERVAL_MS);
+    }
+
+    #stopHeartbeat() {
+        if (this.#heartbeatTimer) {
+            clearInterval(this.#heartbeatTimer);
+            this.#heartbeatTimer = null;
+        }
+        if (this.#pongTimeoutTimer) {
+            clearTimeout(this.#pongTimeoutTimer);
+            this.#pongTimeoutTimer = null;
+        }
+        this.#awaitingPongId = null;
+    }
+
+    #handlePong(message) {
+        if (typeof message.id === "number" && message.id === this.#awaitingPongId) {
+            this.#awaitingPongId = null;
+            if (this.#pongTimeoutTimer) {
+                clearTimeout(this.#pongTimeoutTimer);
+                this.#pongTimeoutTimer = null;
+            }
+        }
+    }
+
+    // ── Manual reconnect ────────────────────────────────────────
+
+    async reconnect() {
+        log.info("Manual reconnect requested");
+        await this.stop();
+        return this.start();
     }
 }
 

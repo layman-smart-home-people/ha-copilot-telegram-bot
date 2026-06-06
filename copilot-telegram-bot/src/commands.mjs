@@ -626,6 +626,18 @@ export async function handleSlashCommand(ctx, command, args) {
                     return true;
                 }
 
+                if (sub === "reconnect") {
+                    reply("🔄 Reconnecting HA WebSocket...");
+                    orch.reconnectHA().then(connected => {
+                        reply(connected
+                            ? "✅ HA WebSocket reconnected successfully"
+                            : "⚠️ Reconnect initiated but not yet connected — will retry automatically");
+                    }).catch(err => {
+                        reply(`❌ Reconnect failed: ${err.message}`);
+                    });
+                    return true;
+                }
+
                 if (sub === "mute") {
                     const durationStr = args.split(/\s+/)[1];
                     const minutes = parseDuration(durationStr);
@@ -682,7 +694,7 @@ export async function handleSlashCommand(ctx, command, args) {
                     text += `   ${inst.action.type} | ${escapeHtml(triggerDesc)}${triggerCountInfo}${lastFired}${expiryInfo}\n`;
                     text += `   ID: <code>${escapeHtml(inst.id)}</code>\n\n`;
                 }
-                text += `Commands: /standing pause|resume|mute|enable|disable|delete &lt;id|all&gt;`;
+                text += `Commands: /standing pause|resume|mute|reconnect|enable|disable|delete &lt;id|all&gt;`;
                 telegram.enqueue(() => telegram.sendMessage(chatId, text, "HTML"));
                 return true;
             }

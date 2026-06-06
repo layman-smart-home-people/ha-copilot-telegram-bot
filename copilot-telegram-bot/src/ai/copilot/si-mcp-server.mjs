@@ -148,9 +148,15 @@ const TOOLS = [
             required: ["id"],
         },
     },
+    {
+        name: "si_reconnect",
+        description: "Force reconnect the HA WebSocket event listener used by standing instructions. Use when the WS connection is stale or disconnected (e.g. after HA core restart).",
+        inputSchema: {
+            type: "object",
+            properties: {},
+        },
+    },
 ];
-
-// ── HTTP client (no dependencies) ───────────────────────────
 
 function apiCall(method, path, body) {
     return new Promise((resolve, reject) => {
@@ -260,6 +266,15 @@ async function handleTool(name, args) {
                 }
                 if (status === 404) return err(`Instruction not found: ${id}`);
                 return err(`API error (${status}): ${data?.error || JSON.stringify(data)}`);
+            }
+
+            case "si_reconnect": {
+                const { status, data } = await apiCall("POST", "/api/standing/reconnect");
+                if (status === 200) {
+                    const state = data.connected ? "🟢 connected" : "🟡 reconnecting";
+                    return ok(`🔄 HA WebSocket reconnect initiated — ${state}`);
+                }
+                return err(`Reconnect failed (${status}): ${data?.error || JSON.stringify(data)}`);
             }
 
             default:

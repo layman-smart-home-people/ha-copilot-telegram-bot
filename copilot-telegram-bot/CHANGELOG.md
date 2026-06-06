@@ -2,6 +2,14 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.33.0] — 2026-06-06
+
+### Added
+- **HA WebSocket auth timeout** — if `auth_ok` isn't received within 30s of connecting, force close and retry. Fixes zombie connections during HA core restarts where the Supervisor proxy accepts TCP but HA isn't ready.
+- **Client-side heartbeat** — pings HA every 60s, force-closes if no pong within 30s. Detects silently dead connections.
+- **Manual reconnect** — `/standing reconnect` command, `POST /api/standing/reconnect` endpoint, and `si_reconnect` MCP tool for forcing WS reconnection.
+- **`reconnect()` method** on HAEventListener and `reconnectHA()` on orchestrator for programmatic reconnection.
+
 ## [0.32.0] — 2026-06-06
 
 ### Added

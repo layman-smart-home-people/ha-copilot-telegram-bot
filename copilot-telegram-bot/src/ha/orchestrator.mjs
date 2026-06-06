@@ -98,6 +98,13 @@ export class StandingInstructionOrchestrator {
         };
     }
 
+    async reconnectHA() {
+        log.info("Reconnecting HA event listener...");
+        await this.#eventListener.reconnect();
+        log.info(`HA reconnect complete — connected: ${this.#eventListener.connected}`);
+        return this.#eventListener.connected;
+    }
+
     async start() {
         if (this.#started) return;
         this.#started = true;

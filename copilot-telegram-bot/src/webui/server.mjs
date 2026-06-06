@@ -166,6 +166,11 @@ export class WebUIServer {
             return this.#apiInstructionsToggle(res, id, action);
         }
 
+        // POST /api/standing/reconnect — force reconnect HA WebSocket
+        if (pathname === "/api/standing/reconnect" && method === "POST") {
+            return this.#apiStandingReconnect(res);
+        }
+
         // GET /api/docs — list available docs
         if (pathname === "/api/docs" && method === "GET") {
             return this.#apiDocsList(res);
@@ -372,6 +377,19 @@ export class WebUIServer {
             this.#json(res, 200, instruction);
         } catch (err) {
             this.#json(res, 400, { error: err.message });
+        }
+    }
+
+    async #apiStandingReconnect(res) {
+        const orchestrator = this.#ctx.orchestrator;
+        if (!orchestrator) {
+            return this.#json(res, 503, { error: "Orchestrator not available" });
+        }
+        try {
+            const connected = await orchestrator.reconnectHA();
+            this.#json(res, 200, { reconnected: true, connected });
+        } catch (err) {
+            this.#json(res, 500, { error: `Reconnect failed: ${err.message}` });
         }
     }
 
