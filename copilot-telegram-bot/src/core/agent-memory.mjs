@@ -155,6 +155,7 @@ Manage automated alerts, reminders, and scheduled tasks. **Always use these tool
   - \`wake_agent\`: \`prompt\` (string)
   - \`notify\`: \`message\` (string)
   - \`ha_service\`: \`domain\`, \`service\`, \`data\` (object), optional \`message\`
+  - \`evaluate\`: \`template\` (Jinja2 string), optional \`condition\` (Jinja2 — use \`{{ result }}\` for template output), optional \`message\` (use \`{{ result }}\` for template output). Zero ACP overhead.
 
 ### Optional fields
 - \`conditions\` (array). Gate between trigger and action. Top-level is AND. Types:

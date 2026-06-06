@@ -39,14 +39,16 @@ const ACTION_SCHEMA = {
     properties: {
         type: {
             type: "string",
-            enum: ["wake_agent", "notify", "ha_service"],
-            description: "Action type: wake_agent (start agent conversation), notify (send Telegram message), ha_service (call HA service)",
+            enum: ["wake_agent", "notify", "ha_service", "evaluate"],
+            description: "Action type: wake_agent (start agent conversation), notify (send Telegram message), ha_service (call HA service), evaluate (evaluate HA Jinja2 template, optionally check condition, send notification)",
         },
         prompt: { type: "string", description: "Agent prompt (wake_agent)" },
-        message: { type: "string", description: "Notification text (notify) or optional message after service call (ha_service)" },
+        message: { type: "string", description: "Notification text (notify, ha_service, evaluate). For evaluate, use {{ result }} to include template output." },
         domain: { type: "string", description: "HA service domain (ha_service). Example: 'light'" },
         service: { type: "string", description: "HA service name (ha_service). Example: 'turn_on'" },
         data: { type: "object", description: "Service call data (ha_service). Example: {entity_id: 'light.bedroom'}" },
+        template: { type: "string", description: "Jinja2 template to evaluate via HA API (evaluate). Example: \"{{ states('sensor.temperature') }}\"" },
+        condition: { type: "string", description: "Optional Jinja2 condition template (evaluate). Must render to 'true'/'True'/'1' to pass. Use {{ result }} to reference main template output." },
     },
     required: ["type"],
 };

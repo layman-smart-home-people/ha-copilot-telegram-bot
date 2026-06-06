@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.44.1] — 2026-06-06
+
+### Added
+- **`evaluate` SI action type** — New action that evaluates a Jinja2 template via HA REST API, optionally checks a condition, and sends a notification. Zero ACP overhead — no agent tokens consumed. Use `{{ result }}` in condition and message to reference template output. Ideal for simple sensor checks that don't need agent reasoning.
+
 ## [0.44.0] — 2026-06-06
 
 ### Added

@@ -11,6 +11,7 @@ const CRON_CHECK_INTERVAL_MS = 60_000;
 const TIMER_CHECK_INTERVAL_MS = 15_000;
 const HA_SERVICE_TIMEOUT_MS = 15_000;
 const HA_STATE_FETCH_TIMEOUT_MS = 5_000;
+const HA_TEMPLATE_TIMEOUT_MS = 10_000;
 
 // Domains allowed for ha_service action without agent involvement.
 // Restricts automated service calls to safe, non-destructive domains.
@@ -419,9 +420,71 @@ export class StandingInstructionOrchestrator {
             }
             return;
         }
+        case "evaluate": {
+            const { template, condition, message } = action;
+            if (!template) {
+                log.warn(`evaluate action missing template for "${instruction.description}"`);
+                return;
+            }
+
+            // Evaluate the main template via HA REST API
+            let result;
+            try {
+                result = await this.#evaluateTemplate(template);
+            } catch (err) {
+                log.warn(`Template evaluation failed for "${instruction.description}": ${err.message}`);
+                return;
+            }
+
+            // If condition is provided, evaluate it (substituting {{ result }})
+            if (condition) {
+                const conditionTemplate = condition.replaceAll("{{ result }}", result).replaceAll("{{result}}", result);
+                let conditionResult;
+                try {
+                    conditionResult = await this.#evaluateTemplate(conditionTemplate);
+                } catch (err) {
+                    log.warn(`Condition evaluation failed for "${instruction.description}": ${err.message}`);
+                    return;
+                }
+                const passed = ["true", "True", "1"].includes(conditionResult.trim());
+                if (!passed) {
+                    log.debug?.(`evaluate condition not met for "${instruction.description}" (got: "${conditionResult.trim()}")`);
+                    return;
+                }
+            }
+
+            // Condition passed (or no condition) — send notification
+            if (message && this.#ownerChatId) {
+                const resolvedMessage = message.replaceAll("{{ result }}", result).replaceAll("{{result}}", result);
+                await this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(this.#ownerChatId, `🔔 ${instruction.description}\n${resolvedMessage}`)
+                );
+            }
+            return;
+        }
         default:
             log.error(`Unknown action type: ${action.type}`);
         }
+    }
+
+    // ── HA template evaluation ────────────────────────────────
+
+    async #evaluateTemplate(template) {
+        const url = `${this.#haBaseUrl}/template`;
+        const res = await fetch(url, {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${this.#haToken}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ template }),
+            signal: AbortSignal.timeout(HA_TEMPLATE_TIMEOUT_MS),
+        });
+        if (!res.ok) {
+            const body = await res.text().catch(() => "");
+            throw new Error(`HTTP ${res.status}: ${body || res.statusText}`);
+        }
+        return await res.text();
     }
 
     // ── Condition evaluation ──────────────────────────────────
