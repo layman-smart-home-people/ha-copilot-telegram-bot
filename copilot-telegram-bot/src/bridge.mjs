@@ -14,38 +14,18 @@ import { MessageTransport, makeRef } from "./transport/telegram/transport-ref.mj
 import { AgentMemory } from "./core/agent-memory.mjs";
 import { PromptBuilder, sanitizePinnedInstruction } from "./ai/copilot/prompt-builder.mjs";
 import { CopilotLifecycle } from "./ai/copilot/lifecycle.mjs";
+import { PermissionHandler, extractCallbackTargetUserId } from "./ai/copilot/permissions.mjs";
+import { InteractiveFlows } from "./ai/copilot/interactive-flows.mjs";
 import { StatusMenu } from "./core/status.mjs";
+import { ToolNotifications } from "./core/tool-notifications.mjs";
 import { createLogger } from "./logger.mjs";
-import { createServer as createNetServer } from "node:net";
-import { unlinkSync, chmodSync } from "node:fs";
 
 const log = createLogger('bridge');
 
 const TYPING_INTERVAL_MS = 4000;
 const TYPING_DEBOUNCE_MS = 60000;
-const TG_UX_SOCK = process.env.TG_UX_SOCK || "/run/tg-ux.sock";
 const PHOTO_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
-const UNDO_ALLOWED_DOMAINS = new Set([
-    "light", "switch", "fan", "cover", "lock", "climate",
-    "media_player", "input_boolean", "automation", "script", "scene",
-]);
-const UNDO_ALLOWED_SERVICES = new Set([
-    "turn_on", "turn_off", "toggle",
-    "open_cover", "close_cover",
-    "lock", "unlock",
-    "set_temperature", "activate", "deactivate",
-]);
-const UNDO_ENTITY_ID_RE = /^[a-z_]+\.[a-z0-9_]+$/;
-const UNDO_REVERSE_MAP = Object.freeze({
-    "turn_on": "turn_off",
-    "turn_off": "turn_on",
-    "open_cover": "close_cover",
-    "close_cover": "open_cover",
-    "lock": "unlock",
-    "unlock": "lock",
-    "activate": "deactivate",
-});
 
 export class Bridge {
     #telegram;
@@ -111,13 +91,14 @@ export class Bridge {
     // Active status menu — managed by StatusMenu module
     #statusMenu;
 
-    // UDS server for tg-ux MCP sidecar IPC
-    #udsServer = null;
+    // Permission handler (extracted module)
+    #permissionHandler;
 
-    // Question queue for MCP ask_user (FIFO)
-    #questionQueue = [];
-    #processingQuestion = false;
-    static #MAX_QUESTION_QUEUE = 10;
+    // Interactive flows — elicitation + MCP ask_user (extracted module)
+    #interactiveFlows;
+
+    // Tool notifications (extracted module)
+    #toolNotify;
 
     // Agent persistent memory
     #agentMemory;
@@ -167,6 +148,31 @@ export class Bridge {
             clearKnownTools: () => this.#knownTools.clear(),
             broadcastAdmin: (text) => this.#broadcastAdmin(text),
         });
+
+        this.#permissionHandler = new PermissionHandler({
+            buttons: this.#buttons,
+            getAllowedChatIds: () => this.#allowedChatIds,
+        });
+
+        this.#interactiveFlows = new InteractiveFlows({
+            buttons: this.#buttons,
+            telegram,
+            acp: this.#acp,
+            scopeMgr: this.#scopeMgr,
+            getActiveScope: () => this.#activeScope,
+            getOverflowScope: () => this.#overflowScope,
+            getActiveRef: () => this.#activeRef,
+            getAllowedChatIds: () => this.#allowedChatIds,
+        });
+
+        this.#toolNotify = new ToolNotifications({
+            buttons: this.#buttons,
+            telegram,
+            getAllowedChatIds: () => this.#allowedChatIds,
+            getActiveScope: () => this.#activeScope,
+            getActiveRef: () => this.#activeRef,
+            queuePrompt: (text, opts, ref, messageId) => this.#queuePrompt(text, opts, ref, messageId),
+        });
     }
 
     get allowedChatIds() { return this.#allowedChatIds; }
@@ -209,7 +215,7 @@ export class Bridge {
         const scope = this.#activeScope;
 
         // Cancel any queued MCP questions
-        this.#cancelQuestionQueue("Bot shutting down");
+        this.#interactiveFlows.cancelQuestionQueue("Bot shutting down");
 
         // If a response was in progress, notify the user
         if (scope?.composer?.active && this.#activeRef) {
@@ -227,7 +233,7 @@ export class Bridge {
         if (promises.length > 0) {
             await Promise.allSettled(promises);
         }
-        this.#stopUdsServer();
+        this.#interactiveFlows.stopUdsServer();
         this.#buttons.destroy();
     }
 
@@ -294,7 +300,7 @@ export class Bridge {
         const requestedKey = this.#resolveScopeKey(scope, ref);
 
         // Cancel any queued questions for this scope
-        this.#cancelQuestionQueue("User cancelled");
+        this.#interactiveFlows.cancelQuestionQueue("User cancelled");
 
         if (this.#promptActive && (!requestedKey || this.#activeScope?.key === requestedKey)) {
             await this.#acp.cancel();
@@ -325,7 +331,7 @@ export class Bridge {
         });
 
         // Start UDS server for tg-ux MCP sidecar IPC
-        this.#startUdsServer();
+        this.#interactiveFlows.startUdsServer();
     }
 
     /** Wire overflow ACP event handlers (called when overflow spawns). */
@@ -453,7 +459,7 @@ export class Bridge {
 
             // Interactive mode: show notification + undo for HA write tools
             if (!scope.allowAll && status === "completed" && completed?.name) {
-                this.#showToolNotification(completed.name, result, getScope, getRef);
+                this.#toolNotify.showToolNotification(completed.name, result, getScope, getRef);
             }
 
             // Relay images from tool results
@@ -506,7 +512,7 @@ export class Bridge {
             if (getSwitching()) return;
             const scope = getScope();
             if (!scope) return;
-            await this.#handlePermissionRequest(req, acp, scope, getRef, tag);
+            await this.#permissionHandler.handlePermissionRequest(req, acp, scope, getRef, tag);
         });
 
         // Capture session data (models, modes) from session events
@@ -573,205 +579,9 @@ export class Bridge {
                 acp.respondElicitation(req.requestId, "cancel");
                 return;
             }
-            await this.#handleElicitationRequest(req, acp, scope, getRef, tag);
+            await this.#interactiveFlows.handleElicitationRequest(req, acp, scope, getRef, tag);
         });
     }  // end of #wireACPEvents
-
-    // --- Extracted ACP event handlers ---
-
-    /** Handle permission_request events from ACP. */
-    async #handlePermissionRequest(req, acp, scope, getRef, tag) {
-        log.info(`Permission request [${tag}]: ${req.toolCall?.name || req.tool || 'unknown'}`);
-        const { requestId } = req;
-
-        // Extract tool identification from the new session/request_permission format
-        const toolCall = req.toolCall || {};
-        const rawInput = toolCall.rawInput || {};
-        const toolTitle = toolCall.title || "";
-        const domain = rawInput.domain || "";
-        const service = rawInput.service || "";
-        const entityId = rawInput.entity_id || "";
-        const tool = domain && service ? `ha_${domain}_${service}` :
-                     toolTitle.toLowerCase().includes("call service") ? "ha_call_service" :
-                     req.toolName || req.tool || req.name || "unknown_tool";
-        const desc = entityId ? `${domain}.${service} → ${entityId}` :
-                     toolTitle || "";
-
-        // Plan approval / mode switch — special UX with dynamic option buttons
-        if (toolCall.kind === "switch_mode") {
-            await this.#handlePlanApproval(req, acp, scope, getRef, tag);
-            return;
-        }
-
-        // Allow-all mode: skip all permission prompts
-        if (scope.allowAll) {
-            const options = req.options || [];
-            const allowId = options.find(o => o.kind === "allow_always")?.optionId || "allow_always";
-            acp.respondPermission(requestId, allowId);
-            log.info(`Permission auto-approved (allow-all mode): ${tool} (${desc})`);
-            return;
-        }
-
-        // Policy: auto-approve read-only HA tools + standard copilot tools
-        const readOnlyTools = new Set([
-            "ha_search_entities", "ha_get_state", "ha_get_history",
-            "ha_deep_search", "ha_get_overview", "ha_get_entity_state",
-            "ha_search_automations", "ha_get_automation",
-        ]);
-        const isReadOnly = readOnlyTools.has(tool) || !tool.startsWith("ha_");
-
-        const options = req.options || [];
-        const findOption = (kind) => options.find(o => o.kind === kind)?.optionId;
-        const allowOnceId = findOption("allow_once") || "allow_once";
-        const allowAlwaysId = findOption("allow_always") || "allow_always";
-        const rejectOnceId = findOption("reject_once") || "reject_once";
-
-        // Per-user per-scope grants
-        const ref = getRef();
-        const userId = ref?.userId;
-        if (isReadOnly || (userId && scope.isToolGranted(userId, tool))) {
-            acp.respondPermission(requestId, allowAlwaysId);
-            log.info(`Permission auto-approved: ${tool} (${desc})`);
-            return;
-        }
-
-        // Ask user via inline buttons
-        const targetRef = getRef();
-        const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
-        if (!chatId || !this.#buttons) {
-            acp.respondPermission(requestId, rejectOnceId);
-            log.info(`Permission denied (no chat): ${tool}`);
-            return;
-        }
-
-        const label = desc ? `${tool}\n${desc}` : tool;
-        const encodedUserId = this.#encodeCallbackUserId(targetRef?.userId);
-        const allowOnceValue = encodedUserId ? `perm:${encodedUserId}:${allowOnceId}` : allowOnceId;
-        const allowAlwaysValue = encodedUserId ? `perm:${encodedUserId}:${allowAlwaysId}` : allowAlwaysId;
-        const rejectOnceValue = encodedUserId ? `perm:${encodedUserId}:${rejectOnceId}` : rejectOnceId;
-        const rows = [
-            [
-                { text: "✅ Allow once", value: allowOnceValue },
-                { text: "✅ Always allow", value: allowAlwaysValue },
-                { text: "❌ Deny", value: rejectOnceValue },
-            ],
-        ];
-        if (scope.composer) scope.composer.setInteractionPending("permission");
-        let selected, permMsgId;
-        try {
-            ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
-                chatId,
-                `🔐 Permission request:\n${label}`,
-                rows,
-                { timeoutMs: 0 }
-            ));
-        } finally {
-            if (scope.composer) scope.composer.setInteractionPending(null);
-        }
-
-        const selectedOption = this.#unwrapPermissionSelection(selected);
-        if (selectedOption === allowOnceId || selectedOption === allowAlwaysId) {
-            if (selectedOption === allowAlwaysId && userId) {
-                scope.grantTool(userId, tool);
-            }
-            acp.respondPermission(requestId, selectedOption);
-            log.info(`Permission granted (${selectedOption}): ${tool}`);
-            if (permMsgId) {
-                try {
-                    await this.#buttons.finalize(chatId, permMsgId, `✅ Allowed: ${desc || tool}`);
-                } catch (err) {
-                    log.warn(`Error finalizing allow message: ${err.message}`);
-                }
-            }
-        } else {
-            acp.respondPermission(requestId, rejectOnceId);
-            log.info(`Permission denied: ${tool} (permMsgId=${permMsgId})`);
-            try {
-                if (permMsgId) {
-                    log.debug(`Finalizing deny message: chat=${chatId} msg=${permMsgId}`);
-                    await this.#buttons.finalize(chatId, permMsgId, `❌ Denied: ${desc || tool}`);
-                } else {
-                    log.warn(`No permMsgId for deny feedback`);
-                }
-            } catch (err) {
-                log.warn(`Error finalizing deny message: ${err.message}`);
-            }
-        }
-    }
-
-    /** Handle plan approval (switch_mode permission requests). */
-    async #handlePlanApproval(req, acp, scope, getRef, tag) {
-        const { requestId } = req;
-        const toolCall = req.toolCall || {};
-        const toolTitle = toolCall.title || "";
-        const options = req.options || [];
-
-        if (options.length === 0) {
-            log.warn('Plan approval: no options provided');
-            acp.respondPermission(requestId, "reject_once");
-            return;
-        }
-        const targetRef = getRef();
-        const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
-        if (!chatId || !this.#buttons) {
-            const fallbackId = options.find(o => o.kind === "allow_once")?.optionId || options[0]?.optionId;
-            if (fallbackId) acp.respondPermission(requestId, fallbackId);
-            return;
-        }
-
-        // Extract plan content from toolCall.content
-        let planSummary = "";
-        if (Array.isArray(toolCall.content)) {
-            for (const c of toolCall.content) {
-                const text = c?.content?.text || c?.text || "";
-                if (text) planSummary += (planSummary ? "\n" : "") + text;
-            }
-        }
-
-        const header = toolTitle || "📋 Ready for implementation";
-        const maxSummary = 3800 - header.length;
-        if (planSummary.length > maxSummary) planSummary = planSummary.slice(0, maxSummary) + "…";
-        const label = planSummary
-            ? `📋 ${header}\n\n${planSummary}`
-            : `📋 ${header}`;
-
-        // Build buttons from dynamic options — one per row for clarity
-        const encodedUserId = this.#encodeCallbackUserId(targetRef?.userId);
-        const rows = options.map(opt => {
-            const icon = opt.kind === "reject_once" || opt.kind === "reject_always" ? "❌"
-                       : opt.kind === "allow_always" ? "🚀"
-                       : "✅";
-            const val = encodedUserId ? `perm:${encodedUserId}:${opt.optionId}` : opt.optionId;
-            return [{ text: `${icon} ${opt.name}`, value: val }];
-        });
-
-        if (scope.composer) scope.composer.setInteractionPending("plan");
-        let selected, permMsgId;
-        try {
-            ({ value: selected, messageId: permMsgId } = await this.#buttons.prompt(
-                chatId, label, rows,
-                { timeoutMs: 0, timeoutText: "📋 Plan approval cancelled" }
-            ));
-        } finally {
-            if (scope.composer) scope.composer.setInteractionPending(null);
-        }
-
-        const selectedOption = this.#unwrapPermissionSelection(selected);
-        if (selectedOption) {
-            acp.respondPermission(requestId, selectedOption);
-            const chosenName = options.find(o => o.optionId === selectedOption)?.name || selectedOption;
-            log.info(`Plan approval: ${chosenName}`);
-            if (permMsgId) {
-                try {
-                    await this.#buttons.finalize(chatId, permMsgId, `📋 ${chosenName}`);
-                } catch {}
-            }
-        } else {
-            const rejectId = options.find(o => o.kind === "reject_once")?.optionId || "reject_once";
-            acp.respondPermission(requestId, rejectId);
-            log.info(`Plan approval cancelled/timed out`);
-        }
-    }
 
     /** Handle ACP process exit — crash recovery and state cleanup. */
     #handleACPExit(code, signal, acp, getScope, getRef, tag) {
@@ -802,7 +612,7 @@ export class Bridge {
             }
 
             // Cancel any queued MCP questions
-            this.#cancelQuestionQueue("Session ended");
+            this.#interactiveFlows.cancelQuestionQueue("Session ended");
         }
 
         if (tag === "primary") {
@@ -842,338 +652,6 @@ export class Bridge {
         }
         this.#statusMenu.refreshIfAlive().catch(() => {});
     }
-    async #handleElicitationRequest(req, acp, scope, getRef, tag) {
-        if (scope.pendingElicitation) {
-            acp.respondElicitation(req.requestId, "cancel");
-            log.warn(`Rejected concurrent elicitation (another pending)`);
-            return;
-        }
-        log.info(`Elicitation [${tag}]: ${req.message}`);
-
-        const targetRef = getRef();
-        const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
-        if (!chatId) {
-            acp.respondElicitation(req.requestId, "cancel");
-            return;
-        }
-
-        const schema = req.requestedSchema;
-        const props = schema?.properties || {};
-        const propNames = Object.keys(props);
-
-        // Single-property shortcut (most common case)
-        if (propNames.length === 1) {
-            const propName = propNames[0];
-            const propSchema = props[propName];
-            const result = await this.#elicitSingleField(
-                chatId, req.requestId, req.message, propName, propSchema, scope
-            );
-            if (result !== undefined) {
-                acp.respondElicitation(req.requestId, "accept", { [propName]: result });
-            }
-            return;
-        }
-
-        // Multi-field: collect answers sequentially
-        if (propNames.length > 1) {
-            const content = {};
-            for (const propName of propNames) {
-                const propSchema = props[propName];
-                const fieldMsg = propSchema.title
-                    ? `${req.message}\n\n${propSchema.title}${propSchema.description ? `\n${propSchema.description}` : ""}`
-                    : req.message;
-                const result = await this.#elicitSingleField(
-                    chatId, req.requestId, fieldMsg, propName, propSchema, scope
-                );
-                if (result === undefined) return; // cancelled
-                content[propName] = result;
-            }
-            acp.respondElicitation(req.requestId, "accept", content);
-            return;
-        }
-
-        // Empty schema — just show message with OK button
-        if (this.#buttons) {
-            const { value } = await this.#buttons.prompt(chatId, `❓ ${req.message}`, [
-                [{ text: "✅ OK", value: "ok" }, { text: "❌ Cancel", value: "cancel" }]
-            ]);
-            acp.respondElicitation(req.requestId, value === "ok" ? "accept" : "decline", {});
-        } else {
-            acp.respondElicitation(req.requestId, "accept", {});
-        }
-    }
-
-    // --- UDS IPC server for tg-ux MCP ask_user tool ---
-
-    #startUdsServer() {
-        try { unlinkSync(TG_UX_SOCK); } catch {}
-        this.#udsServer = createNetServer({ allowHalfOpen: true }, (conn) => {
-            let buf = "";
-            conn.on("data", (c) => {
-                buf += c.toString();
-                // Request is a single JSON line; parse once we have a complete line
-                const nlIdx = buf.indexOf("\n");
-                if (nlIdx === -1) return;
-                const line = buf.slice(0, nlIdx);
-                buf = "";
-                let req;
-                try {
-                    req = JSON.parse(line);
-                } catch (e) {
-                    log.debug(`UDS: JSON parse error: ${e.message}`);
-                    try { conn.end(JSON.stringify({ error: "Invalid JSON" })); } catch {}
-                    return;
-                }
-                const scopeKey = req.scopeKey;
-                log.debug(`UDS: ask_user received (scope=${scopeKey || "unknown"})`);
-                this.#handleMcpAskUser(req.params || {}, scopeKey)
-                    .then((result) => {
-                        log.debug(`UDS: ask_user result (scope=${scopeKey || "unknown"}): ${result.error ? "error: " + result.error : "ok"}`);
-                        try { conn.end(JSON.stringify(result)); } catch {}
-                    })
-                    .catch((err) => {
-                        log.debug(`UDS: ask_user error: ${err.message}`);
-                        try { conn.end(JSON.stringify({ error: err.message })); } catch {}
-                    });
-            });
-            conn.on("error", (err) => {
-                log.debug(`UDS: connection error: ${err.message}`);
-            });
-        });
-        this.#udsServer.on("error", (err) => {
-            log.debug(`UDS server error: ${err.message}`);
-        });
-        this.#udsServer.listen(TG_UX_SOCK, () => {
-            try { chmodSync(TG_UX_SOCK, 0o600); } catch {}
-            log.info(`UDS server listening on ${TG_UX_SOCK}`);
-        });
-    }
-
-    #stopUdsServer() {
-        if (this.#udsServer) {
-            this.#udsServer.close();
-            this.#udsServer = null;
-            try { unlinkSync(TG_UX_SOCK); } catch {}
-        }
-    }
-
-    async #handleMcpAskUser({ message, options }, scopeKey) {
-        // Resolve scope from scopeKey (UDS payload) or fall back to activeScope
-        let scope, ref;
-        if (scopeKey && this.#scopeMgr) {
-            scope = this.#scopeMgr.get(scopeKey);
-            ref = scope?.activeRef || this.#activeRef;
-        }
-        if (!scope) {
-            scope = this.#activeScope;
-            ref = this.#activeRef;
-        }
-        const chatId = ref?.chatId;
-        if (!chatId || !scope) return { error: "No active session" };
-        if (!message) return { error: "No message provided" };
-
-        // Queue overflow protection
-        if (this.#questionQueue.length >= Bridge.#MAX_QUESTION_QUEUE) {
-            log.warn(`Question queue full (${this.#questionQueue.length}), rejecting`);
-            return { error: "Too many pending questions" };
-        }
-
-        // Enqueue and return a Promise that resolves when this question is answered
-        return new Promise((resolve) => {
-            this.#questionQueue.push({
-                message, options, resolve, scope, chatId, ref,
-                queuedAt: Date.now(),
-            });
-            log.debug(`Question queued (queue=${this.#questionQueue.length})`);
-            this.#drainQuestionQueue();
-        });
-    }
-
-    /** Process questions FIFO — one at a time. */
-    async #drainQuestionQueue() {
-        if (this.#processingQuestion) return;
-        if (this.#questionQueue.length === 0) return;
-
-        this.#processingQuestion = true;
-        try {
-            while (this.#questionQueue.length > 0) {
-                const item = this.#questionQueue[0];
-                const total = this.#questionQueue.length;
-                const prefix = total > 1 ? `(1/${total}) ` : "";
-
-                // Stale scope check
-                if (item.scope !== this.#activeScope && item.scope !== this.#overflowScope) {
-                    log.warn(`Question skipped: scope no longer active`);
-                    item.resolve({ error: "Session ended" });
-                    this.#questionQueue.shift();
-                    continue;
-                }
-
-                try {
-                    const result = await this.#doAskUser(item, prefix);
-                    item.resolve(result);
-                } catch (err) {
-                    log.warn(`Question error: ${err.message}`);
-                    item.resolve({ error: err.message });
-                }
-                this.#questionQueue.shift();
-
-                // Brief delay between questions for smooth UX
-                if (this.#questionQueue.length > 0) {
-                    await new Promise(r => setTimeout(r, 500));
-                }
-            }
-        } finally {
-            this.#processingQuestion = false;
-        }
-    }
-
-    /** Cancel all queued questions (e.g., on /stop or ACP exit). */
-    #cancelQuestionQueue(reason) {
-        const count = this.#questionQueue.length;
-        if (count === 0) return;
-        log.debug(`Cancelling ${count} queued questions: ${reason}`);
-        for (const item of this.#questionQueue) {
-            item.resolve({ error: reason });
-        }
-        this.#questionQueue.length = 0;
-    }
-
-    /**
-     * Show a single question to the user and wait for answer.
-     * Extracted from the old #handleMcpAskUser logic.
-     */
-    async #doAskUser(item, prefix) {
-        const { message, options, scope, chatId } = item;
-
-        const composerRef = scope?.composer;
-        const replyToMsg = composerRef?.messageId;
-        const sendOpts = replyToMsg ? { reply_to_message_id: replyToMsg } : {};
-        const displayMsg = `${prefix}${message}`;
-
-        // Reserve pendingElicitation slot
-        if (scope) scope.pendingElicitation = { reserved: true };
-
-        if (options && Array.isArray(options) && options.length > 0) {
-            if (options.length <= 8) {
-                // Inline buttons — one per row + custom escape hatch + cancel
-                const rows = options.map((opt, i) => [
-                    { text: opt.label || opt.value, value: `mcpq:${i}` },
-                ]);
-                rows.push([{ text: "✏️ Something else", value: "mcpq:custom" }]);
-                rows.push([{ text: "❌ Cancel", value: "mcpq:cancel" }]);
-
-                if (composerRef) composerRef.setInteractionPending("question");
-                try {
-                    const { value, messageId: btnMsgId } = await this.#buttons.prompt(
-                        chatId, `❓ ${displayMsg}`, rows,
-                        { timeoutMs: 0, ...sendOpts }
-                    );
-                    if (!value || value === "mcpq:cancel") {
-                        if (btnMsgId) {
-                            this.#buttons.finalize(chatId, btnMsgId, `❌ Cancelled: ${message}`).catch(() => {});
-                        }
-                        return { error: "User cancelled" };
-                    }
-                    if (value === "mcpq:custom") {
-                        // Escape hatch — finalize button msg and fall through to free-text
-                        if (btnMsgId) {
-                            this.#buttons.finalize(chatId, btnMsgId, `✏️ Typing custom answer...`).catch(() => {});
-                        }
-                        if (scope) scope.pendingElicitation = null;
-                        if (composerRef) composerRef.setInteractionPending(null);
-                        return await this.#doAskUserFreeText(item, prefix);
-                    }
-                    const idx = parseInt(value.replace("mcpq:", ""), 10);
-                    const answer = options[idx]?.value ?? value;
-                    const label = options[idx]?.label || answer;
-                    if (btnMsgId) {
-                        this.#buttons.finalize(chatId, btnMsgId, `✅ ${label}`).catch(() => {});
-                    }
-                    return { answer };
-                } finally {
-                    if (scope) scope.pendingElicitation = null;
-                    if (composerRef) composerRef.setInteractionPending(null);
-                }
-            } else {
-                // Too many options — numbered list + text reply
-                const numbered = options.map((opt, i) => `${i + 1}. ${opt.label || opt.value}`).join("\n");
-                const prompt = `❓ ${displayMsg}\n\n${numbered}\n\nReply with the number of your choice, or "cancel".`;
-                const sendParams = { chat_id: chatId, text: prompt, link_preview_options: { is_disabled: true } };
-                if (sendOpts.reply_to_message_id) sendParams.reply_to_message_id = sendOpts.reply_to_message_id;
-                await this.#telegram.call("sendMessage", sendParams);
-
-                if (composerRef) composerRef.setInteractionPending("question");
-                try {
-                    const answer = await new Promise((resolve) => {
-                        if (scope) {
-                            scope.pendingElicitation = {
-                                resolve, schema: { type: "string" }, propName: "answer",
-                            };
-                        }
-                    });
-                    if (!answer || answer.toLowerCase() === "cancel") {
-                        return { error: "User cancelled" };
-                    }
-                    const num = parseInt(answer, 10);
-                    if (num >= 1 && num <= options.length) {
-                        return { answer: options[num - 1].value };
-                    }
-                    return { answer };
-                } finally {
-                    if (scope) scope.pendingElicitation = null;
-                    if (composerRef) composerRef.setInteractionPending(null);
-                }
-            }
-        } else {
-            // Free text — prompt and wait for next message
-            return await this.#doAskUserFreeText(item, prefix);
-        }
-    }
-
-    /** Show a free-text prompt with a cancel button and wait for typed answer. */
-    async #doAskUserFreeText(item, prefix) {
-        const { message, scope, chatId } = item;
-        const composerRef = scope?.composer;
-        const replyToMsg = composerRef?.messageId;
-        const sendOpts = replyToMsg ? { reply_to_message_id: replyToMsg } : {};
-        const displayMsg = `${prefix}${message}`;
-        const cancelRows = [[{ text: "❌ Cancel", value: "mcpq:cancel" }]];
-
-        if (scope) scope.pendingElicitation = { reserved: true };
-        if (composerRef) composerRef.setInteractionPending("question");
-        try {
-            const btnPromise = this.#buttons.prompt(
-                chatId, `❓ ${displayMsg}\n\nType your answer below:`, cancelRows,
-                { timeoutMs: 0, ...sendOpts }
-            );
-
-            const textPromise = new Promise((resolve) => {
-                if (scope) {
-                    scope.pendingElicitation = {
-                        resolve, schema: { type: "string" }, propName: "answer",
-                    };
-                }
-            });
-
-            const result = await Promise.race([
-                btnPromise.then(r => ({ type: "button", value: r.value })),
-                textPromise.then(v => ({ type: "text", value: v })),
-            ]);
-
-            if (result.type === "button") {
-                if (scope) scope.pendingElicitation = null;
-                return { error: "User cancelled" };
-            } else {
-                this.#buttons.cancelForChat(chatId, `✅ Answered`);
-                return { answer: result.value ?? "" };
-            }
-        } finally {
-            if (scope) scope.pendingElicitation = null;
-            if (composerRef) composerRef.setInteractionPending(null);
-        }
-    }
-
     setupTelegramHandlers() {
         this.#telegram.on("update", (update) => this.#processUpdate(update));
 
@@ -1219,193 +697,6 @@ export class Bridge {
         };
     }
 
-    #encodeCallbackUserId(userId) {
-        const numericUserId = Number(userId);
-        return Number.isSafeInteger(numericUserId) ? numericUserId.toString(36) : null;
-    }
-
-    #extractCallbackTargetUserId(data) {
-        if (!data?.startsWith("btn:")) return null;
-        const value = data.split(":").slice(2).join(":");
-        const [kind, encodedUserId] = value.split(":");
-        if ((kind !== "perm" && kind !== "undo") || !encodedUserId) return null;
-        const numericUserId = Number.parseInt(encodedUserId, 36);
-        return Number.isSafeInteger(numericUserId) ? numericUserId : null;
-    }
-
-    #unwrapPermissionSelection(value) {
-        if (!value?.startsWith("perm:")) return value;
-        const parts = value.split(":");
-        return parts.length >= 3 ? parts.slice(2).join(":") : value;
-    }
-
-    /**
-     * Elicit a single field from the user via Telegram UI.
-     * Returns the value on accept, or undefined if cancelled/declined
-     * (in which case the elicitation response is already sent).
-     */
-    async #elicitSingleField(chatId, requestId, message, propName, schema, scope) {
-        const acp = this.#acp;
-        const title = schema.title || propName;
-
-        // Enum with titles (oneOf) → inline keyboard
-        if (Array.isArray(schema.oneOf)) {
-            const optionValues = schema.oneOf.map(opt => opt.const);
-            const rows = schema.oneOf.map((opt, i) => [{
-                text: opt.title || opt.const,
-                value: `elicit:${i}`,
-            }]);
-            rows.push([{ text: "❌ Skip", value: "elicit:__cancel__" }]);
-            if (scope.composer) scope.composer.setInteractionPending("question");
-            let selected;
-            try {
-                ({ value: selected } = await this.#buttons.prompt(
-                    chatId, `❓ ${message}`, rows
-                ));
-            } finally {
-                if (scope.composer) scope.composer.setInteractionPending(null);
-            }
-            const val = selected?.replace(/^elicit:/, "");
-            if (!val || val === "__cancel__") {
-                acp.respondElicitation(requestId, "decline");
-                return undefined;
-            }
-            return optionValues[Number.parseInt(val, 10)];
-        }
-
-        // Enum without titles → inline keyboard
-        if (Array.isArray(schema.enum)) {
-            const optionValues = [...schema.enum];
-            const rows = schema.enum.map((v, i) => [{
-                text: String(v),
-                value: `elicit:${i}`,
-            }]);
-            rows.push([{ text: "❌ Skip", value: "elicit:__cancel__" }]);
-            if (scope.composer) scope.composer.setInteractionPending("question");
-            let selected;
-            try {
-                ({ value: selected } = await this.#buttons.prompt(
-                    chatId, `❓ ${message}`, rows
-                ));
-            } finally {
-                if (scope.composer) scope.composer.setInteractionPending(null);
-            }
-            const val = selected?.replace(/^elicit:/, "");
-            if (!val || val === "__cancel__") {
-                acp.respondElicitation(requestId, "decline");
-                return undefined;
-            }
-            return optionValues[Number.parseInt(val, 10)];
-        }
-
-        // Boolean → Yes/No buttons
-        if (schema.type === "boolean") {
-            const defaultVal = schema.default;
-            const yesLabel = defaultVal === true ? "✅ Yes (default)" : "✅ Yes";
-            const noLabel = defaultVal === false ? "❌ No (default)" : "❌ No";
-            if (scope.composer) scope.composer.setInteractionPending("question");
-            let selected;
-            try {
-                ({ value: selected } = await this.#buttons.prompt(
-                    chatId, `❓ ${message}`, [
-                        [{ text: yesLabel, value: "elicit:true" }, { text: noLabel, value: "elicit:false" }],
-                        [{ text: "⏭️ Skip", value: "elicit:__cancel__" }],
-                    ]
-                ));
-            } finally {
-                if (scope.composer) scope.composer.setInteractionPending(null);
-            }
-            const val = selected?.replace(/^elicit:/, "");
-            if (!val || val === "__cancel__") {
-                acp.respondElicitation(requestId, "decline");
-                return undefined;
-            }
-            return val === "true";
-        }
-
-        // Multi-select array → sequential toggle buttons
-        if (schema.type === "array" && schema.items) {
-            const itemOptions = schema.items.enum || schema.items.anyOf?.map(o => o.const) || [];
-            const itemLabels = schema.items.anyOf?.map(o => o.title) || itemOptions.map(String);
-            if (itemOptions.length > 0) {
-                const rows = itemOptions.map((v, i) => [{
-                    text: itemLabels[i] || String(v),
-                    value: `elicit:${i}`,
-                }]);
-                rows.push([{ text: "✅ Done", value: "elicit:__done__" },
-                           { text: "❌ Cancel", value: "elicit:__cancel__" }]);
-
-                const selected = [];
-                // For simplicity, present as single-select repeated
-                // (full multi-select toggle would require re-rendering buttons)
-                if (scope.composer) scope.composer.setInteractionPending("question");
-                try {
-                    const { value } = await this.#buttons.prompt(
-                        chatId,
-                        `❓ ${message}\n\nSelect one option:`,
-                        rows
-                    );
-                    const val = value?.replace(/^elicit:/, "");
-                    if (!val || val === "__cancel__") {
-                        acp.respondElicitation(requestId, "decline");
-                        return undefined;
-                    }
-                    if (val !== "__done__") selected.push(itemOptions[Number.parseInt(val, 10)]);
-                } finally {
-                    if (scope.composer) scope.composer.setInteractionPending(null);
-                }
-                return selected;
-            }
-        }
-
-        // String/number/integer → text input via pending elicitation
-        const defaultHint = schema.default !== undefined ? `\n(Default: ${schema.default})` : "";
-        const constraintHints = [];
-        if (schema.minLength) constraintHints.push(`min ${schema.minLength} chars`);
-        if (schema.maxLength) constraintHints.push(`max ${schema.maxLength} chars`);
-        if ((schema.type === "number" || schema.type === "integer") && schema.minimum !== undefined) {
-            constraintHints.push(`min: ${schema.minimum}`);
-        }
-        if ((schema.type === "number" || schema.type === "integer") && schema.maximum !== undefined) {
-            constraintHints.push(`max: ${schema.maximum}`);
-        }
-        const constraintText = constraintHints.length > 0 ? `\n(${constraintHints.join(", ")})` : "";
-
-        const promptText = `❓ ${message}${defaultHint}${constraintText}\n\nReply with your answer, or tap Skip.`;
-
-        // Send message with Skip button AND set up text reply intercept
-        return new Promise((resolve) => {
-            // Store pending elicitation on scope for text intercept
-            scope.pendingElicitation = {
-                requestId,
-                propName,
-                schema,
-                resolve: (val) => {
-                    scope.pendingElicitation = null;
-                    resolve(val);
-                },
-            };
-
-            // Send the prompt with a skip button
-            this.#buttons.prompt(chatId, promptText, [
-                [{ text: "⏭️ Skip", value: "elicit:__cancel__" }],
-            ]).then(({ value }) => {
-                if (scope.pendingElicitation?.requestId === requestId) {
-                    // User tapped Skip
-                    scope.pendingElicitation = null;
-                    acp.respondElicitation(requestId, "decline");
-                    resolve(undefined);
-                }
-            }).catch(() => {
-                if (scope.pendingElicitation?.requestId === requestId) {
-                    scope.pendingElicitation = null;
-                    acp.respondElicitation(requestId, "cancel");
-                    resolve(undefined);
-                }
-            });
-        });
-    }
-
     #checkRateLimit(userId) {
         const now = Date.now();
         const times = this.#userMessageTimes.get(userId) || [];
@@ -1433,7 +724,7 @@ export class Bridge {
             : this.#allowedChatIds.includes(userId);
         if (!isAuthorized) return;
 
-        const targetUserId = this.#extractCallbackTargetUserId(data);
+        const targetUserId = extractCallbackTargetUserId(data);
         if (targetUserId != null && targetUserId !== Number(userId)) {
             try {
                 await this.#telegram.call("answerCallbackQuery", {
@@ -2657,112 +1948,6 @@ export class Bridge {
             if (resolvedScope?.history) resolvedScope.history.push({ role: "bot", text: markdown, messageId: sent.message_id });
         }
         return sent;
-    }
-
-    #isSafeUndoAction(domain, service, entityId) {
-        return typeof domain === "string"
-            && typeof service === "string"
-            && typeof entityId === "string"
-            && UNDO_ALLOWED_DOMAINS.has(domain)
-            && UNDO_ALLOWED_SERVICES.has(service)
-            && UNDO_ENTITY_ID_RE.test(entityId);
-    }
-
-    // --- Tool notifications for interactive mode ---
-
-    #showToolNotification(toolName, result, getScope, getRef) {
-        const scope = getScope ? getScope() : this.#activeScope;
-        log.debug(`Tool notification check: ${toolName}, allowAll=${scope?.allowAll}`);
-
-        // Only notify for HA write tools
-        const writeTools = new Set([
-            "ha-mcp-ha_call_service", "ha-mcp-ha_call_event",
-            "ha-mcp-ha_bulk_control", "ha-mcp-ha_backup_create",
-            "ha-mcp-ha_backup_restore", "ha-mcp-ha_remove_entity",
-            "ha-mcp-ha_config_set_automation",
-        ]);
-        if (!writeTools.has(toolName)) {
-            log.debug(`Tool notification skipped: ${toolName} not a write tool`);
-            return;
-        }
-
-        // Parse result to build notification — handle multiple formats
-        let content;
-        try {
-            let raw;
-            if (typeof result === "string") {
-                raw = result;
-            } else if (typeof result?.content === "string") {
-                raw = result.content;
-            } else if (Array.isArray(result)) {
-                // ACP content blocks array: [{type:"content", content:{type:"text", text:"..."}}]
-                const textBlock = result.find(b => b?.content?.type === "text");
-                raw = textBlock?.content?.text || JSON.stringify(result);
-            } else {
-                raw = JSON.stringify(result);
-            }
-            content = typeof raw === "string" ? JSON.parse(raw) : raw;
-        } catch (e) {
-            log.debug(`Tool notification parse error: ${e.message}`);
-            content = {};
-        }
-
-        const domain = content?.domain || "";
-        const service = content?.service || "";
-        const entityId = content?.entity_id || "";
-        const success = content?.success !== false;
-
-        log.debug(`Tool notification parsed: ${domain}.${service} → ${entityId} success=${success}`);
-
-        if (!domain && !service) return;
-
-        const emoji = success ? "⚡" : "❌";
-        const action = `${domain}.${service}`;
-        const target = entityId ? ` → ${entityId}` : "";
-        const text = `${emoji} ${action}${target}`;
-
-        // Determine undo action (reversible services)
-        const reverseService = UNDO_REVERSE_MAP[service];
-
-        const ref = getRef ? getRef() : this.#activeRef;
-        const undoRef = ref ? {
-            ...ref,
-            scopeKey: ref.scopeKey || (getScope ? getScope() : this.#activeScope)?.key || null,
-        } : null;
-        const chatId = undoRef?.chatId || this.#allowedChatIds?.[0];
-        if (!chatId) return;
-
-        if (success && this.#isSafeUndoAction(domain, reverseService, entityId)) {
-            // Show with undo button
-            const encodedUserId = this.#encodeCallbackUserId(undoRef?.userId);
-            const undoValue = encodedUserId ? `undo:${encodedUserId}` : "undo";
-            const rows = [[
-                { text: "↩️ Undo", value: undoValue },
-                { text: "✅ OK", value: "dismiss" },
-            ]];
-            log.info(`Sending undo notification to chat ${chatId}: ${text}`);
-            this.#buttons.prompt(chatId, text, rows, {
-                timeoutMs: 30000,
-                timeoutText: null, // silently expire
-            }).then(({ value: selected }) => {
-                if (selected !== undoValue || !undoRef) return;
-
-                log.info(`Undo: ${domain}.${reverseService} → ${entityId}`);
-                // Send undo command via the original scope, even if another scope is active now.
-                this.#queuePrompt(
-                    `Please call service ${domain}.${reverseService} on entity ${entityId} to undo the previous action. Do it immediately without asking.`,
-                    {}, undoRef, null
-                );
-            }).catch(err => {
-                log.error(`Tool notification error: ${err.message}`);
-            });
-        } else {
-            // Just show notification (no undo available)
-            const extra = ref?.threadId ? { message_thread_id: ref.threadId } : {};
-            this.#telegram.enqueue(() =>
-                this.#telegram.call("sendMessage", { chat_id: chatId, text, disable_notification: true, ...extra })
-            );
-        }
     }
 
     // --- Relay images from tool results ---

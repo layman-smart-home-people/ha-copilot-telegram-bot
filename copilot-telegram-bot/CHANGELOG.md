@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.35.0] — 2026-06-06
+
+### Changed
+- **Phase 4 refactor: Extract interactive flows from bridge.mjs** — three more modules extracted with zero behavior changes:
+  - `ai/copilot/permissions.mjs` — `PermissionHandler` class for permission requests and plan approval, plus exported utility functions (`encodeCallbackUserId`, `extractCallbackTargetUserId`, `unwrapPermissionSelection`)
+  - `ai/copilot/interactive-flows.mjs` — `InteractiveFlows` class manages elicitation UI, UDS server for MCP sidecar IPC, and question queue (ask_user)
+  - `core/tool-notifications.mjs` — `ToolNotifications` class handles HA write tool notifications with undo buttons
+- bridge.mjs reduced from 2,874 → 2,059 lines (−815 lines, cumulative −1,237 from original)
+
 ## [0.34.0] — 2026-06-06
 
 ### Changed
