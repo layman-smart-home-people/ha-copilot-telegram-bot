@@ -40,6 +40,10 @@ export class ACPClient extends EventEmitter {
     #authMethods = [];
     #lastMessageAt = 0;   // timestamp of last message received from ACP
     #lastMessageType = ""; // type of last message (for diagnostics)
+    #lastStderrAt = 0;     // timestamp of last stderr output
+    #startedAt = 0;        // when this ACP instance was spawned
+    #stderrBuffer = [];    // circular buffer for crash post-mortem
+    #stderrBufferMax = 20;
 
     constructor(config) {
         super();
@@ -52,6 +56,10 @@ export class ACPClient extends EventEmitter {
     get tag() { return this.#config.tag || "primary"; }
     get lastMessageAt() { return this.#lastMessageAt; }
     get lastMessageType() { return this.#lastMessageType; }
+    get lastStderrAt() { return this.#lastStderrAt; }
+    get startedAt() { return this.#startedAt; }
+    get uptimeSeconds() { return this.#startedAt ? Math.floor((Date.now() - this.#startedAt) / 1000) : 0; }
+    get stderrTail() { return [...this.#stderrBuffer]; }
     get pendingCount() { return this.#pending.size; }
     get pid() { return this.#process?.pid ?? null; }
 
@@ -64,6 +72,9 @@ export class ACPClient extends EventEmitter {
         this.#pending.clear();
         this.#sessionId = null;
         this.#initialized = false;
+        this.#stderrBuffer = [];
+        this.#lastStderrAt = 0;
+        this.#startedAt = Date.now();
 
         const args = ["--acp", "--stdio"];
         // Permission strategy:
@@ -129,7 +140,16 @@ export class ACPClient extends EventEmitter {
             this.#process.stdout.on("data", (chunk) => this.#onData(chunk));
             this.#process.stderr.on("data", (chunk) => {
                 const text = chunk.toString().trim();
-                if (text) this.emit("log", text);
+                if (text) {
+                    this.emit("log", text);
+                    this.#lastStderrAt = Date.now();
+                    for (const line of text.split("\n")) {
+                        this.#stderrBuffer.push(line);
+                        if (this.#stderrBuffer.length > this.#stderrBufferMax) {
+                            this.#stderrBuffer.shift();
+                        }
+                    }
+                }
             });
 
             this.#process.on("exit", (code, signal) => {

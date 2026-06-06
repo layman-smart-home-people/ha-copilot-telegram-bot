@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.39.0] — 2026-06-06
+
+### Added
+- **Structured event log** (`src/core/event-log.mjs`) — Append-only JSONL file at `/data/acp-events.jsonl` recording 12 lifecycle events: `bot.started/stopped`, `acp.started/stopped/crashed`, `prompt.started/completed/error/timeout/cancelled`, `session.exhausted`, `acp.stall_detected`. Rotates at 5 MB with 1 backup. Fire-and-forget writes — never blocks the prompt pipeline.
+- **Cumulative metrics** (`src/core/metrics.mjs`) — In-memory counters (acp_starts, acp_crashes, prompts_total, prompt_errors, tool_calls_total, stall_warnings, etc.), gauges (prompt_active, queue_depth, queue_depth_max), and prompt duration histogram (last 100, with min/avg/max/p95). Persisted to `/data/acp-metrics.json` every 60s — survives restarts.
+- **`GET /api/metrics`** — JSON endpoint exposing all counters, gauges, and duration stats
+- **`POST /api/metrics/reset`** — Manual metrics reset (for investigation without restarting)
+- **Passive ACP liveness detection** — Enhanced heartbeat checks PID alive (`process.kill(pid, 0)` — no stdio interaction) and monitors `lastMessageAt` + `lastStderrAt` staleness. If both are silent for >120s during an active prompt, sends a one-shot stall warning to both logs and Telegram.
+- **Crash post-mortem** — On unexpected ACP exit, captures exit code, signal, ACP uptime, last 5 stderr lines, active prompt scope/duration, and queue state. Sends enriched `💥 ACP crashed` notification with full context.
+- **ACP stderr buffer** — `acp-client.mjs` now maintains a 20-line circular stderr buffer + `lastStderrAt` timestamp, exposed via `stderrTail` and `lastStderrAt` getters. Powers crash post-mortem and passive stall detection.
+
 ## [0.38.1] — 2026-06-06
 
 ### Fixed

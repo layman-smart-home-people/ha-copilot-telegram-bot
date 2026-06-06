@@ -18,6 +18,8 @@ import { StandingInstructionManager } from "./ha/standing-instructions.mjs";
 import { StandingInstructionOrchestrator } from "./ha/orchestrator.mjs";
 import { WebUIServer } from "./webui/server.mjs";
 import { createLogger, setLogLevel } from "./logger.mjs";
+import { eventLog } from "./core/event-log.mjs";
+import { metrics } from "./core/metrics.mjs";
 
 // --- Set timezone from HA system before any Date operations ---
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
@@ -105,6 +107,11 @@ async function main() {
     log.info(`Log level: ${config.logLevel}`);
     log.info(`Copilot binary: ${config.copilotBinary}`);
     log.info(`Copilot config: ${config.copilotConfigDir}`);
+
+    // Load persisted metrics and start event log
+    await metrics.load();
+    metrics.startPersistence();
+    eventLog.emit("bot.started", { version: config.version || "unknown" });
 
     // Inject github_token into env BEFORE validation so the ACP test has it
     if (config.githubToken) {
@@ -310,8 +317,15 @@ let _webui = null;
 
 async function shutdown(signal) {
     log.info(`Received ${signal}, shutting down...`);
+    eventLog.emit("bot.stopped", { signal });
 
     const timer = setTimeout(() => process.exit(0), 5000);
+
+    try {
+        await metrics.stopPersistence();
+    } catch (err) {
+        log.error(`Metrics flush error: ${err.message}`);
+    }
 
     try {
         if (_webui) await _webui.stop();

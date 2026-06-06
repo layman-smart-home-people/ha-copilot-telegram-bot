@@ -10,6 +10,7 @@ import { join, extname, resolve, basename, dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 import { ACPClient } from "../ai/copilot/acp-client.mjs";
 import { AgentMemory } from "../core/agent-memory.mjs";
+import { metrics } from "../core/metrics.mjs";
 import { createLogger } from "../logger.mjs";
 
 const STATIC_DIR = new URL("./dist/", import.meta.url).pathname;
@@ -130,6 +131,17 @@ export class WebUIServer {
         // GET /api/status — bot status overview
         if (pathname === "/api/status" && method === "GET") {
             return this.#apiStatus(res);
+        }
+
+        // GET /api/metrics — cumulative metrics
+        if (pathname === "/api/metrics" && method === "GET") {
+            return this.#json(res, 200, metrics.toJSON());
+        }
+
+        // POST /api/metrics/reset — manual metrics reset
+        if (pathname === "/api/metrics/reset" && method === "POST") {
+            metrics.reset();
+            return this.#json(res, 200, { ok: true, message: "Metrics reset" });
         }
 
         // GET /api/instructions — list standing instructions

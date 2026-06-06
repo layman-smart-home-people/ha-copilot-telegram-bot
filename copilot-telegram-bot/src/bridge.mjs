@@ -18,6 +18,8 @@ import { PermissionHandler, extractCallbackTargetUserId } from "./ai/copilot/per
 import { InteractiveFlows } from "./ai/copilot/interactive-flows.mjs";
 import { StatusMenu } from "./core/status.mjs";
 import { ToolNotifications } from "./core/tool-notifications.mjs";
+import { eventLog } from "./core/event-log.mjs";
+import { metrics } from "./core/metrics.mjs";
 import { createLogger } from "./logger.mjs";
 
 const log = createLogger('bridge');
@@ -84,6 +86,7 @@ export class Bridge {
     #promptStartedAt = 0;
     #promptGeneration = 0;  // incremented on each prompt; prevents stale force-cancel
     #intentionalKill = false; // set true before force-killing ACP to preserve queue
+    #stallWarned = false;     // true after first stall warning for current prompt
 
 
     // Prompt builder (extracted module)
@@ -339,6 +342,13 @@ export class Bridge {
         if (!this.#promptActive) return;
         log.warn(`Force cancel: ${reason} (generation=${generation})`);
 
+        eventLog.emit("prompt.cancelled", {
+            scopeKey: this.#activeScope?.key || "unknown",
+            reason,
+            elapsedMs: this.#promptStartedAt ? Date.now() - this.#promptStartedAt : null,
+        });
+        metrics.increment("prompt_cancels");
+
         // Attempt graceful cancel
         try {
             await this.#acp.cancel();
@@ -379,9 +389,15 @@ export class Bridge {
     /** Start watchdog and heartbeat timers for the active prompt. */
     #startPromptWatchdog(scopeKey) {
         this.#promptStartedAt = Date.now();
+        this.#stallWarned = false;
         const generation = this.#promptGeneration;
         const isStanding = scopeKey?.startsWith("standing:");
         const timeoutMs = isStanding ? SI_PROMPT_TIMEOUT_MS : USER_PROMPT_TIMEOUT_MS;
+
+        // Emit event + metrics
+        eventLog.emit("prompt.started", { scopeKey, isStanding, timeoutMs });
+        metrics.increment("prompts_total");
+        metrics.gauge("prompt_active", 1);
 
         // Watchdog: force-cancel after timeout
         this.#watchdogTimer = setTimeout(() => {
@@ -392,6 +408,15 @@ export class Bridge {
             const msg = `Prompt timeout after ${elapsed}min — scope=${scopeKey}, ACP last seen: ${lastSeen}, pending RPCs: ${this.#acp.pendingCount}`;
             log.error(`⏰ ${msg}`);
 
+            eventLog.emit("prompt.timeout", {
+                scopeKey,
+                elapsedMs: Date.now() - this.#promptStartedAt,
+                lastMessageAge: this.#acp.lastMessageAt ? Date.now() - this.#acp.lastMessageAt : null,
+                lastMessageType: this.#acp.lastMessageType,
+                pendingRPCs: this.#acp.pendingCount,
+            });
+            metrics.increment("prompt_timeouts");
+
             // Notify user
             this.#broadcastAdmin(`⏰ Prompt watchdog triggered\n${msg}\nForce-cancelling...`);
 
@@ -401,14 +426,62 @@ export class Bridge {
         }, timeoutMs);
         this.#watchdogTimer.unref?.();
 
-        // Heartbeat: periodic health logging during active prompts
+        // Heartbeat: periodic health check + stall detection during active prompts
         this.#heartbeatTimer = setInterval(() => {
             const elapsed = ((Date.now() - this.#promptStartedAt) / 1000).toFixed(0);
+            const lastMsgAge = this.#acp.lastMessageAt
+                ? (Date.now() - this.#acp.lastMessageAt) / 1000
+                : Infinity;
+            const lastStderrAge = this.#acp.lastStderrAt
+                ? (Date.now() - this.#acp.lastStderrAt) / 1000
+                : Infinity;
+            const lastActivityAge = Math.min(lastMsgAge, lastStderrAge);
             const lastSeen = this.#acp.lastMessageAt
-                ? `${((Date.now() - this.#acp.lastMessageAt) / 1000).toFixed(0)}s ago (${this.#acp.lastMessageType})`
+                ? `${lastMsgAge.toFixed(0)}s ago (${this.#acp.lastMessageType})`
                 : "never";
+
+            // PID liveness check (signal 0 — doesn't touch stdio)
+            const pid = this.#acp.pid;
+            let pidAlive = false;
+            if (pid) {
+                try { process.kill(pid, 0); pidAlive = true; } catch { pidAlive = false; }
+            }
+
             const tools = this.#activeScope?.activeTools?.size || 0;
-            log.info(`💓 Prompt heartbeat: scope=${scopeKey}, elapsed=${elapsed}s, ACP last msg: ${lastSeen}, active tools: ${tools}, pending RPCs: ${this.#acp.pendingCount}, queue: ${this.#promptQueue.length}`);
+            log.info(`💓 Prompt heartbeat: scope=${scopeKey}, elapsed=${elapsed}s, ACP last msg: ${lastSeen}, pid=${pid} alive=${pidAlive}, active tools: ${tools}, pending RPCs: ${this.#acp.pendingCount}, queue: ${this.#promptQueue.length}`);
+
+            // Stall detection
+            if (!pidAlive && pid && !this.#stallWarned) {
+                this.#stallWarned = true;
+                log.error(`🚨 ACP process (pid=${pid}) is dead but prompt still active!`);
+                eventLog.emit("acp.stall_detected", {
+                    type: "pid_dead",
+                    pid,
+                    scopeKey,
+                    elapsedSeconds: parseInt(elapsed),
+                });
+                this.#broadcastAdmin(
+                    `🚨 ACP process dead (pid=${pid}) but prompt still marked active\n` +
+                    `Scope: ${scopeKey}, elapsed: ${elapsed}s`
+                );
+                metrics.increment("stall_warnings");
+            } else if (pidAlive && lastActivityAge > 120 && !this.#stallWarned) {
+                // No ACP activity (no stdio messages, no stderr) for >120s during active prompt
+                this.#stallWarned = true;
+                log.warn(`⚠️ ACP stall: no activity for ${lastActivityAge.toFixed(0)}s during active prompt`);
+                eventLog.emit("acp.stall_detected", {
+                    type: "no_activity",
+                    lastActivityAgeSeconds: Math.round(lastActivityAge),
+                    scopeKey,
+                    elapsedSeconds: parseInt(elapsed),
+                    pendingRPCs: this.#acp.pendingCount,
+                });
+                this.#broadcastAdmin(
+                    `⚠️ ACP appears stalled — no activity for ${Math.round(lastActivityAge)}s\n` +
+                    `Scope: ${scopeKey}, elapsed: ${elapsed}s, pending RPCs: ${this.#acp.pendingCount}`
+                );
+                metrics.increment("stall_warnings");
+            }
         }, HEARTBEAT_INTERVAL_MS);
         this.#heartbeatTimer.unref?.();
     }
@@ -423,6 +496,7 @@ export class Bridge {
             clearInterval(this.#heartbeatTimer);
             this.#heartbeatTimer = null;
         }
+        metrics.gauge("prompt_active", 0);
     }
 
     // --- Status menu (delegated to StatusMenu module) ---
@@ -737,6 +811,13 @@ export class Bridge {
             // Clear watchdog timers — ACP is gone
             this.#clearPromptWatchdog();
 
+            // Capture pre-cleanup state for post-mortem
+            const wasIntentional = this.#intentionalKill;
+            const activePromptScope = this.#activeScope?.key || null;
+            const promptElapsed = this.#promptStartedAt
+                ? Math.floor((Date.now() - this.#promptStartedAt) / 1000)
+                : null;
+
             if (this.#promptActive) {
                 this.#promptActive = false;
                 this.#activeRef = null;
@@ -760,8 +841,46 @@ export class Bridge {
                 }
             }
 
-            if (code !== 0 && code !== null) {
-                this.#broadcastAdmin(`⚠️ Copilot process exited (code: ${code}). Send a message to restart.`);
+            // Structured event + crash post-mortem
+            if (!wasIntentional && (code !== 0 || signal)) {
+                const postMortem = {
+                    exitCode: code,
+                    signal,
+                    pid: acp.pid,
+                    uptimeSeconds: acp.uptimeSeconds,
+                    lastStderr: acp.stderrTail,
+                    activePromptScope,
+                    promptElapsedSeconds: promptElapsed,
+                    queueDepth: this.#promptQueue.length,
+                };
+                eventLog.emit("acp.crashed", postMortem);
+                metrics.increment("acp_crashes");
+
+                const stderrSnippet = postMortem.lastStderr.slice(-5).join("\n") || "none";
+                const uptimeStr = this.#formatDuration(postMortem.uptimeSeconds);
+                this.#broadcastAdmin(
+                    `💥 *ACP crashed*\n` +
+                    `Exit: code=${code} signal=${signal || "none"}\n` +
+                    `Uptime: ${uptimeStr}\n` +
+                    (activePromptScope ? `Active prompt: ${activePromptScope} (${promptElapsed}s)\n` : "") +
+                    `Queue: ${this.#promptQueue.length} message(s)\n` +
+                    `Last stderr:\n\`\`\`\n${stderrSnippet}\n\`\`\``
+                );
+            } else if (wasIntentional) {
+                eventLog.emit("acp.stopped", {
+                    exitCode: code,
+                    signal,
+                    intentional: true,
+                    uptimeSeconds: acp.uptimeSeconds,
+                });
+            } else {
+                // Clean exit (code 0, no signal)
+                eventLog.emit("acp.stopped", {
+                    exitCode: code,
+                    signal,
+                    intentional: false,
+                    uptimeSeconds: acp.uptimeSeconds,
+                });
             }
         } else {
             // Overflow exit — clean up overflow state
@@ -1688,6 +1807,7 @@ export class Bridge {
                 return;
             }
             this.#promptQueue.push({ text, opts, ref, messageId, scopeKey });
+            metrics.gauge("queue_depth", this.#promptQueue.length);
             log.debug(`Queue depth: ${this.#promptQueue.length} (added scope=${scopeKey})`);
             // Set ⏳ on the user's message to indicate it's queued
             if (ref && messageId) {
@@ -1761,15 +1881,31 @@ export class Bridge {
 
             const promptStartMs = Date.now();
             const result = await this.#acp.prompt(text, opts);
-            const elapsed = ((Date.now() - promptStartMs) / 1000).toFixed(1);
+            const elapsedMs = Date.now() - promptStartMs;
+            const elapsed = (elapsedMs / 1000).toFixed(1);
             const toolCount = scope?.turnToolCount || 0;
+            const toolErrors = scope?.turnToolErrors || 0;
             const hasContent = !!(scope?.messageBuffer?.trim());
-            log.info(`Prompt completed: ${scopeKey || 'unknown'} in ${elapsed}s (${toolCount} tool calls${scope?.turnToolErrors ? `, ${scope.turnToolErrors} errors` : ''})`);
+            log.info(`Prompt completed: ${scopeKey || 'unknown'} in ${elapsed}s (${toolCount} tool calls${toolErrors ? `, ${toolErrors} errors` : ''})`);
+
+            // Record metrics + event
+            eventLog.emit("prompt.completed", {
+                scopeKey,
+                durationMs: elapsedMs,
+                toolCount,
+                toolErrors,
+                hasContent,
+            });
+            metrics.recordDuration(elapsedMs);
+            metrics.increment("tool_calls_total", toolCount);
+            metrics.increment("tool_errors_total", toolErrors);
 
             // Detect empty response (context exhaustion / backend issue)
             // If prompt returned in <1s with no tool calls and no text, the session is likely exhausted
             if (parseFloat(elapsed) < 1.0 && toolCount === 0 && !hasContent && scope?.sessionId) {
                 log.warn(`Empty response detected (${elapsed}s, 0 tools, no text) — session likely exhausted, creating new session`);
+                eventLog.emit("session.exhausted", { sessionId: scope.sessionId, scopeKey });
+                metrics.increment("sessions_exhausted");
                 try {
                     const newSession = await this.#acp.newSession({
                         cwd: this.#config.workingDirectory || "/config",
@@ -1801,6 +1937,8 @@ export class Bridge {
                 log.info(`Prompt cancelled (edit): ${err.message}`);
             } else {
                 log.error(`Prompt error: ${err.message}`);
+                eventLog.emit("prompt.error", { scopeKey, error: err.message });
+                metrics.increment("prompt_errors");
                 if (scope) scope.turnToolErrors++;
                 const userMsg = formatError(err);
                 if (scope?.composer?.active) {
@@ -1862,6 +2000,7 @@ export class Bridge {
                     if (affinityIndex >= 0) nextIndex = affinityIndex;
                 }
                 const [next] = this.#promptQueue.splice(nextIndex, 1);
+                metrics.gauge("queue_depth", this.#promptQueue.length);
                 await this.#queuePrompt(next.text, next.opts, next.ref, next.messageId);
             }
         }
@@ -1879,6 +2018,14 @@ export class Bridge {
 
     async restartCopilot() {
         await this.#lifecycle.restart();
+    }
+
+    /** Format seconds into a human-readable duration string. */
+    #formatDuration(seconds) {
+        if (!seconds && seconds !== 0) return "unknown";
+        if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`;
+        if (seconds >= 60) return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
+        return `${seconds}s`;
     }
 
     // --- Reply-to context extraction ---

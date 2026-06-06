@@ -6,6 +6,8 @@
 
 import { spawn } from "node:child_process";
 import { createLogger } from "../../logger.mjs";
+import { eventLog } from "../../core/event-log.mjs";
+import { metrics } from "../../core/metrics.mjs";
 
 const log = createLogger('lifecycle');
 
@@ -131,6 +133,13 @@ export class CopilotLifecycle {
         }
         this.#resetPreamble();
         log.info(`Copilot started, session: ${this.#acp.sessionId}`);
+        eventLog.emit("acp.started", {
+            pid: this.#acp.pid,
+            tag: this.#acp.tag,
+            sessionId: this.#acp.sessionId,
+        });
+        metrics.increment("acp_starts");
+        metrics.increment("sessions_created");
         this.#refreshStatus().catch(() => {});
     }
 
@@ -250,6 +259,7 @@ export class CopilotLifecycle {
     async restart() {
         await this.stop();
         this.#clearKnownTools();
+        metrics.increment("acp_restarts");
         await this.start();
     }
 }
