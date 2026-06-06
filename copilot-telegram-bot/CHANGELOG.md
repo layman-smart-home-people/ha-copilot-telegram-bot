@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.43.1] — 2026-06-06
+
+### Added
+- **Skills section in WebUI Docs tab** — Skills files (`skills/*.md`) now appear in the Docs sidebar under a "Skills" section with 🔧 icon, viewable and editable alongside agent config and daily logs.
+
 ## [0.43.0] — 2026-06-06
 
 ### Fixed

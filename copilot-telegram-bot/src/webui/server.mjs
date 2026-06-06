@@ -424,6 +424,24 @@ export class WebUIServer {
             });
         }
 
+        // Skills
+        const skillsDir = join(agentDir, "skills");
+        if (existsSync(skillsDir)) {
+            try {
+                const files = readdirSync(skillsDir)
+                    .filter(f => f.endsWith(".md"))
+                    .sort();
+                for (const f of files) {
+                    docs.push({
+                        name: `skills/${f}`,
+                        path: join(skillsDir, f),
+                        exists: true,
+                        type: "skill",
+                    });
+                }
+            } catch {}
+        }
+
         // Daily logs
         const memDir = join(agentDir, "memory");
         if (existsSync(memDir)) {

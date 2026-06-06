@@ -70,6 +70,7 @@ export default function DocsEditor({ toast }) {
   };
 
   const mainDocs = docs.filter((d) => d.type === "main");
+  const skills = docs.filter((d) => d.type === "skill");
   const dailyLogs = docs.filter((d) => d.type === "daily_log");
 
   return (
@@ -88,6 +89,20 @@ export default function DocsEditor({ toast }) {
               📄 {d.name}
             </li>
           ))}
+          {skills.length > 0 && (
+            <>
+              <li className="docs-file-item section-header">Skills</li>
+              {skills.map((d) => (
+                <li
+                  key={d.name}
+                  className={`docs-file-item ${d.name === activeDoc ? "active" : ""}`}
+                  onClick={() => openDoc(d.name)}
+                >
+                  🔧 {d.name.replace("skills/", "")}
+                </li>
+              ))}
+            </>
+          )}
           {dailyLogs.length > 0 && (
             <>
               <li className="docs-file-item section-header">Daily Logs</li>
