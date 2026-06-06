@@ -34,6 +34,7 @@ export class ResponseComposer {
     #thoughtActive = true;
     #trailingHtml = null;
     #planEntries = [];
+    #intermediateMessages = [];
 
     constructor(telegram) {
         this.#telegram = telegram;
@@ -59,6 +60,7 @@ export class ResponseComposer {
         this.#interactionPending = null;        this.#thoughtBuffer = "";
         this.#thoughtActive = true;
         this.#planEntries = [];
+        this.#intermediateMessages = [];
 
         const params = {
             chat_id: ref.chatId,
@@ -182,6 +184,31 @@ export class ResponseComposer {
     }
 
     /**
+     * Commit current turn's text as an intermediate message.
+     * Called when a new turn starts (message_start) to snapshot the previous turn.
+     * Resets internal buffers for the next turn.
+     */
+    commitTurn() {
+        const text = this.#textBuffer.trim();
+        if (text) {
+            this.#intermediateMessages.push(text);
+        }
+        this.#textBuffer = "";
+        this.#lastEditedText = "";
+        this.#thoughtBuffer = "";
+        this.#thoughtActive = true;
+        this.#scheduleEdit();
+    }
+
+    /**
+     * Pop the last intermediate message (for single-turn fallback in finalize).
+     * @returns {string} The last intermediate text, or empty string.
+     */
+    popLastIntermediate() {
+        return this.#intermediateMessages.pop() || "";
+    }
+
+    /**
      * Finalize with the complete response text.
      * Edits the placeholder into the answer.
      * Stores collapsible reasoning+steps in trailingHtml for the bridge to send.
@@ -267,10 +294,14 @@ export class ResponseComposer {
         const elapsed = Date.now() - this.#lastEditTime;
         const newChars = this.#textBuffer.length - this.#lastEditedText.length;
 
-        if (elapsed >= EDIT_MIN_INTERVAL_MS && (newChars >= EDIT_MIN_CHARS || forceAfterDelay)) {
+        // Adaptive throttling: increase interval for long-running prompts
+        const promptAge = this.#startTime ? (Date.now() - this.#startTime) / 1000 : 0;
+        const interval = promptAge > 30 ? 3000 : EDIT_MIN_INTERVAL_MS;
+
+        if (elapsed >= interval && (newChars >= EDIT_MIN_CHARS || forceAfterDelay)) {
             this.#doEdit();
         } else {
-            const wait = Math.max(EDIT_MIN_INTERVAL_MS - elapsed, 300);
+            const wait = Math.max(interval - elapsed, 300);
             this.#editTimer = setTimeout(() => {
                 this.#editTimer = null;
                 this.#doEdit();
@@ -283,7 +314,8 @@ export class ResponseComposer {
 
         const stepsHtml = this.#buildStepsHtml(false);
         const planHtml = this.#buildPlanHtml();
-        const progressHtml = [planHtml, stepsHtml].filter(Boolean).join("\n");
+        const intermediateHtml = this.#buildIntermediateHtml();
+        const progressHtml = [planHtml, intermediateHtml, stepsHtml].filter(Boolean).join("\n");
         const elapsed = this.#startTime ? Math.round((Date.now() - this.#startTime) / 1000) : 0;
         const timer = elapsed > 0 ? ` <i>(${elapsed}s)</i>` : "";
 
@@ -329,10 +361,9 @@ export class ResponseComposer {
 
         // Budget-aware truncation
         if (html.length > MAX_MSG_LEN) {
-            // Extract the header line (everything before the first blockquote/progress)
-            const headerEnd = html.indexOf("<blockquote>");
-            const actualHeader = headerEnd > 0 ? html.slice(0, headerEnd).trimEnd() : html.split("\n")[0];
-            html = this.#fitToLimit(actualHeader, planHtml, elapsed);
+            // Use only the first line (status indicator) as the header
+            const actualHeader = html.split("\n")[0];
+            html = this.#fitToLimit(actualHeader, planHtml, intermediateHtml, elapsed);
         }
 
         this.#editMessage(html);
@@ -384,8 +415,8 @@ export class ResponseComposer {
         return `<blockquote>${header}\n${lines.join("\n")}</blockquote>`;
     }
 
-    #fitToLimit(header, planHtml, elapsed) {
-        if (this.#toolSteps.length === 0) {
+    #fitToLimit(header, planHtml, intermediateHtml, elapsed) {
+        if (this.#toolSteps.length === 0 && !intermediateHtml) {
             return (header + "\n").slice(0, MAX_MSG_LEN - 20) + "\n<i>…</i>";
         }
 
@@ -396,32 +427,39 @@ export class ResponseComposer {
         for (let tailSize = 10; tailSize >= 3; tailSize -= 2) {
             const headSize = Math.min(2, count);
             const steps = this.#toolSteps;
-            let lines;
+            let stepsBlock = "";
 
-            if (count <= headSize + tailSize) {
-                lines = steps.map(s => this.#formatStepLine(s));
-            } else {
-                const head = steps.slice(0, headSize).map(s => this.#formatStepLine(s));
-                const skipped = count - headSize - tailSize;
-                const tail = steps.slice(-tailSize).map(s => this.#formatStepLine(s));
-                lines = [...head, `<i>⏳ …and ${skipped} more</i>`, ...tail];
+            if (count > 0) {
+                let lines;
+                if (count <= headSize + tailSize) {
+                    lines = steps.map(s => this.#formatStepLine(s));
+                } else {
+                    const head = steps.slice(0, headSize).map(s => this.#formatStepLine(s));
+                    const skipped = count - headSize - tailSize;
+                    const tail = steps.slice(-tailSize).map(s => this.#formatStepLine(s));
+                    lines = [...head, `<i>⏳ …and ${skipped} more</i>`, ...tail];
+                }
+                stepsBlock = `<blockquote>🔧 <b>Steps:</b>\n${lines.join("\n")}</blockquote>`;
             }
 
-            const stepsBlock = `<blockquote>🔧 <b>Steps:</b>\n${lines.join("\n")}</blockquote>`;
-            const progress = [planHtml, stepsBlock].filter(Boolean).join("\n");
+            const progress = [planHtml, intermediateHtml, stepsBlock].filter(Boolean).join("\n");
             const result = `${header}\n${progress}`;
 
             if (result.length <= MAX_MSG_LEN) return result;
         }
 
-        // Last resort: just show count
-        const runningCount = count - completedCount - failedCount;
-        const parts = [`${completedCount} done`];
-        if (runningCount > 0) parts.push(`${runningCount} running`);
-        if (failedCount > 0) parts.push(`${failedCount} failed`);
-        const summary = `<blockquote>🔧 <b>${count} steps (${parts.join(", ")})</b></blockquote>`;
-        const progress = [planHtml, summary].filter(Boolean).join("\n");
-        return `${header}\n${progress}`;
+        // Drop intermediates if still too long
+        if (count > 0) {
+            const runningCount = count - completedCount - failedCount;
+            const parts = [`${completedCount} done`];
+            if (runningCount > 0) parts.push(`${runningCount} running`);
+            if (failedCount > 0) parts.push(`${failedCount} failed`);
+            const summary = `<blockquote>🔧 <b>${count} steps (${parts.join(", ")})</b></blockquote>`;
+            const progress = [planHtml, summary].filter(Boolean).join("\n");
+            return `${header}\n${progress}`;
+        }
+
+        return (header + "\n").slice(0, MAX_MSG_LEN - 20) + "\n<i>…</i>";
     }
 
     #buildPlanHtml() {
@@ -445,6 +483,21 @@ export class ResponseComposer {
         return `<blockquote>📋 <b>Plan:</b>\n${lines.join("\n")}</blockquote>`;
     }
 
+    /** Build inline display of intermediate agent messages (brief italic quotes) */
+    #buildIntermediateHtml() {
+        if (this.#intermediateMessages.length === 0) return "";
+        const maxShow = 3;
+        const msgs = this.#intermediateMessages.slice(-maxShow);
+        const lines = msgs.map(msg => {
+            const truncated = msg.length > 120 ? msg.slice(0, 120) + "…" : msg;
+            return `💬 <i>"${escapeHtml(truncated)}"</i>`;
+        });
+        if (this.#intermediateMessages.length > maxShow) {
+            lines.unshift(`<i>…${this.#intermediateMessages.length - maxShow} earlier</i>`);
+        }
+        return lines.join("\n");
+    }
+
     #buildThoughtHtml() {
         if (!this.#thoughtBuffer.trim()) return "";
         const thought = this.#thoughtBuffer.trim();
@@ -456,17 +509,22 @@ export class ResponseComposer {
         return `<blockquote expandable>🧠 <b>Reasoning</b>\n${display}</blockquote>`;
     }
 
-    /** Build a single collapsible blockquote combining reasoning + steps */
+    /** Build a single collapsible blockquote combining reasoning + intermediates + steps */
     #buildCombinedDetailsHtml() {
         const hasThought = this.#thoughtBuffer.trim().length > 0;
         const hasSteps = this.#toolSteps.length > 0;
-        if (!hasThought && !hasSteps) return "";
+        const hasIntermediates = this.#intermediateMessages.length > 0;
+        if (!hasThought && !hasSteps && !hasIntermediates) return "";
 
         const parts = [];
 
-        // Collapsed header line: "🧠 Reasoning · 🔧 N steps"
+        // Collapsed header line: "🧠 Reasoning · 💬 3 messages · 🔧 N steps"
         const headerParts = [];
         if (hasThought) headerParts.push("🧠 Reasoning");
+        if (hasIntermediates) {
+            const n = this.#intermediateMessages.length;
+            headerParts.push(`💬 ${n} message${n > 1 ? "s" : ""}`);
+        }
         if (hasSteps) {
             const count = this.#toolSteps.length;
             const failedCount = this.#toolSteps.filter(s => s.status === "failed").length;
@@ -484,6 +542,16 @@ export class ResponseComposer {
             parts.push(display);
         }
 
+        // Intermediate messages
+        if (hasIntermediates) {
+            if (hasThought) parts.push("");
+            const intLines = this.#intermediateMessages.map(msg => {
+                const truncated = msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
+                return `💬 "${escapeHtml(truncated)}"`;
+            });
+            parts.push(intLines.join("\n"));
+        }
+
         // Steps list
         if (hasSteps) {
             const lines = this.#toolSteps.map(s => {
@@ -492,7 +560,7 @@ export class ResponseComposer {
                            : "🔄";
                 return `${icon} ${escapeHtml(s.description || s.id)}`;
             });
-            if (hasThought) parts.push("");  // blank line separator
+            if (hasThought || hasIntermediates) parts.push("");
             parts.push(`<b>Steps:</b>\n${lines.join("\n")}`);
         }
 

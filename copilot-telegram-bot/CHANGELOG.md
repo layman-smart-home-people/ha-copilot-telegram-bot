@@ -2,6 +2,21 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.49.0] — 2026-06-07
+
+### Added
+- **Multi-turn composer** — Agent intermediate messages (reasoning between tool calls) are now shown as inline italic quotes in the progress message instead of being lost. The composer stays alive across all ACP turns and only finalizes when the prompt completes.
+- **Adaptive edit throttling** — Edit interval increases from 1.5s to 3s after 30s of prompt runtime, reducing Telegram API pressure during long-running tasks.
+- **`commitTurn()` / `popLastIntermediate()`** — New composer methods for multi-turn lifecycle management.
+- **Intermediate messages in trailing details** — The collapsible reasoning/steps message now includes intermediate agent messages (💬 N messages).
+
+### Changed
+- **`message_end` no longer finalizes** — Finalization is deferred to the `finally` block in `#handlePrompt()`, enabling multi-turn support. Single-turn responses behave identically.
+- **Stall detection threshold** — Increased from 120s to 300s to reduce false-positive warnings during extended Opus reasoning.
+
+### Fixed
+- **Overflow truncation header extraction** — Simplified to always use first line, preventing intermediate messages from being duplicated in the overflow rendering path.
+
 ## [0.48.2] — 2026-06-07
 
 ### Fixed

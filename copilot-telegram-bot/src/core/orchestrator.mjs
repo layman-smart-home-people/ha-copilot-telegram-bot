@@ -676,8 +676,8 @@ export class Orchestrator {
                     `Scope: ${scopeKey}, elapsed: ${elapsed}s`
                 );
                 metrics.increment("stall_warnings");
-            } else if (pidAlive && lastActivityAge > 120 && !this.#stallWarned) {
-                // No ACP activity (no stdio messages, no stderr) for >120s during active prompt
+            } else if (pidAlive && lastActivityAge > 300 && !this.#stallWarned) {
+                // No ACP activity (no stdio messages, no stderr) for >300s during active prompt
                 this.#stallWarned = true;
                 log.warn(`⚠️ ACP stall: no activity for ${lastActivityAge.toFixed(0)}s during active prompt`);
                 eventLog.emit("acp.stall_detected", {
@@ -802,6 +802,10 @@ export class Orchestrator {
             if (getSwitching()) return;
             const scope = getScope();
             if (scope) {
+                // Commit previous turn's text as intermediate before clearing
+                if (scope.messageBuffer?.trim() && scope.composer?.active) {
+                    scope.composer.commitTurn();
+                }
                 scope.messageBuffer = "";
                 scope._toolJustEnded = false;
                 scope._toolJustEndedThought = false;
@@ -811,7 +815,8 @@ export class Orchestrator {
         acp.on("message_end", () => {
             log.info(`Agent message_end [${tag}]`);
             if (getSwitching()) return;
-            this.#finalizeComposer(getScope, getRef);
+            // Don't finalize — defer to finally block in #handlePrompt.
+            // The composer stays alive to accumulate intermediates across turns.
             this.#stopTyping();
         });
 
@@ -2019,8 +2024,14 @@ export class Orchestrator {
             scope.messageFlushTimer = null;
         }
 
-        const fullText = scope.messageBuffer.trim();
+        let fullText = scope.messageBuffer.trim();
         scope.messageBuffer = "";
+
+        // If buffer is empty (e.g., last turn was tools-only with no text),
+        // recover the last committed intermediate as the final answer (C15 fix)
+        if (!fullText) {
+            fullText = composer.popLastIntermediate();
+        }
 
         if (!fullText && !composer.active) {
             await composer.cleanup();
