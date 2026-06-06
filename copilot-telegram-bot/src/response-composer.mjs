@@ -8,10 +8,12 @@
 // 4. Final answer with collapsed tool steps
 
 import { escapeHtml, markdownToTelegramHtml, chunkMessage, stripHtmlKeepStructure } from "./formatter.mjs";
+import { createLogger } from "./logger.mjs";
 
 const EDIT_MIN_CHARS = 50;          // min new chars before editing (private chat)
 const EDIT_MIN_INTERVAL_MS = 1500;  // min time between edits
 const MAX_MSG_LEN = 4096;           // Telegram message length limit
+const log = createLogger("composer");
 
 export class ResponseComposer {
     #telegram;
@@ -27,15 +29,13 @@ export class ResponseComposer {
     #startTime = null;
     #interactionPending = null; // null | "permission" | "question" | "plan"
     #elapsedTimer = null;
-    #log;
     #thoughtBuffer = "";
     #thoughtActive = true;
     #trailingHtml = null;
     #planEntries = [];
 
-    constructor(telegram, log = () => {}) {
+    constructor(telegram) {
         this.#telegram = telegram;
-        this.#log = log;
     }
 
     get active() { return this.#messageId !== null && !this.#finalized; }
@@ -74,9 +74,9 @@ export class ResponseComposer {
         try {
             const sent = await this.#telegram.call("sendMessage", params);
             this.#messageId = sent?.message_id;
-            this.#log(`Composer: placeholder sent (msg=${this.#messageId})`);
+            log.debug(`placeholder sent (msg=${this.#messageId})`);
         } catch (err) {
-            this.#log(`Composer: placeholder failed: ${err.message}`);
+            log.warn(`placeholder failed: ${err.message}`);
             if (this.#elapsedTimer) {
                 clearTimeout(this.#elapsedTimer);
                 this.#elapsedTimer = null;
@@ -533,17 +533,17 @@ export class ResponseComposer {
             } else if (/429|retry/i.test(err?.message)) {
                 // Rate limited — retry with cap
                 if (this.#editRetries >= 3) {
-                    this.#log(`Composer: rate limit retry cap reached, dropping edit`);
+                    log.warn(`rate limit retry cap reached, dropping edit`);
                     return;
                 }
                 this.#editRetries++;
                 // Parse retry_after from Telegram error: "Too Many Requests: retry after 5"
                 const match = err?.message?.match(/retry after (\d+)/i);
                 const retryMs = (match ? parseInt(match[1], 10) : 2) * 1000;
-                this.#log(`Composer: rate limited, retry ${this.#editRetries}/3 in ${retryMs}ms`);
+                log.warn(`rate limited, retry ${this.#editRetries}/3 in ${retryMs}ms`);
                 setTimeout(() => this.#editMessage(html), retryMs);
             } else {
-                this.#log(`Composer: edit error: ${err.message}`);
+                log.warn(`edit error: ${err.message}`);
             }
         }
     }

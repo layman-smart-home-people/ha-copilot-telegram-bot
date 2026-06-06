@@ -2,6 +2,24 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.30.0] — 2026-06-06
+
+### Added
+- **Structured logging system** (`src/logger.mjs`) — zero-dependency, ANSI-colored, levelled logger with module tags. Output format: `HH:MM:SS.mmm LEVEL [module] message`
+- **`log_level` config option** — set to `debug`, `info` (default), `warn`, or `error` to control verbosity. Also configurable via `LOG_LEVEL` env var.
+- **Prompt completion timing** — new info log shows scope, elapsed time, tool call count, and error count for each completed prompt
+- **Queue depth tracking** — debug log on every queue push
+
+### Changed
+- **Migrated all 14 source files** from ad-hoc `log` function (DI'd via constructors) to `createLogger('module')` with proper levels:
+  - `debug` — internal routing, trace, ACP event details, scope resolution
+  - `info` — state transitions, connections, user actions, permissions
+  - `warn` — degraded conditions, retries, rate limits, non-fatal errors
+  - `error` — failures, crashes, unrecoverable issues
+- **Removed `log` parameter** from all constructors — modules import their own logger
+- **Privacy improvements** — incoming message and edited message logs no longer include message text (only length); reply chain logs omit quoted text; tool result summaries truncated to 100 chars
+- **Reduced noise** — group filter log now shows entity count instead of full JSON dump; permission request log shows tool name instead of full JSON
+
 ## [0.29.0] — 2026-06-06
 
 ### Changed

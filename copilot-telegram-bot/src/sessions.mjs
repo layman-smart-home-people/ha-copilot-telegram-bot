@@ -6,10 +6,12 @@
 
 import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { refKey } from "./transport.mjs";
+import { createLogger } from "./logger.mjs";
+
+const log = createLogger("session");
 
 export class SessionManager {
     #persistPath;
-    #log;
     #sessions = new Map();   // "chatId:threadId" → SessionEntry
     #activeKey = null;       // Currently active session key
     #managementThreadId = null;
@@ -26,9 +28,8 @@ export class SessionManager {
      * @property {number|null} threadId
      */
 
-    constructor({ persistPath, log }) {
+    constructor({ persistPath }) {
         this.#persistPath = persistPath;
-        this.#log = log || console.log;
         this.#load();
     }
 
@@ -80,7 +81,7 @@ export class SessionManager {
         });
         this.#activeKey = key;
         this.#save();
-        this.#log(`[SESSION] Registered ${key} → ${sessionId} "${title}"`);
+        log.info(`Registered ${key} → ${sessionId} "${title}"`);
     }
 
     /**
@@ -134,7 +135,7 @@ export class SessionManager {
             session.active = false;
             if (this.#activeKey === key) this.#activeKey = null;
             this.#save();
-            this.#log(`[SESSION] Closed ${key}`);
+            log.info(`Closed ${key}`);
         }
     }
 
@@ -146,7 +147,7 @@ export class SessionManager {
         if (this.#activeKey === key) this.#activeKey = null;
         this.#sessions.delete(key);
         this.#save();
-        this.#log(`[SESSION] Deleted ${key}`);
+        log.info(`Deleted ${key}`);
     }
 
     /**
@@ -181,7 +182,7 @@ export class SessionManager {
             }
         }
         if (removed > 0) {
-            this.#log(`[SESSION] Reconciled: removed ${removed} stale session(s)`);
+            log.info(`Reconciled: removed ${removed} stale session(s)`);
             this.#save();
         }
     }
@@ -193,7 +194,7 @@ export class SessionManager {
         try {
             const data = JSON.parse(readFileSync(this.#persistPath, "utf-8"));
             if (data.version !== 1) {
-                this.#log(`[SESSION] Unknown persistence version: ${data.version}`);
+                log.warn(`Unknown persistence version: ${data.version}`);
                 return;
             }
             this.#forumChatId = data.forumChatId || null;
@@ -202,9 +203,9 @@ export class SessionManager {
             for (const [key, entry] of Object.entries(data.sessions || {})) {
                 this.#sessions.set(key, entry);
             }
-            this.#log(`[SESSION] Loaded ${this.#sessions.size} session(s), forum chat: ${this.#forumChatId || "none"}`);
+            log.info(`Loaded ${this.#sessions.size} session(s), forum chat: ${this.#forumChatId || "none"}`);
         } catch (err) {
-            this.#log(`[SESSION] Failed to load ${this.#persistPath}: ${err.message}`);
+            log.error(`Failed to load ${this.#persistPath}: ${err.message}`);
         }
     }
 
@@ -221,7 +222,7 @@ export class SessionManager {
             writeFileSync(tmp, JSON.stringify(data, null, 2));
             renameSync(tmp, this.#persistPath);
         } catch (err) {
-            this.#log(`[SESSION] Failed to save: ${err.message}`);
+            log.error(`Failed to save: ${err.message}`);
         }
     }
 }

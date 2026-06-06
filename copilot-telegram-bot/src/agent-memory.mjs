@@ -7,12 +7,14 @@
 
 import { existsSync, readFileSync, readdirSync, mkdirSync, cpSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createLogger } from "./logger.mjs";
 
 const DEFAULT_AGENT_DIR = "/config/copilot-telegram-bot";
 const LEGACY_AGENT_DIR = "/config/.agent";
 const MAX_FILE_SIZE = 8000;
 const MAX_DAILY_LOG_SIZE = 4000;
 const DAILY_LOGS_TO_LOAD = 2; // today + yesterday
+const log = createLogger("memory");
 
 // ── Default file templates for new instances ──────────────────
 
@@ -179,11 +181,9 @@ Tasks the agent is working on or needs to resume. Self-maintained by the agent.
 
 export class AgentMemory {
     #agentDir;
-    #log;
 
-    constructor({ agentDir = DEFAULT_AGENT_DIR, log } = {}) {
+    constructor({ agentDir = DEFAULT_AGENT_DIR } = {}) {
         this.#agentDir = agentDir;
-        this.#log = typeof log === "function" ? log : () => {};
         this.#ensureDir();
     }
 
@@ -198,9 +198,9 @@ export class AgentMemory {
                 try {
                     mkdirSync(this.#agentDir, { recursive: true });
                     cpSync(LEGACY_AGENT_DIR, this.#agentDir, { recursive: true });
-                    this.#log(`[AGENT-MEM] Migrated from ${LEGACY_AGENT_DIR} to ${this.#agentDir}`);
+                    log.info(`Migrated from ${LEGACY_AGENT_DIR} to ${this.#agentDir}`);
                 } catch (err) {
-                    this.#log(`[AGENT-MEM] Migration failed: ${err.message}`);
+                    log.warn(`Migration failed: ${err.message}`);
                 }
             }
         }
@@ -211,9 +211,9 @@ export class AgentMemory {
                 mkdirSync(this.#agentDir, { recursive: true });
                 mkdirSync(join(this.#agentDir, "memory"), { recursive: true });
                 this.#seedDefaults();
-                this.#log(`[AGENT-MEM] Created agent directory at ${this.#agentDir}`);
+                log.info(`Created agent directory at ${this.#agentDir}`);
             } catch (err) {
-                this.#log(`[AGENT-MEM] Failed to create directory: ${err.message}`);
+                log.error(`Failed to create directory: ${err.message}`);
             }
         }
     }
@@ -286,12 +286,12 @@ export class AgentMemory {
             const content = readFileSync(filePath, "utf-8").trim();
             if (!content) return null;
             if (content.length > MAX_FILE_SIZE) {
-                this.#log(`[AGENT-MEM] ${filename} truncated (${content.length} > ${MAX_FILE_SIZE})`);
+                log.warn(`${filename} truncated (${content.length} > ${MAX_FILE_SIZE})`);
                 return content.slice(0, MAX_FILE_SIZE) + "\n... (truncated)";
             }
             return content;
         } catch (err) {
-            this.#log(`[AGENT-MEM] Failed to read ${filename}: ${err.message}`);
+            log.warn(`Failed to read ${filename}: ${err.message}`);
             return null;
         }
     }
@@ -320,7 +320,7 @@ export class AgentMemory {
                 }
                 logs.push(`## Daily Log: ${date}\n${content}`);
             } catch (err) {
-                this.#log(`[AGENT-MEM] Failed to read daily log ${date}: ${err.message}`);
+                log.warn(`Failed to read daily log ${date}: ${err.message}`);
             }
         }
 

@@ -1,21 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { createLogger } from "./logger.mjs";
 
 const DEFAULT_PERSIST_PATH = "/data/standing_instructions.json";
 const DEFAULT_COOLDOWN_SECONDS = 300;
 const VALID_TRIGGER_TYPES = new Set(["state_change", "cron", "timer"]);
 const VALID_ACTION_TYPES = new Set(["wake_agent", "notify", "ha_service"]);
+const log = createLogger("standing");
 
 export class StandingInstructionManager {
     #persistPath;
-    #log;
     #instructions = [];
     #lastKnownMtimeMs = 0;
 
-    constructor({ persistPath = DEFAULT_PERSIST_PATH, log } = {}) {
+    constructor({ persistPath = DEFAULT_PERSIST_PATH } = {}) {
         this.#persistPath = persistPath;
-        this.#log = typeof log === "function" ? log : () => {};
         this.#load();
     }
 
@@ -41,10 +41,10 @@ export class StandingInstructionManager {
             const mtime = statSync(this.#persistPath).mtimeMs;
             if (mtime <= this.#lastKnownMtimeMs) return false;
             this.#load();
-            this.#log(`[STANDING] Hot-reloaded instructions from disk (${this.#instructions.length} total)`);
+            log.info(`Hot-reloaded instructions from disk (${this.#instructions.length} total)`);
             return true;
         } catch (err) {
-            this.#log(`[STANDING] Reload check failed: ${err.message}`);
+            log.warn(`Reload check failed: ${err.message}`);
             return false;
         }
     }
@@ -522,13 +522,13 @@ export class StandingInstructionManager {
                 try {
                     loaded.push(this.#normalizeInstruction(entry, { existing: true }));
                 } catch (error) {
-                    this.#log(`[STANDING] Skipping invalid instruction: ${error.message}`);
+                    log.warn(`Skipping invalid instruction: ${error.message}`);
                 }
             }
             this.#instructions = loaded;
             this.#lastKnownMtimeMs = statSync(this.#persistPath).mtimeMs;
         } catch (error) {
-            this.#log(`[STANDING] Failed to load ${this.#persistPath}: ${error.message}`);
+            log.error(`Failed to load ${this.#persistPath}: ${error.message}`);
             this.#instructions = [];
         }
     }
@@ -546,7 +546,7 @@ export class StandingInstructionManager {
             renameSync(tmpPath, this.#persistPath);
             this.#lastKnownMtimeMs = statSync(this.#persistPath).mtimeMs;
         } catch (error) {
-            this.#log(`[STANDING] Failed to save ${this.#persistPath}: ${error.message}`);
+            log.error(`Failed to save ${this.#persistPath}: ${error.message}`);
         }
     }
 

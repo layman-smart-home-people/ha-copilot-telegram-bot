@@ -12,9 +12,12 @@ import { ResponseComposer } from "./response-composer.mjs";
 import { formatError } from "./errors.mjs";
 import { MessageTransport, makeRef } from "./transport.mjs";
 import { AgentMemory } from "./agent-memory.mjs";
+import { createLogger } from "./logger.mjs";
 import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { unlinkSync, chmodSync } from "node:fs";
+
+const log = createLogger('bridge');
 
 const TYPING_INTERVAL_MS = 4000;
 const TYPING_DEBOUNCE_MS = 60000;
@@ -47,7 +50,6 @@ export class Bridge {
     #acp;        // primary ACP instance (shorthand)
     #acpMgr;     // ACPManager for multi-ACP support
     #config;
-    #log;
     #allowedChatIds;
 
     // Subsystems
@@ -119,19 +121,18 @@ export class Bridge {
     // Agent persistent memory
     #agentMemory;
 
-    constructor({ telegram, acp, acpMgr, config, log, pairing, scopeMgr, sessionMgr }) {
+    constructor({ telegram, acp, acpMgr, config, pairing, scopeMgr, sessionMgr }) {
         this.#telegram = telegram;
         this.#acpMgr = acpMgr || null;
         this.#acp = acpMgr ? acpMgr.primary : acp;
         this.#config = config;
-        this.#log = log;
         this.#allowedChatIds = (config.allowedChatIds || []).map(Number);
         this.#buttons = new ButtonManager(telegram);
         this.#transport = new MessageTransport(telegram);
         this.#pairing = pairing || null;
         this.#scopeMgr = scopeMgr || null;
         this.#sessionMgr = sessionMgr || null;
-        this.#agentMemory = new AgentMemory({ agentDir: config.agentDir, log });
+        this.#agentMemory = new AgentMemory({ agentDir: config.agentDir });
     }
 
     get allowedChatIds() { return this.#allowedChatIds; }
@@ -142,7 +143,7 @@ export class Bridge {
     set allowAll(v) {
         const val = !!v;
         if (this.#activeScope) this.#activeScope.allowAll = val;
-        this.#log(`Allow-all mode: ${val}`);
+        log.info(`Allow-all mode: ${val}`);
     }
 
     /** Resolve scope and ref for a given ACP tag. */
@@ -244,20 +245,20 @@ export class Bridge {
     async injectSystemPrompt(text, chatId) {
         const targetChatId = chatId || this.#allowedChatIds[0];
         if (!targetChatId) {
-            this.#log("[STANDING] Cannot inject prompt — no target chatId");
+            log.warn("Cannot inject prompt — no target chatId");
             return;
         }
         const ref = makeRef(targetChatId, null, null, "private");
         ref.scopeKey = `standing:${targetChatId}`;
         const prefix = this.#getPrefix(ref);
-        this.#log(`[STANDING] Injecting system prompt to chat=${targetChatId}`);
+        log.info(`Injecting system prompt to chat=${targetChatId}`);
 
         // Ensure copilot is running
         if (!this.#acp.alive) {
             try {
                 await this.startCopilot();
             } catch (err) {
-                this.#log(`[STANDING] Failed to start copilot for injection: ${err.message}`);
+                log.error(`Failed to start copilot for injection: ${err.message}`);
                 // Notify owner about the failure
                 this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(targetChatId,
@@ -327,22 +328,22 @@ export class Bridge {
     /** Edit the existing status menu if it's still fresh. Called on state changes. */
     async #refreshStatusIfAlive() {
         if (!this.#statusMsg) {
-            this.#log("Status refresh: no active status message");
+            log.debug("Status refresh: no active status message");
             return;
         }
         if (this.#statusRefreshPaused) {
-            this.#log("Status refresh: paused (restart in progress)");
+            log.debug("Status refresh: paused (restart in progress)");
             return;
         }
         if (Date.now() - this.#statusMsg.createdAt > Bridge.#STATUS_TTL_MS) {
-            this.#log("Status refresh: expired");
+            log.debug("Status refresh: expired");
             this.#statusMsg = null;
             return;
         }
         const scope = this.#statusMsg.scopeKey ? this.#scopeMgr?.get(this.#statusMsg.scopeKey) : null;
         const { text, buttons } = this.#buildStatusContent(scope);
         const firstLine = text.split("\n")[0];
-        this.#log(`Status refresh: updating to "${firstLine}" (msgId=${this.#statusMsg.messageId})`);
+        log.debug(`Status refresh: updating to "${firstLine}" (msgId=${this.#statusMsg.messageId})`);
         try {
             await this.#telegram.call("editMessageText", {
                 chat_id: this.#statusMsg.chatId,
@@ -350,13 +351,13 @@ export class Bridge {
                 text,
                 reply_markup: buttons,
             });
-            this.#log("Status refresh: edit succeeded");
+            log.debug("Status refresh: edit succeeded");
         } catch (err) {
             if (/message is not modified/i.test(err?.message)) {
-                this.#log("Status refresh: no change needed");
+                log.debug("Status refresh: no change needed");
                 return;
             }
-            this.#log(`Status refresh: edit failed — ${err.message}`);
+            log.warn(`Status refresh: edit failed — ${err.message}`);
             this.#statusMsg = null; // message gone
         }
     }
@@ -564,7 +565,7 @@ export class Bridge {
 
         // Message boundaries
         acp.on("message_start", () => {
-            this.#log(`Agent message_start [${tag}]`);
+            log.info(`Agent message_start [${tag}]`);
             if (getSwitching()) return;
             const scope = getScope();
             if (scope) {
@@ -575,7 +576,7 @@ export class Bridge {
         });
 
         acp.on("message_end", () => {
-            this.#log(`Agent message_end [${tag}]`);
+            log.info(`Agent message_end [${tag}]`);
             if (getSwitching()) return;
             this.#finalizeComposer(getScope, getRef);
             this.#stopTyping();
@@ -586,7 +587,7 @@ export class Bridge {
             if (getSwitching()) return;
             const scope = getScope();
             if (!scope) return;
-            this.#log(`Tool start [${tag}]: ${toolName} (${toolCallId})`);
+            log.debug(`Tool start [${tag}]: ${toolName} (${toolCallId})`);
             scope.turnToolCount++;
             this.#resetTypingDebounce();
             const desc = describeToolCall(toolName, args);
@@ -607,16 +608,16 @@ export class Bridge {
             const scope = getScope();
             if (!scope) return;
             const completed = scope.activeTools.get(toolCallId);
-            const resultSummary = result ? JSON.stringify(result).substring(0, 200) : "null";
-            this.#log(`Tool end [${tag}]: ${completed?.name || toolCallId} [${status}] → ${resultSummary}`);
+            const resultSummary = result ? JSON.stringify(result).substring(0, 100) : "null";
+            log.debug(`Tool end [${tag}]: ${completed?.name || toolCallId} [${status}] (${resultSummary.length > 99 ? 'truncated' : 'full'})`);
             if (status === "failed") {
                 scope.turnToolErrors++;
-                this.#log(`Tool failed: ${completed?.name || toolCallId}`);
+                log.warn(`Tool failed: ${completed?.name || toolCallId}`);
             } else {
                 const resultStr = typeof result === "string" ? result : JSON.stringify(result || "");
                 if (result?.isError || result?.error || /\"isError\"\s*:\s*true/i.test(resultStr)) {
                     scope.turnToolErrors++;
-                    this.#log(`Tool error detected: ${completed?.name || toolCallId}`);
+                    log.warn(`Tool error detected: ${completed?.name || toolCallId}`);
                 }
             }
             this.#resetTypingDebounce();
@@ -649,7 +650,7 @@ export class Bridge {
             if (getSwitching()) return;
             const scope = getScope();
             if (!scope) return;
-            this.#log(`Plan update [${tag}]: ${entries.length} entries`);
+            log.debug(`Plan update [${tag}]: ${entries.length} entries`);
             if (scope.composer?.active) {
                 scope.composer.setPlan(entries);
             }
@@ -660,7 +661,7 @@ export class Bridge {
             const scope = getScope();
             if (scope && modeId) {
                 scope.mode = normalizeModeId(modeId);
-                this.#log(`Mode updated [${tag}]: ${scope.mode}`);
+                log.debug(`Mode updated [${tag}]: ${scope.mode}`);
                 this.#refreshStatusIfAlive();
             }
         });
@@ -671,11 +672,11 @@ export class Bridge {
         });
 
         acp.on("error", (err) => {
-            this.#log(`ACP [${tag}] error: ${err.message}`);
+            log.error(`ACP [${tag}] error: ${err.message}`);
         });
 
         acp.on("log", (text) => {
-            this.#log(`ACP[${tag}]: ${text}`);
+            log.debug(`ACP[${tag}]: ${text}`);
         });
 
         acp.on("permission_request", async (req) => {
@@ -689,7 +690,7 @@ export class Bridge {
         acp.on("session", (result) => {
             if (result.models?.availableModels) {
                 this.#models = result.models.availableModels;
-                this.#log(`Models available: ${this.#models.length}`);
+                log.info(`Models available: ${this.#models.length}`);
             }
             const scope = getScope();
             if (scope) {
@@ -737,7 +738,7 @@ export class Bridge {
         acp.on("commands", (commands) => {
             if (Array.isArray(commands)) {
                 this.#availableCommands = commands;
-                this.#log(`Copilot commands available: ${commands.length}`);
+                log.info(`Copilot commands available: ${commands.length}`);
             }
         });
 
@@ -757,7 +758,7 @@ export class Bridge {
 
     /** Handle permission_request events from ACP. */
     async #handlePermissionRequest(req, acp, scope, getRef, tag) {
-        this.#log(`Permission request [${tag}]: ${JSON.stringify(req)}`);
+        log.info(`Permission request [${tag}]: ${req.toolCall?.name || req.tool || 'unknown'}`);
         const { requestId } = req;
 
         // Extract tool identification from the new session/request_permission format
@@ -784,7 +785,7 @@ export class Bridge {
             const options = req.options || [];
             const allowId = options.find(o => o.kind === "allow_always")?.optionId || "allow_always";
             acp.respondPermission(requestId, allowId);
-            this.#log(`Permission auto-approved (allow-all mode): ${tool} (${desc})`);
+            log.info(`Permission auto-approved (allow-all mode): ${tool} (${desc})`);
             return;
         }
 
@@ -807,7 +808,7 @@ export class Bridge {
         const userId = ref?.userId;
         if (isReadOnly || (userId && scope.isToolGranted(userId, tool))) {
             acp.respondPermission(requestId, allowAlwaysId);
-            this.#log(`Permission auto-approved: ${tool} (${desc})`);
+            log.info(`Permission auto-approved: ${tool} (${desc})`);
             return;
         }
 
@@ -816,7 +817,7 @@ export class Bridge {
         const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
         if (!chatId || !this.#buttons) {
             acp.respondPermission(requestId, rejectOnceId);
-            this.#log(`Permission denied (no chat): ${tool}`);
+            log.info(`Permission denied (no chat): ${tool}`);
             return;
         }
 
@@ -851,26 +852,26 @@ export class Bridge {
                 scope.grantTool(userId, tool);
             }
             acp.respondPermission(requestId, selectedOption);
-            this.#log(`Permission granted (${selectedOption}): ${tool}`);
+            log.info(`Permission granted (${selectedOption}): ${tool}`);
             if (permMsgId) {
                 try {
                     await this.#buttons.finalize(chatId, permMsgId, `✅ Allowed: ${desc || tool}`);
                 } catch (err) {
-                    this.#log(`Error finalizing allow message: ${err.message}`);
+                    log.warn(`Error finalizing allow message: ${err.message}`);
                 }
             }
         } else {
             acp.respondPermission(requestId, rejectOnceId);
-            this.#log(`Permission denied: ${tool} (permMsgId=${permMsgId})`);
+            log.info(`Permission denied: ${tool} (permMsgId=${permMsgId})`);
             try {
                 if (permMsgId) {
-                    this.#log(`Finalizing deny message: chat=${chatId} msg=${permMsgId}`);
+                    log.debug(`Finalizing deny message: chat=${chatId} msg=${permMsgId}`);
                     await this.#buttons.finalize(chatId, permMsgId, `❌ Denied: ${desc || tool}`);
                 } else {
-                    this.#log(`No permMsgId for deny feedback`);
+                    log.warn(`No permMsgId for deny feedback`);
                 }
             } catch (err) {
-                this.#log(`Error finalizing deny message: ${err.message}`);
+                log.warn(`Error finalizing deny message: ${err.message}`);
             }
         }
     }
@@ -883,7 +884,7 @@ export class Bridge {
         const options = req.options || [];
 
         if (options.length === 0) {
-            this.#log('Plan approval: no options provided');
+            log.warn('Plan approval: no options provided');
             acp.respondPermission(requestId, "reject_once");
             return;
         }
@@ -936,7 +937,7 @@ export class Bridge {
         if (selectedOption) {
             acp.respondPermission(requestId, selectedOption);
             const chosenName = options.find(o => o.optionId === selectedOption)?.name || selectedOption;
-            this.#log(`Plan approval: ${chosenName}`);
+            log.info(`Plan approval: ${chosenName}`);
             if (permMsgId) {
                 try {
                     await this.#buttons.finalize(chatId, permMsgId, `📋 ${chosenName}`);
@@ -945,7 +946,7 @@ export class Bridge {
         } else {
             const rejectId = options.find(o => o.kind === "reject_once")?.optionId || "reject_once";
             acp.respondPermission(requestId, rejectId);
-            this.#log(`Plan approval cancelled/timed out`);
+            log.info(`Plan approval cancelled/timed out`);
         }
     }
 
@@ -1004,7 +1005,7 @@ export class Bridge {
             this.#overflowRef = null;
             if (this.#acpMgr) this.#acpMgr.release("overflow");
             if (code !== 0 && code !== null) {
-                this.#log(`Overflow ACP crashed (code: ${code}). Will respawn on next demand.`);
+                log.warn(`Overflow ACP crashed (code: ${code}). Will respawn on next demand.`);
             }
         }
 
@@ -1023,10 +1024,10 @@ export class Bridge {
     async #handleElicitationRequest(req, acp, scope, getRef, tag) {
         if (scope.pendingElicitation) {
             acp.respondElicitation(req.requestId, "cancel");
-            this.#log(`Rejected concurrent elicitation (another pending)`);
+            log.warn(`Rejected concurrent elicitation (another pending)`);
             return;
         }
-        this.#log(`Elicitation [${tag}]: ${req.message}`);
+        log.info(`Elicitation [${tag}]: ${req.message}`);
 
         const targetRef = getRef();
         const chatId = targetRef?.chatId || this.#allowedChatIds?.[0];
@@ -1098,32 +1099,32 @@ export class Bridge {
                 try {
                     req = JSON.parse(line);
                 } catch (e) {
-                    this.#log(`UDS: JSON parse error: ${e.message}`);
+                    log.debug(`UDS: JSON parse error: ${e.message}`);
                     try { conn.end(JSON.stringify({ error: "Invalid JSON" })); } catch {}
                     return;
                 }
                 const scopeKey = req.scopeKey;
-                this.#log(`UDS: ask_user received (scope=${scopeKey || "unknown"})`);
+                log.debug(`UDS: ask_user received (scope=${scopeKey || "unknown"})`);
                 this.#handleMcpAskUser(req.params || {}, scopeKey)
                     .then((result) => {
-                        this.#log(`UDS: ask_user result (scope=${scopeKey || "unknown"}): ${result.error ? "error: " + result.error : "ok"}`);
+                        log.debug(`UDS: ask_user result (scope=${scopeKey || "unknown"}): ${result.error ? "error: " + result.error : "ok"}`);
                         try { conn.end(JSON.stringify(result)); } catch {}
                     })
                     .catch((err) => {
-                        this.#log(`UDS: ask_user error: ${err.message}`);
+                        log.debug(`UDS: ask_user error: ${err.message}`);
                         try { conn.end(JSON.stringify({ error: err.message })); } catch {}
                     });
             });
             conn.on("error", (err) => {
-                this.#log(`UDS: connection error: ${err.message}`);
+                log.debug(`UDS: connection error: ${err.message}`);
             });
         });
         this.#udsServer.on("error", (err) => {
-            this.#log(`UDS server error: ${err.message}`);
+            log.debug(`UDS server error: ${err.message}`);
         });
         this.#udsServer.listen(TG_UX_SOCK, () => {
             try { chmodSync(TG_UX_SOCK, 0o600); } catch {}
-            this.#log(`UDS server listening on ${TG_UX_SOCK}`);
+            log.info(`UDS server listening on ${TG_UX_SOCK}`);
         });
     }
 
@@ -1152,7 +1153,7 @@ export class Bridge {
 
         // Queue overflow protection
         if (this.#questionQueue.length >= Bridge.#MAX_QUESTION_QUEUE) {
-            this.#log(`Question queue full (${this.#questionQueue.length}), rejecting`);
+            log.warn(`Question queue full (${this.#questionQueue.length}), rejecting`);
             return { error: "Too many pending questions" };
         }
 
@@ -1162,7 +1163,7 @@ export class Bridge {
                 message, options, resolve, scope, chatId, ref,
                 queuedAt: Date.now(),
             });
-            this.#log(`Question queued (queue=${this.#questionQueue.length})`);
+            log.debug(`Question queued (queue=${this.#questionQueue.length})`);
             this.#drainQuestionQueue();
         });
     }
@@ -1181,7 +1182,7 @@ export class Bridge {
 
                 // Stale scope check
                 if (item.scope !== this.#activeScope && item.scope !== this.#overflowScope) {
-                    this.#log(`Question skipped: scope no longer active`);
+                    log.warn(`Question skipped: scope no longer active`);
                     item.resolve({ error: "Session ended" });
                     this.#questionQueue.shift();
                     continue;
@@ -1191,7 +1192,7 @@ export class Bridge {
                     const result = await this.#doAskUser(item, prefix);
                     item.resolve(result);
                 } catch (err) {
-                    this.#log(`Question error: ${err.message}`);
+                    log.warn(`Question error: ${err.message}`);
                     item.resolve({ error: err.message });
                 }
                 this.#questionQueue.shift();
@@ -1210,7 +1211,7 @@ export class Bridge {
     #cancelQuestionQueue(reason) {
         const count = this.#questionQueue.length;
         if (count === 0) return;
-        this.#log(`Cancelling ${count} queued questions: ${reason}`);
+        log.debug(`Cancelling ${count} queued questions: ${reason}`);
         for (const item of this.#questionQueue) {
             item.resolve({ error: reason });
         }
@@ -1335,11 +1336,11 @@ export class Bridge {
         this.#telegram.on("update", (update) => this.#processUpdate(update));
 
         this.#telegram.on("conflict", () => {
-            this.#log("Telegram 409 conflict — another process is polling this bot");
+            log.warn("Telegram 409 conflict — another process is polling this bot");
         });
 
         this.#telegram.on("poll_error", (err) => {
-            this.#log(`Telegram poll error: ${err.message}`);
+            log.warn(`Telegram poll error: ${err.message}`);
         });
     }
 
@@ -1356,7 +1357,6 @@ export class Bridge {
             chatIds: this.#allowedChatIds,
             ref,
             scope,
-            log: this.#log,
             startCopilot: () => this.startCopilot(),
             stopCopilot: () => this.stopCopilot(),
             restartCopilot: () => this.restartCopilot(),
@@ -1681,7 +1681,7 @@ export class Bridge {
                     reply_markup: buttons,
                 });
             } catch (err) {
-                this.#log(`Changelog display failed: ${err.message}`);
+                log.error(`Changelog display failed: ${err.message}`);
             }
             return;
         }
@@ -1706,7 +1706,7 @@ export class Bridge {
                     scopeKey: scope?.key || null,
                 };
             } catch (err) {
-                this.#log(`Status back failed: ${err.message}`);
+                log.error(`Status back failed: ${err.message}`);
             }
             return;
         }
@@ -1747,7 +1747,7 @@ export class Bridge {
                 }
             } catch (err) {
                 this.#statusRefreshPaused = false;
-                this.#log(`Status menu action failed: ${err.message}`);
+                log.error(`Status menu action failed: ${err.message}`);
             }
             // Explicitly refresh to final state (don't rely on fire-and-forget hooks)
             await this.#refreshStatusIfAlive();
@@ -1791,7 +1791,7 @@ export class Bridge {
             // Whitelist check
             const allowedGroups = this.#config.allowedGroups || [];
             if (allowedGroups.length > 0 && !allowedGroups.includes(String(chatId))) {
-                this.#log(`Group ${chatId} not in allowed_groups, leaving`);
+                log.info(`Group ${chatId} not in allowed_groups, leaving`);
                 await this.#telegram.call("leaveChat", { chat_id: chatId }).catch(() => {});
                 return;
             }
@@ -1839,13 +1839,13 @@ export class Bridge {
                 );
             }
 
-            this.#log(`Bot added to ${isForum ? "forum" : "group"} ${chatId} (${chat.title || "untitled"})`);
+            log.info(`Bot added to ${isForum ? "forum" : "group"} ${chatId} (${chat.title || "untitled"})`);
         }
 
         // Bot removed from group
         if ((newStatus === "left" || newStatus === "kicked") &&
             (oldStatus === "member" || oldStatus === "administrator")) {
-            this.#log(`Bot removed from group ${chatId}`);
+            log.info(`Bot removed from group ${chatId}`);
             this.#scopeMgr?.deleteByChat(chatId);
             // Clean up pinned instructions for this chat
             this.#pinnedInstructions?.delete(chatId);
@@ -1860,7 +1860,7 @@ export class Bridge {
 
         if (!editedText.trim()) return;
 
-        this.#log(`Edited message: chat=${chatId} msg=${messageId} text="${editedText.substring(0, 50)}"`);
+        log.info(`Edited message: chat=${chatId} msg=${messageId} len=${editedText.length}`);
 
         // Check if this message is still in the prompt queue (not yet processing)
         const queueIdx = this.#promptQueue.findIndex(p => p.messageId === messageId);
@@ -1869,7 +1869,7 @@ export class Bridge {
             const ref = entry.ref;
             const prefix = this.#getPrefix(ref);
             entry.text = prefix + editedText;
-            this.#log(`Updated queued prompt with edited text for msg=${messageId}`);
+            log.debug(`Updated queued prompt with edited text for msg=${messageId}`);
             this.#telegram.enqueue(() =>
                 this.#telegram.setMessageReaction(chatId, messageId, "✏️").catch(() => {})
             );
@@ -1878,12 +1878,12 @@ export class Bridge {
 
         // Check if currently being processed (same message) — cancel and resubmit
         if (this.#activeRef && messageId === this.#activeRef.triggerMessageId) {
-            this.#log(`Edit to active message msg=${messageId} — cancelling current prompt`);
+            log.info(`Edit to active message msg=${messageId} — cancelling current prompt`);
             this.#editCancelled = true;
             try {
                 if (this.#acp?.alive) await this.#acp.cancel();
             } catch (err) {
-                this.#log(`Cancel during edit failed: ${err.message}`);
+                log.warn(`Cancel during edit failed: ${err.message}`);
             }
             const scope = this.#activeScope;
             if (scope?.composer?.active) {
@@ -1918,12 +1918,12 @@ export class Bridge {
         // Auth check
         if (this.#pairing) {
             if (!this.#pairing.isPaired(userId)) {
-                this.#log(`Ignoring edit from unpaired user: ${userId}`);
+                log.warn(`Ignoring edit from unpaired user: ${userId}`);
                 return;
             }
         } else {
             if (!this.#allowedChatIds.includes(userId)) {
-                this.#log(`Ignoring edit from unauthorized user: ${userId}`);
+                log.warn(`Ignoring edit from unauthorized user: ${userId}`);
                 return;
             }
         }
@@ -1972,7 +1972,7 @@ export class Bridge {
         const username = message.from?.username || message.from?.first_name || null;
         if (userId == null) return;
 
-        this.#log(`Incoming message: chatId=${chatId} userId=${userId} chatType=${message.chat.type} text="${(message.text || "").substring(0, 50)}"`);
+        log.info(`Incoming message: chatId=${chatId} userId=${userId} chatType=${message.chat.type} len=${(message.text || "").length}`);
 
         const threadId = message.message_thread_id || null;
         const isForum = message.chat.is_forum === true;
@@ -2017,7 +2017,7 @@ export class Bridge {
         } else {
             // Legacy mode: check allowed_chat_ids
             if (!this.#allowedChatIds.includes(userId)) {
-                this.#log(`Ignoring message from unauthorized user: ${userId}`);
+                log.warn(`Ignoring message from unauthorized user: ${userId}`);
                 return;
             }
         }
@@ -2043,10 +2043,10 @@ export class Bridge {
             const commandForBot = text.startsWith("/") &&
                 text.toLowerCase().includes(`@${botUsername?.toLowerCase()}`);
 
-            this.#log(`Group filter: botUsername=${botUsername} botId=${botId} mentioned=${mentioned} repliedToBot=${repliedToBot} commandForBot=${commandForBot} entities=${JSON.stringify(entities)}`);
+            log.debug(`Group filter: mentioned=${mentioned} repliedToBot=${repliedToBot} commandForBot=${commandForBot} entities=${entities?.length || 0}`);
 
             if (!mentioned && !repliedToBot && !commandForBot) {
-                this.#log(`Group message ignored — not addressed to bot`);
+                log.debug(`Group message ignored — not addressed to bot`);
                 return; // Not addressed to us — silently ignore
             }
 
@@ -2075,11 +2075,11 @@ export class Bridge {
                             user_id: userId,
                         });
                         if (!["administrator", "creator"].includes(member?.status)) {
-                            this.#log(`Non-admin ${userId} tried to pin instructions in group ${chatId}`);
+                            log.warn(`Non-admin ${userId} tried to pin instructions in group ${chatId}`);
                             return;
                         }
                     } catch (err) {
-                        this.#log(`Rejecting pinned instructions for ${userId} in group ${chatId}: ${err.message}`);
+                        log.warn(`Rejecting pinned instructions for ${userId} in group ${chatId}: ${err.message}`);
                         return;
                     }
                 }
@@ -2096,7 +2096,7 @@ export class Bridge {
                 const sanitizedPinnedText = this.#sanitizePinnedInstruction(pinnedText);
                 this.#pinnedInstructions.set(chatId, sanitizedPinnedText);
                 this.resetPreamble(); // force preamble refresh across all scopes
-                this.#log(`Pinned instruction set for chat=${chatId}: ${sanitizedPinnedText.substring(0, 100)}`);
+                log.info(`Pinned instruction set for chat=${chatId}: ${sanitizedPinnedText.substring(0, 100)}`);
                 this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(chatId, "📌 Noted! This pinned message will be included as context for all future messages in this chat.")
                 );
@@ -2121,7 +2121,7 @@ export class Bridge {
             // Auto-detect forum chat on first message
             if (!this.#scopeMgr.isForumChat(chatId)) {
                 this.#scopeMgr.setForumChat(chatId);
-                this.#log(`Forum chat detected: ${chatId}`);
+                log.info(`Forum chat detected: ${chatId}`);
             }
 
             // Management topic: commands only, no ACP routing
@@ -2318,11 +2318,11 @@ export class Bridge {
             if (this.#scopeMgr && this.#scopeMgr.needsSwitch(scopeKey)) {
                 this.#switching = true;
                 try {
-                    this.#log(`Switching session to ${scope.sessionId} for ${scopeKey}`);
+                    log.debug(`Switching session to ${scope.sessionId} for ${scopeKey}`);
                     await this.#acp.loadSession(scope.sessionId);
                     this.#scopeMgr.setActive(scopeKey);
                 } catch (err) {
-                    this.#log(`Session load failed for ${scope.sessionId}: ${err.message} — creating new session`);
+                    log.warn(`Session load failed for ${scope.sessionId}: ${err.message} — creating new session`);
                     try {
                         const result = await this.#acp.newSession({
                             cwd: this.#config.workingDirectory || "/config",
@@ -2332,7 +2332,7 @@ export class Bridge {
                         scope.preambleSent = false;
                         if (this.#scopeMgr) this.#scopeMgr.setActive(scopeKey);
                     } catch (createErr) {
-                        this.#log(`Fallback session create failed: ${createErr.message}`);
+                        log.warn(`Fallback session create failed: ${createErr.message}`);
                         const msg = `⚠️ Could not create session: ${createErr.message}`;
                         if (scope.composer?.active) {
                             await scope.composer.abort(msg);
@@ -2353,7 +2353,7 @@ export class Bridge {
         } else {
             // New scope — create session
             try {
-                this.#log(`Auto-creating session for scope ${scopeKey}`);
+                log.debug(`Auto-creating session for scope ${scopeKey}`);
                 const result = await this.#acp.newSession({
                     cwd: this.#config.workingDirectory || "/config",
                 });
@@ -2362,7 +2362,7 @@ export class Bridge {
                 scope.preambleSent = false;
                 if (this.#scopeMgr) this.#scopeMgr.setActive(scopeKey);
             } catch (err) {
-                this.#log(`Auto-create session failed: ${err.message}`);
+                log.warn(`Auto-create session failed: ${err.message}`);
                 const msg = `⚠️ Failed to create session: ${err.message}`;
                 if (scope.composer?.active) {
                     await scope.composer.abort(msg);
@@ -2402,11 +2402,11 @@ export class Bridge {
                 } else {
                     existing.opts = { ...existing.opts, ...opts };
                 }
-                this.#log(`Appended to queued prompt for ${scopeKey}`);
+                log.debug(`Appended to queued prompt for ${scopeKey}`);
                 return;
             }
             if (this.#promptQueue.length >= 10) {
-                this.#log("Prompt queue full (10), rejecting new message");
+                log.warn("Prompt queue full (10), rejecting new message");
                 if (ref) {
                     this.#telegram.enqueue(() =>
                         this.#transport.send(ref, "❌ Queue is full — your message couldn't be processed. Please try again in a minute.")
@@ -2415,6 +2415,7 @@ export class Bridge {
                 return;
             }
             this.#promptQueue.push({ text, opts, ref, messageId, scopeKey });
+            log.debug(`Queue depth: ${this.#promptQueue.length} (added scope=${scopeKey})`);
             // Set ⏳ on the user's message to indicate it's queued
             if (ref && messageId) {
                 this.#telegram.setMessageReaction(ref.chatId, messageId, "⏳").catch(() => {});
@@ -2452,13 +2453,13 @@ export class Bridge {
 
         // Create composer for progressive message display
         if (ref && scope) {
-            this.#log(`Creating ResponseComposer for chat=${ref.chatId}`);
-            scope.composer = new ResponseComposer(this.#telegram, this.#log);
+            log.debug(`Creating ResponseComposer for chat=${ref.chatId}`);
+            scope.composer = new ResponseComposer(this.#telegram);
             try {
                 await scope.composer.start(ref);
-                this.#log(`Composer started, messageId=${scope.composer.messageId}`);
+                log.debug(`Composer started, messageId=${scope.composer.messageId}`);
             } catch (err) {
-                this.#log(`Composer start failed: ${err.message}`);
+                log.warn(`Composer start failed: ${err.message}`);
             }
         }
 
@@ -2479,14 +2480,16 @@ export class Bridge {
                 text = `[${name}]: ${text}`;
             }
 
+            const promptStartMs = Date.now();
             const result = await this.#acp.prompt(text, opts);
-            this.#log(`Prompt completed successfully: ${JSON.stringify(result)?.substring(0, 200)}`);
+            const elapsed = ((Date.now() - promptStartMs) / 1000).toFixed(1);
+            log.info(`Prompt completed: ${scopeKey || 'unknown'} in ${elapsed}s (${scope?.turnToolCount || 0} tool calls${scope?.turnToolErrors ? `, ${scope.turnToolErrors} errors` : ''})`);
         } catch (err) {
             // Skip error handling if this prompt was cancelled due to a message edit
             if (this.#editCancelled) {
-                this.#log(`Prompt cancelled (edit): ${err.message}`);
+                log.info(`Prompt cancelled (edit): ${err.message}`);
             } else {
-                this.#log(`Prompt error: ${err.message}`);
+                log.error(`Prompt error: ${err.message}`);
                 if (scope) scope.turnToolErrors++;
                 const userMsg = formatError(err);
                 if (scope?.composer?.active) {
@@ -2574,7 +2577,7 @@ export class Bridge {
 
         // If already starting, wait for that attempt
         if (this.#startPromise) {
-            this.#log("Start already in progress, waiting...");
+            log.warn("Start already in progress, waiting...");
             return this.#startPromise;
         }
 
@@ -2587,7 +2590,7 @@ export class Bridge {
     }
 
     async #doStartCopilot() {
-        this.#log("Starting ACP process...");
+        log.info("Starting ACP process...");
         try {
             await this.#acp.start();
         } catch (err) {
@@ -2597,50 +2600,50 @@ export class Bridge {
         // Authenticate — required by ACP protocol before session/new
         try {
             await this.#acp.authenticate();
-            this.#log("ACP authentication successful");
+            log.info("ACP authentication successful");
         } catch (err) {
             const isAuthRequired = err.message?.includes("Authentication required") || err.message?.includes("-32000");
             if (!isAuthRequired) {
-                this.#log(`Authentication failed (unexpected): ${err.message}`);
+                log.warn(`Authentication failed (unexpected): ${err.message}`);
                 await this.#acp.stop();
                 throw err;
             }
 
             if (process.env.COPILOT_GITHUB_TOKEN) {
-                this.#log("Configured token rejected — clearing and retrying with stored tokens");
+                log.warn("Configured token rejected — clearing and retrying with stored tokens");
                 delete process.env.COPILOT_GITHUB_TOKEN;
                 await this.#acp.stop();
                 await this.#acp.start();
                 try {
                     await this.#acp.authenticate();
-                    this.#log("ACP authentication successful with stored tokens");
+                    log.info("ACP authentication successful with stored tokens");
                 } catch (retryErr) {
                     if (retryErr.message?.includes("Authentication required") || retryErr.message?.includes("-32000")) {
-                        this.#log("No stored tokens either — starting device login");
+                        log.warn("No stored tokens either — starting device login");
                         await this.#acp.stop();
                         await this.#runDeviceLogin();
                         await this.#acp.start();
                         await this.#acp.authenticate();
-                        this.#log("ACP authentication successful after login");
+                        log.info("ACP authentication successful after login");
                     } else {
-                        this.#log(`Authentication retry failed: ${retryErr.message}`);
+                        log.error(`Authentication retry failed: ${retryErr.message}`);
                         await this.#acp.stop();
                         throw retryErr;
                     }
                 }
             } else {
-                this.#log("No valid token found — starting device login flow");
+                log.warn("No valid token found — starting device login flow");
                 await this.#acp.stop();
                 await this.#runDeviceLogin();
                 await this.#acp.start();
                 await this.#acp.authenticate();
-                this.#log("ACP authentication successful after login");
+                log.info("ACP authentication successful after login");
             }
         }
 
         // Create session (small delay to let auth propagate in the ACP process)
         await new Promise(r => setTimeout(r, 500));
-        this.#log("Creating new ACP session...");
+        log.info("Creating new ACP session...");
         try {
             await this.#acp.newSession({
                 cwd: this.#config.workingDirectory || "/config",
@@ -2655,32 +2658,32 @@ export class Bridge {
         // Clear stale scope sessionIds — old ACP sessions don't survive restart
         if (this.#scopeMgr) {
             this.#scopeMgr.clearAllSessions();
-            this.#log("Cleared stale scope sessions after ACP restart");
+            log.info("Cleared stale scope sessions after ACP restart");
         }
         this.resetPreamble();
-        this.#log(`Copilot started, session: ${this.#acp.sessionId}`);
+        log.info(`Copilot started, session: ${this.#acp.sessionId}`);
         this.#refreshStatusIfAlive().catch(() => {});
     }
 
     async #runDeviceLogin() {
         // If PAT token is configured, no login needed
         if (process.env.COPILOT_GITHUB_TOKEN) {
-            this.#log("GitHub token configured — skipping device login");
+            log.info("GitHub token configured — skipping device login");
             return;
         }
 
         // If login is already in progress, wait for that one
         if (this.#loginPromise) {
-            this.#log("Login already in progress, waiting...");
+            log.warn("Login already in progress, waiting...");
             return this.#loginPromise;
         }
 
-        this.#log("Authentication required — starting device login flow...");
+        log.info("Authentication required — starting device login flow...");
         const binary = this.#config.copilotBinary || "/share/copilot-tools/copilot";
 
         this.#loginPromise = new Promise((resolve, reject) => {
             // Spawn the configured binary directly so it is never interpreted by a shell.
-            this.#log(`[login] Spawning: ${binary} login`);
+            log.info(`[login] Spawning: ${binary} login`);
             const proc = spawn(binary, ["login"], {
                 stdio: ["pipe", "pipe", "pipe"],
                 env: { ...process.env },
@@ -2704,7 +2707,7 @@ export class Bridge {
                 if (!resolved) {
                     resolved = true;
                     clearAutoConfirm();
-                    this.#log("[login] Timed out after 10 minutes");
+                    log.error("[login] Timed out after 10 minutes");
                     proc.kill();
                     this.#broadcastAdmin("⏰ Login timed out. Send any message to get a fresh code.");
                     reject(new Error("Login timed out"));
@@ -2714,13 +2717,13 @@ export class Bridge {
             proc.stdout.on("data", (chunk) => {
                 const text = chunk.toString();
                 stdout += text;
-                this.#log(`[login] stdout: ${text.trim()}`);
+                log.debug(`[login] stdout: ${text.trim()}`);
                 if (!codeSent) {
                     const match = stdout.match(/enter code ([A-Z0-9]{4}-[A-Z0-9]{4})/);
                     if (match) {
                         codeSent = true;
                         const code = match[1];
-                        this.#log(`[login] Device code: ${code}`);
+                        log.info(`[login] Device code: ${code}`);
                         this.#broadcastAdmin(
                             `🔐 GitHub authentication required\n\n` +
                             `1️⃣ Visit: https://github.com/login/device\n` +
@@ -2736,7 +2739,7 @@ export class Bridge {
                 const text = chunk.toString().trim();
                 if (text) {
                     stderr += text + "\n";
-                    this.#log(`[login] stderr: ${text}`);
+                    log.debug(`[login] stderr: ${text}`);
                 }
             });
 
@@ -2746,8 +2749,8 @@ export class Bridge {
                 this.#loginPromise = null;
                 if (resolved) return;
                 resolved = true;
-                this.#log(`[login] Process exited with code ${exitCode}`);
-                if (stderr) this.#log(`[login] stderr: ${stderr.trim()}`);
+                log.info(`[login] Process exited with code ${exitCode}`);
+                if (stderr) log.debug(`[login] stderr: ${stderr.trim()}`);
 
                 // Always resolve — the caller will verify auth via acp.authenticate()
                 // Login may exit non-zero due to browser/clipboard warnings in containers
@@ -2761,7 +2764,7 @@ export class Bridge {
                 this.#loginPromise = null;
                 if (!resolved) {
                     resolved = true;
-                    this.#log(`[login] Spawn error: ${err.message}`);
+                    log.error(`[login] Spawn error: ${err.message}`);
                     reject(err);
                 }
             });
@@ -2785,7 +2788,7 @@ export class Bridge {
 
     #extractReplyContext(message) {
         const reply = message.reply_to_message;
-        this.#log(`Reply chain: reply_to_message=${reply ? `msgId=${reply.message_id} from=${reply.from?.username || reply.from?.id} text="${(reply.text || "").substring(0, 50)}"` : "none"}`);
+        log.debug(`Reply chain: reply_to_message=${reply ? `msgId=${reply.message_id} from=${reply.from?.username || reply.from?.id}` : "none"}`);
         if (!reply) return "";
 
         const replyMsgId = reply.message_id;
@@ -2796,7 +2799,7 @@ export class Bridge {
         const historyChain = history ? history.getReplyChain(replyMsgId, 5, 2000) : [];
 
         if (historyChain.length > 0) {
-            this.#log(`Reply chain from history: ${historyChain.length} messages`);
+            log.debug(`Reply chain from history: ${historyChain.length} messages`);
 
             if (historyChain.length === 1) {
                 const c = historyChain[0];
@@ -2825,7 +2828,7 @@ export class Bridge {
         if (text.length > 500) text = text.substring(0, 500) + "…";
 
         const source = isBotMsg ? "Replying to bot" : "Replying to user";
-        this.#log(`Reply chain fallback (Telegram only): 1 message`);
+        log.debug(`Reply chain fallback (Telegram only): 1 message`);
         return `[${source}: "${text}"]`;
     }
 
@@ -2952,13 +2955,13 @@ export class Bridge {
                         try {
                             await this.#transport.send(ref, detailsHtml, "HTML");
                         } catch (err) {
-                            this.#log(`Trailing details send failed: ${err.message}`);
+                            log.error(`Trailing details send failed: ${err.message}`);
                         }
                     });
                 }
             }
         } catch (err) {
-            this.#log(`Composer finalize error: ${err.message}`);
+            log.error(`Composer finalize error: ${err.message}`);
             if (fullText) {
                 const ref = getRef ? getRef() : this.#activeRef;
                 if (ref) {
@@ -3057,7 +3060,7 @@ export class Bridge {
 
     #showToolNotification(toolName, result, getScope, getRef) {
         const scope = getScope ? getScope() : this.#activeScope;
-        this.#log(`Tool notification check: ${toolName}, allowAll=${scope?.allowAll}`);
+        log.debug(`Tool notification check: ${toolName}, allowAll=${scope?.allowAll}`);
 
         // Only notify for HA write tools
         const writeTools = new Set([
@@ -3067,7 +3070,7 @@ export class Bridge {
             "ha-mcp-ha_config_set_automation",
         ]);
         if (!writeTools.has(toolName)) {
-            this.#log(`Tool notification skipped: ${toolName} not a write tool`);
+            log.debug(`Tool notification skipped: ${toolName} not a write tool`);
             return;
         }
 
@@ -3088,7 +3091,7 @@ export class Bridge {
             }
             content = typeof raw === "string" ? JSON.parse(raw) : raw;
         } catch (e) {
-            this.#log(`Tool notification parse error: ${e.message}`);
+            log.debug(`Tool notification parse error: ${e.message}`);
             content = {};
         }
 
@@ -3097,7 +3100,7 @@ export class Bridge {
         const entityId = content?.entity_id || "";
         const success = content?.success !== false;
 
-        this.#log(`Tool notification parsed: ${domain}.${service} → ${entityId} success=${success}`);
+        log.debug(`Tool notification parsed: ${domain}.${service} → ${entityId} success=${success}`);
 
         if (!domain && !service) return;
 
@@ -3125,21 +3128,21 @@ export class Bridge {
                 { text: "↩️ Undo", value: undoValue },
                 { text: "✅ OK", value: "dismiss" },
             ]];
-            this.#log(`Sending undo notification to chat ${chatId}: ${text}`);
+            log.info(`Sending undo notification to chat ${chatId}: ${text}`);
             this.#buttons.prompt(chatId, text, rows, {
                 timeoutMs: 30000,
                 timeoutText: null, // silently expire
             }).then(({ value: selected }) => {
                 if (selected !== undoValue || !undoRef) return;
 
-                this.#log(`Undo: ${domain}.${reverseService} → ${entityId}`);
+                log.info(`Undo: ${domain}.${reverseService} → ${entityId}`);
                 // Send undo command via the original scope, even if another scope is active now.
                 this.#queuePrompt(
                     `Please call service ${domain}.${reverseService} on entity ${entityId} to undo the previous action. Do it immediately without asking.`,
                     {}, undoRef, null
                 );
             }).catch(err => {
-                this.#log(`Tool notification error: ${err.message}`);
+                log.error(`Tool notification error: ${err.message}`);
             });
         } else {
             // Just show notification (no undo available)

@@ -1,4 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
+import { createLogger } from "./logger.mjs";
+
+const log = createLogger('config');
 
 function normalizeGroupMode(value) {
     return value === "all" ? "all" : "mention";
@@ -10,7 +13,7 @@ function normalizeMaxGroupMembers(value) {
     return Math.min(Math.max(Math.trunc(parsed), 1), 1000);
 }
 
-export async function loadConfig(log = () => {}) {
+export async function loadConfig() {
     // HA add-on options are at /data/options.json
     const optionsPath = "/data/options.json";
     let options = {};
@@ -18,7 +21,7 @@ export async function loadConfig(log = () => {}) {
         try {
             options = JSON.parse(readFileSync(optionsPath, "utf-8"));
         } catch (err) {
-            log(`Failed to read options.json: ${err.message}`);
+            log.error(`Failed to read options.json: ${err.message}`);
         }
     }
 
@@ -32,10 +35,10 @@ export async function loadConfig(log = () => {}) {
             });
             const data = await res.json();
             addonVersion = data?.data?.version || "unknown";
-            log(`Version from supervisor API: ${addonVersion}`);
+            log.debug(`Version from supervisor API: ${addonVersion}`);
         }
     } catch (err) {
-        log(`Supervisor API version fetch failed: ${err.message}`);
+        log.warn(`Supervisor API version fetch failed: ${err.message}`);
     }
     if (addonVersion === "unknown") {
         // Fallback: read from config.yaml (copied into container by Dockerfile)
@@ -45,7 +48,7 @@ export async function loadConfig(log = () => {}) {
                 const vMatch = configYaml.match(/^version:\s*(.+)/m);
                 if (vMatch) {
                     addonVersion = vMatch[1].trim();
-                    log(`Version from ${p}: ${addonVersion}`);
+                    log.debug(`Version from ${p}: ${addonVersion}`);
                     break;
                 }
             } catch {
@@ -66,7 +69,7 @@ export async function loadConfig(log = () => {}) {
             copilotBinary = `${autoDir}/bin/copilot`;
         } else if (existsSync(legacyBin)) {
             copilotBinary = legacyBin;
-            log(`Using legacy Copilot binary at ${legacyBin}`);
+            log.info(`Using legacy Copilot binary at ${legacyBin}`);
         } else {
             copilotBinary = `${autoDir}/bin/copilot`; // expected after bootstrap
         }
@@ -78,7 +81,7 @@ export async function loadConfig(log = () => {}) {
             copilotConfigDir = `${autoDir}/.copilot`;
         } else if (existsSync(legacyConfig)) {
             copilotConfigDir = legacyConfig;
-            log(`Using legacy Copilot config at ${legacyConfig}`);
+            log.info(`Using legacy Copilot config at ${legacyConfig}`);
         } else {
             copilotConfigDir = `${autoDir}/.copilot`;
         }
@@ -102,6 +105,7 @@ export async function loadConfig(log = () => {}) {
         workingDirectory: options.working_directory || "/config",
         permissionPolicy: options.permission_policy || "interactive",
         agentDir: options.agent_dir || "/config/copilot-telegram-bot",
+        logLevel: options.log_level || process.env.LOG_LEVEL || "info",
         version: addonVersion,
         mcpServers: [],
     };
@@ -123,18 +127,18 @@ export async function loadConfig(log = () => {}) {
                         ...server,
                     }));
                 }
-                log(`Loaded MCP config from ${p} (${config.mcpServers.length} servers)`);
+                log.info(`Loaded MCP config from ${p} (${config.mcpServers.length} servers)`);
                 for (const s of config.mcpServers) {
-                    log(`  MCP: ${s.name} → ${s.url ? s.url : s.command || "unknown"}`);
+                    log.info(`  MCP: ${s.name} → ${s.url ? s.url : s.command || "unknown"}`);
                 }
                 break;
             } catch (err) {
-                log(`WARNING: Failed to parse MCP config ${p}: ${err.message}`);
+                log.warn(`Failed to parse MCP config ${p}: ${err.message}`);
             }
         }
     }
     if (config.mcpServers.length === 0) {
-        log("No MCP servers configured (ha-mcp add-on not detected — using direct API)");
+        log.info("No MCP servers configured (ha-mcp add-on not detected — using direct API)");
     }
 
     // Check HA API connectivity
@@ -151,9 +155,9 @@ export async function loadConfig(log = () => {}) {
                 const data = await res.json();
                 config.haConnected = true;
                 config.haVersion = data.version || null;
-                log(`HA API OK: Home Assistant ${data.version}`);
+                log.info(`HA API OK: Home Assistant ${data.version}`);
             } else {
-                log(`HA API check failed: HTTP ${res.status}`);
+                log.warn(`HA API check failed: HTTP ${res.status}`);
             }
             // Check supervisor role
             const roleRes = await fetch("http://supervisor/addons/self/info", {
@@ -164,10 +168,10 @@ export async function loadConfig(log = () => {}) {
                 config.haRole = roleData?.data?.hassio_role || "default";
             }
         } else {
-            log("No SUPERVISOR_TOKEN — HA API unavailable");
+            log.warn("No SUPERVISOR_TOKEN — HA API unavailable");
         }
     } catch (err) {
-        log(`HA API check error: ${err.message}`);
+        log.warn(`HA API check error: ${err.message}`);
     }
 
     // Parse changelog for /status viewer
@@ -188,9 +192,9 @@ export async function loadConfig(log = () => {}) {
                         body,
                     });
                 }
-                log(`Parsed changelog: ${changelog.length} entries from ${clPath}`);
+                log.debug(`Parsed changelog: ${changelog.length} entries from ${clPath}`);
             } catch (err) {
-                log(`Failed to parse changelog: ${err.message}`);
+                log.warn(`Failed to parse changelog: ${err.message}`);
             }
             break;
         }

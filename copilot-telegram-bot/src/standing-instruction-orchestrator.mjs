@@ -5,6 +5,7 @@
 // to evaluate triggers and wake the agent or send notifications.
 
 import { watch } from "node:fs";
+import { createLogger } from "./logger.mjs";
 
 const CRON_CHECK_INTERVAL_MS = 60_000;
 const TIMER_CHECK_INTERVAL_MS = 15_000;
@@ -12,6 +13,8 @@ const HA_SERVICE_TIMEOUT_MS = 15_000;
 
 // Domains allowed for ha_service action without agent involvement.
 // Restricts automated service calls to safe, non-destructive domains.
+const log = createLogger("standing");
+
 const HA_SERVICE_ALLOWED_DOMAINS = new Set([
     "light", "switch", "scene", "script", "input_boolean",
     "input_number", "input_select", "input_text", "input_datetime",
@@ -25,7 +28,6 @@ export class StandingInstructionOrchestrator {
     #bridge;
     #telegram;
     #ownerChatId;
-    #log;
     #cronTimer = null;
     #timerTimer = null;
     #started = false;
@@ -39,13 +41,12 @@ export class StandingInstructionOrchestrator {
     #haToken;
     #fileWatcher = null;
 
-    constructor({ eventListener, manager, bridge, telegram, ownerChatId, log, haBaseUrl, haToken }) {
+    constructor({ eventListener, manager, bridge, telegram, ownerChatId, haBaseUrl, haToken }) {
         this.#eventListener = eventListener;
         this.#manager = manager;
         this.#bridge = bridge;
         this.#telegram = telegram;
         this.#ownerChatId = ownerChatId;
-        this.#log = typeof log === "function" ? log : console.log;
         this.#haBaseUrl = haBaseUrl || "http://supervisor/core/api";
         this.#haToken = haToken || process.env.SUPERVISOR_TOKEN;
     }
@@ -58,18 +59,18 @@ export class StandingInstructionOrchestrator {
 
     pause() {
         this.#paused = true;
-        this.#log("[STANDING] Orchestrator paused");
+        log.info("Orchestrator paused");
     }
 
     resume() {
         this.#paused = false;
         this.#muteUntil = null;
-        this.#log("[STANDING] Orchestrator resumed");
+        log.info("Orchestrator resumed");
     }
 
     mute(durationMs) {
         this.#muteUntil = Date.now() + durationMs;
-        this.#log(`[STANDING] Muted for ${Math.round(durationMs / 60000)}min`);
+        log.info(`Muted for ${Math.round(durationMs / 60000)}min`);
     }
 
     get isPaused() {
@@ -101,21 +102,21 @@ export class StandingInstructionOrchestrator {
         if (this.#started) return;
         this.#started = true;
         this.#startedAt = Date.now();
-        this.#log("[STANDING] Orchestrator starting...");
+        log.info("Orchestrator starting...");
 
         // Wire HA event listener
         this.#boundStateHandler = (event) => this.#onStateChanged(event);
         this.#boundErrorHandler = (err) => {
-            this.#log(`[STANDING] HA event error: ${err.message}`);
+            log.warn(`HA event error: ${err.message}`);
         };
         this.#eventListener.on("state_changed", this.#boundStateHandler);
         this.#eventListener.on("error", this.#boundErrorHandler);
 
         try {
             await this.#eventListener.start();
-            this.#log("[STANDING] HA event listener connected");
+            log.info("HA event listener connected");
         } catch (err) {
-            this.#log(`[STANDING] HA event listener failed to start: ${err.message}`);
+            log.warn(`HA event listener failed to start: ${err.message}`);
             // Non-fatal — will reconnect automatically
         }
 
@@ -130,7 +131,7 @@ export class StandingInstructionOrchestrator {
 
         const instructions = this.#manager.list();
         const enabled = instructions.filter(i => i.enabled).length;
-        this.#log(`[STANDING] Orchestrator started — ${enabled}/${instructions.length} instructions enabled`);
+        log.info(`Orchestrator started — ${enabled}/${instructions.length} instructions enabled`);
     }
 
     async stop() {
@@ -161,7 +162,7 @@ export class StandingInstructionOrchestrator {
             this.#boundErrorHandler = null;
         }
 
-        this.#log("[STANDING] Orchestrator stopped");
+        log.info("Orchestrator stopped");
     }
 
     #onStateChanged(event) {
@@ -176,7 +177,7 @@ export class StandingInstructionOrchestrator {
             );
 
             for (const instruction of matches) {
-                this.#log(`[STANDING] Matched: "${instruction.description}" (${instruction.id}) for ${event.entity_id}: ${event.old_state} → ${event.new_state}`);
+                log.info(`Matched: "${instruction.description}" (${instruction.id}) for ${event.entity_id}: ${event.old_state} → ${event.new_state}`);
                 this.#manager.markTriggered(instruction.id);
                 this.#triggerCount++;
                 this.#executeAction(instruction, {
@@ -187,7 +188,7 @@ export class StandingInstructionOrchestrator {
                 });
             }
         } catch (err) {
-            this.#log(`[STANDING] Error evaluating state_changed: ${err.message}`);
+            log.error(`Error evaluating state_changed: ${err.message}`);
         }
     }
 
@@ -207,10 +208,10 @@ export class StandingInstructionOrchestrator {
             for (const inst of allInstructions) {
                 if (!inst.enabled) continue;
                 if (inst.expires_at && Date.now() >= Date.parse(inst.expires_at)) {
-                    this.#log(`[STANDING] Expired: "${inst.description}" (${inst.id})`);
+                    log.info(`Expired: "${inst.description}" (${inst.id})`);
                     this.#manager.disable(inst.id);
                 } else if (inst.max_triggers !== null && (inst.trigger_count || 0) >= inst.max_triggers) {
-                    this.#log(`[STANDING] Exhausted (${inst.trigger_count}/${inst.max_triggers} triggers): "${inst.description}" (${inst.id})`);
+                    log.info(`Exhausted (${inst.trigger_count}/${inst.max_triggers} triggers): "${inst.description}" (${inst.id})`);
                     this.#manager.disable(inst.id);
                 }
             }
@@ -221,7 +222,7 @@ export class StandingInstructionOrchestrator {
             for (const instruction of cronInstructions) {
                 if (this.#isInCooldown(instruction)) continue;
                 if (this.#manager.cronMatches(instruction.trigger.expression, now)) {
-                    this.#log(`[STANDING] Cron matched: "${instruction.description}" (${instruction.id})`);
+                    log.info(`Cron matched: "${instruction.description}" (${instruction.id})`);
                     this.#manager.markTriggered(instruction.id);
                     this.#triggerCount++;
                     this.#executeAction(instruction, {
@@ -232,7 +233,7 @@ export class StandingInstructionOrchestrator {
                 }
             }
         } catch (err) {
-            this.#log(`[STANDING] Error evaluating cron: ${err.message}`);
+            log.error(`Error evaluating cron: ${err.message}`);
         }
     }
 
@@ -244,7 +245,7 @@ export class StandingInstructionOrchestrator {
 
             for (const instruction of expired) {
                 if (this.#isInCooldown(instruction)) continue;
-                this.#log(`[STANDING] Timer expired: "${instruction.description}" (${instruction.id})`);
+                log.info(`Timer expired: "${instruction.description}" (${instruction.id})`);
                 this.#manager.markTriggered(instruction.id);
                 this.#triggerCount++;
                 this.#executeAction(instruction, {
@@ -253,7 +254,7 @@ export class StandingInstructionOrchestrator {
                 });
             }
         } catch (err) {
-            this.#log(`[STANDING] Error evaluating timers: ${err.message}`);
+            log.error(`Error evaluating timers: ${err.message}`);
         }
     }
 
@@ -277,11 +278,11 @@ export class StandingInstructionOrchestrator {
                 this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(this.#ownerChatId, statusMsg)
                 ).catch(err => {
-                    this.#log(`[STANDING] Failed to send wake notification: ${err.message}`);
+                    log.warn(`Failed to send wake notification: ${err.message}`);
                 });
             }
             this.#bridge.injectSystemPrompt(prompt, this.#ownerChatId).catch(err => {
-                this.#log(`[STANDING] Failed to wake agent: ${err.message}`);
+                log.error(`Failed to wake agent: ${err.message}`);
             });
             break;
         }
@@ -294,7 +295,7 @@ export class StandingInstructionOrchestrator {
                 this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(this.#ownerChatId, message)
                 ).catch(err => {
-                    this.#log(`[STANDING] Failed to send notification: ${err.message}`);
+                    log.warn(`Failed to send notification: ${err.message}`);
                 });
             }
             break;
@@ -303,7 +304,7 @@ export class StandingInstructionOrchestrator {
             const { domain, service, data, message } = instruction.action;
 
             if (!HA_SERVICE_ALLOWED_DOMAINS.has(domain)) {
-                this.#log(`[STANDING] Blocked ha_service: domain "${domain}" not in allowlist`);
+                log.warn(`Blocked ha_service: domain "${domain}" not in allowlist`);
                 if (this.#ownerChatId) {
                     this.#telegram.enqueue(() =>
                         this.#telegram.sendMessage(this.#ownerChatId, `⛔ ${instruction.description}\nBlocked: domain "${domain}" is not allowed for direct service calls. Use wake_agent instead.`)
@@ -313,7 +314,7 @@ export class StandingInstructionOrchestrator {
             }
 
             const url = `${this.#haBaseUrl}/services/${domain}/${service}`;
-            this.#log(`[STANDING] Calling HA service: ${domain}.${service}`);
+            log.info(`Calling HA service: ${domain}.${service}`);
 
             fetch(url, {
                 method: "POST",
@@ -327,7 +328,7 @@ export class StandingInstructionOrchestrator {
                 if (!res.ok) {
                     throw new Error(`HTTP ${res.status} ${res.statusText}`);
                 }
-                this.#log(`[STANDING] HA service ${domain}.${service} called successfully`);
+                log.info(`HA service ${domain}.${service} called successfully`);
                 if (this.#ownerChatId) {
                     const notifyMsg = message
                         ? `🔔 ${instruction.description}\n${message}`
@@ -335,11 +336,11 @@ export class StandingInstructionOrchestrator {
                     this.#telegram.enqueue(() =>
                         this.#telegram.sendMessage(this.#ownerChatId, notifyMsg)
                     ).catch(err => {
-                        this.#log(`[STANDING] Failed to send ha_service notification: ${err.message}`);
+                        log.warn(`Failed to send ha_service notification: ${err.message}`);
                     });
                 }
             }).catch(err => {
-                this.#log(`[STANDING] HA service call failed: ${err.message}`);
+                log.error(`HA service call failed: ${err.message}`);
                 if (this.#ownerChatId) {
                     this.#telegram.enqueue(() =>
                         this.#telegram.sendMessage(this.#ownerChatId, `❌ ${instruction.description}\nService call failed: ${err.message}`)
@@ -349,7 +350,7 @@ export class StandingInstructionOrchestrator {
             break;
         }
         default:
-            this.#log(`[STANDING] Unknown action type: ${instruction.action.type}`);
+            log.error(`Unknown action type: ${instruction.action.type}`);
         }
     }
 
@@ -371,9 +372,9 @@ export class StandingInstructionOrchestrator {
         for (const targetId of instruction.chain_enable) {
             const result = this.#manager.enable(targetId);
             if (result) {
-                this.#log(`[STANDING] Chain: enabled "${result.description}" (${targetId})`);
+                log.info(`Chain: enabled "${result.description}" (${targetId})`);
             } else {
-                this.#log(`[STANDING] Chain: failed to enable ${targetId} (not found)`);
+                log.warn(`Chain: failed to enable ${targetId} (not found)`);
             }
         }
     }
@@ -388,7 +389,7 @@ export class StandingInstructionOrchestrator {
                     this.#stopFileWatcher();
                     const reloaded = this.#manager.reloadIfChanged();
                     if (reloaded) {
-                        this.#log("[STANDING] Instant reload triggered by file change");
+                        log.info("Instant reload triggered by file change");
                     }
                     // Re-create watcher on the new inode
                     setTimeout(() => {
@@ -397,11 +398,11 @@ export class StandingInstructionOrchestrator {
                 }
             });
             this.#fileWatcher.on("error", (err) => {
-                this.#log(`[STANDING] File watcher error: ${err.message}`);
+                log.warn(`File watcher error: ${err.message}`);
             });
-            this.#log("[STANDING] File watcher started for instant reload");
+            log.info("File watcher started for instant reload");
         } catch (err) {
-            this.#log(`[STANDING] Failed to start file watcher: ${err.message}`);
+            log.warn(`Failed to start file watcher: ${err.message}`);
         }
     }
 

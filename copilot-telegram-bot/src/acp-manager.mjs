@@ -8,14 +8,15 @@
 import { ACPClient } from "./acp.mjs";
 import { mkdirSync, existsSync, copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createLogger } from "./logger.mjs";
 
 const OVERFLOW_SPAWN_COOLDOWN_MS = 5000; // min time between overflow spawns
+const log = createLogger("acp-mgr");
 
 export class ACPManager {
     #primaryAcp = null;
     #overflowAcp = null;
     #config;
-    #log;
 
     // Which scope key each ACP is currently serving (null = idle)
     #primaryScopeKey = null;
@@ -35,9 +36,8 @@ export class ACPManager {
     // Auth state
     #authenticated = false;
 
-    constructor({ config, log, overflowEnabled = false, overflowIdleMinutes = 5 }) {
+    constructor({ config, overflowEnabled = false, overflowIdleMinutes = 5 }) {
         this.#config = config;
-        this.#log = log;
         this.#overflowEnabled = overflowEnabled;
         this.#overflowIdleMs = overflowIdleMinutes * 60 * 1000;
 
@@ -110,7 +110,7 @@ export class ACPManager {
             await this.#spawnOverflow();
             return { acp: this.#overflowAcp, tag: "overflow" };
         } catch (err) {
-            this.#log(`Overflow spawn failed: ${err.message}`);
+            log.warn(`Overflow spawn failed: ${err.message}`);
             return null;
         }
     }
@@ -181,7 +181,7 @@ export class ACPManager {
     }
 
     async #doSpawnOverflow() {
-        this.#log("Spawning overflow ACP process...");
+        log.info("Spawning overflow ACP process...");
         this.#overflowLastSpawn = Date.now();
 
         // Prepare isolated COPILOT_HOME
@@ -198,13 +198,13 @@ export class ACPManager {
 
         // Wire exit handler to clean up
         this.#overflowAcp.on("exit", ({ code, signal }) => {
-            this.#log(`Overflow ACP exited: code=${code} signal=${signal}`);
+            log.info(`Overflow ACP exited: code=${code} signal=${signal}`);
             this.#overflowScopeKey = null;
             this.#clearOverflowIdleTimer();
         });
 
         this.#overflowAcp.on("log", (text) => {
-            this.#log(`ACP[overflow]: ${text}`);
+            log.debug(`ACP[overflow]: ${text}`);
         });
 
         try {
@@ -213,10 +213,10 @@ export class ACPManager {
             // Authenticate overflow
             try {
                 await this.#overflowAcp.authenticate();
-                this.#log("Overflow ACP authenticated");
+                log.info("Overflow ACP authenticated");
             } catch (err) {
                 if (err.message?.includes("Authentication required") || err.message?.includes("-32000")) {
-                    this.#log("Overflow auth failed — will fall back to primary queue");
+                    log.warn("Overflow auth failed — will fall back to primary queue");
                     await this.#overflowAcp.stop();
                     this.#overflowAcp = null;
                     throw new Error("Overflow authentication failed — no token available");
@@ -230,7 +230,7 @@ export class ACPManager {
                 cwd: this.#config.workingDirectory || "/config",
             });
 
-            this.#log(`Overflow ACP started, session: ${this.#overflowAcp.sessionId}`);
+            log.info(`Overflow ACP started, session: ${this.#overflowAcp.sessionId}`);
         } catch (err) {
             try { await this.#overflowAcp?.stop(); } catch {}
             this.#overflowAcp = null;
@@ -250,9 +250,9 @@ export class ACPManager {
         if (existsSync(primaryConfig)) {
             try {
                 copyFileSync(primaryConfig, overflowConfig);
-                this.#log("Copied auth config to overflow COPILOT_HOME");
+                log.debug("Copied auth config to overflow COPILOT_HOME");
             } catch (err) {
-                this.#log(`Failed to copy auth config: ${err.message}`);
+                log.warn(`Failed to copy auth config: ${err.message}`);
             }
         }
 
@@ -280,17 +280,17 @@ export class ACPManager {
 
         // Don't reap while busy
         if (this.#overflowScopeKey !== null) {
-            this.#log("Overflow reap deferred — still busy");
+            log.debug("Overflow reap deferred — still busy");
             this.#resetOverflowIdleTimer();
             return;
         }
 
-        this.#log("Reaping overflow ACP process...");
+        log.info("Reaping overflow ACP process...");
         try {
             this.#overflowAcp.removeAllListeners();
             await this.#overflowAcp.stop();
         } catch (err) {
-            this.#log(`Overflow reap error: ${err.message}`);
+            log.warn(`Overflow reap error: ${err.message}`);
         }
         this.#overflowAcp = null;
         this.#overflowScopeKey = null;
@@ -302,9 +302,9 @@ export class ACPManager {
         if (!this.#overflowAcp?.alive) return;
 
         this.#overflowIdleTimer = setTimeout(() => {
-            this.#log("Overflow idle timeout — reaping");
+            log.info("Overflow idle timeout — reaping");
             this.reapOverflow().catch(err => {
-                this.#log(`Overflow reap error: ${err.message}`);
+                log.warn(`Overflow reap error: ${err.message}`);
             });
         }, this.#overflowIdleMs);
         this.#overflowIdleTimer.unref?.();

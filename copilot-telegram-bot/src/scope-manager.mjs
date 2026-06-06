@@ -1,11 +1,13 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { ChatHistory } from "./history.mjs";
 import { ScopeState } from "./scope-state.mjs";
+import { createLogger } from "./logger.mjs";
+
+const log = createLogger("scope");
 
 export class ScopeManager {
     #scopes = new Map();
     #persistPath;
-    #log;
     #dirty = false;
     #flushTimer = null;
     #forumChatIds = new Set();
@@ -15,10 +17,9 @@ export class ScopeManager {
     #activeKey = null;
     #protectedKeys = new Set();
 
-    constructor({ persistPath, defaultAllowAll = false, log, protectedKeys = [] }) {
+    constructor({ persistPath, defaultAllowAll = false, protectedKeys = [] }) {
         this.#persistPath = persistPath;
         this.#defaultAllowAll = !!defaultAllowAll;
-        this.#log = typeof log === "function" ? log : console.log;
         for (const k of protectedKeys) this.#protectedKeys.add(k);
         this.#load();
     }
@@ -109,7 +110,7 @@ export class ScopeManager {
         const forumFlagRemoved = this.#forumChatIds.delete(chatToken);
         if (removed > 0 || forumFlagRemoved) {
             this.#markDirty();
-            this.#log(`Deleted ${removed} scope(s) for chat ${chatToken}${forumFlagRemoved ? " and cleared forum state" : ""}`);
+            log.info(`Deleted ${removed} scope(s) for chat ${chatToken}${forumFlagRemoved ? " and cleared forum state" : ""}`);
         }
         return removed;
     }
@@ -121,7 +122,7 @@ export class ScopeManager {
     deleteByUser(userId) {
         const removed = this.delete(`dm:${userId}`);
         if (removed) {
-            this.#log(`Deleted DM scope for user ${userId}`);
+            log.info(`Deleted DM scope for user ${userId}`);
         }
         return removed;
     }
@@ -197,7 +198,7 @@ export class ScopeManager {
 
         if (!oldest) return;
 
-        this.#log(`Evicting LRU scope: ${oldest} (last active: ${new Date(oldestTime).toISOString()})`);
+        log.debug(`Evicting LRU scope: ${oldest} (last active: ${new Date(oldestTime).toISOString()})`);
         const scope = this.#scopes.get(oldest);
         scope.reset();
         this.#scopes.delete(oldest);
@@ -232,7 +233,7 @@ export class ScopeManager {
             renameSync(tmp, this.#persistPath);
             this.#dirty = false;
         } catch (err) {
-            this.#log(`Scope persist error: ${err.message}`);
+            log.error(`Scope persist error: ${err.message}`);
         }
     }
 
@@ -256,9 +257,9 @@ export class ScopeManager {
                 }
             }
 
-            this.#log(`Loaded ${this.#scopes.size} scopes from disk`);
+            log.info(`Loaded ${this.#scopes.size} scopes from disk`);
         } catch (err) {
-            this.#log(`Scope load error: ${err.message}`);
+            log.error(`Scope load error: ${err.message}`);
         }
     }
 

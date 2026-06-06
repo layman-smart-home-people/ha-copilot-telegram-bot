@@ -6,21 +6,21 @@
 
 import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { createLogger } from "./logger.mjs";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No 0/O/1/I confusion
 const CODE_LENGTH = 6;
 const CODE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const log = createLogger("pairing");
 
 export class PairingManager {
     #persistPath;
-    #log;
     #users = new Map();       // userId → { username, pairedAt, isAdmin }
     #pendingCodes = new Map(); // code → { userId, username, expiresAt }
     #adminIds;                 // Set of admin user IDs (from allowed_chat_ids)
 
-    constructor({ persistPath, preApprovedIds = [], log }) {
+    constructor({ persistPath, preApprovedIds = [] }) {
         this.#persistPath = persistPath;
-        this.#log = log || console.log;
         this.#adminIds = new Set(preApprovedIds.map(Number));
         this.#load();
 
@@ -84,11 +84,11 @@ export class PairingManager {
 
         // Log to stdout — visible in HA add-on logs (make it obvious)
         const userLabel = username ? `@${username}` : `user`;
-        this.#log(`\n${"=".repeat(50)}`);
-        this.#log(`🔐 PAIRING CODE: ${code}`);
-        this.#log(`👤 For: ${userLabel} (ID: ${userId})`);
-        this.#log(`⏳ Expires in 15 minutes`);
-        this.#log(`${"=".repeat(50)}\n`);
+        log.info(`\n${"=".repeat(50)}`);
+        log.info(`🔐 PAIRING CODE: ${code}`);
+        log.info(`👤 For: ${userLabel} (ID: ${userId})`);
+        log.info(`⏳ Expires in 15 minutes`);
+        log.info(`${"=".repeat(50)}\n`);
 
         // Clean up expired codes
         this.#cleanExpired();
@@ -123,7 +123,7 @@ export class PairingManager {
         });
         this.#save();
 
-        this.#log(`[PAIRING] User ${entry.username || userId} paired successfully`);
+        log.info(`User ${entry.username || userId} paired successfully`);
         return true;
     }
 
@@ -181,15 +181,15 @@ export class PairingManager {
         try {
             const data = JSON.parse(readFileSync(this.#persistPath, "utf-8"));
             if (data.version !== 1) {
-                this.#log(`[PAIRING] Unknown persistence version: ${data.version}`);
+                log.warn(`Unknown persistence version: ${data.version}`);
                 return;
             }
             for (const [id, info] of Object.entries(data.users || {})) {
                 this.#users.set(Number(id), info);
             }
-            this.#log(`[PAIRING] Loaded ${this.#users.size} paired users`);
+            log.info(`Loaded ${this.#users.size} paired users`);
         } catch (err) {
-            this.#log(`[PAIRING] Failed to load ${this.#persistPath}: ${err.message}`);
+            log.error(`Failed to load ${this.#persistPath}: ${err.message}`);
         }
     }
 
@@ -203,7 +203,7 @@ export class PairingManager {
             writeFileSync(tmp, JSON.stringify(data, null, 2));
             renameSync(tmp, this.#persistPath);
         } catch (err) {
-            this.#log(`[PAIRING] Failed to save: ${err.message}`);
+            log.error(`Failed to save: ${err.message}`);
         }
     }
 

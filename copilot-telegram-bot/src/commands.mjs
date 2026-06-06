@@ -4,6 +4,9 @@
 
 import { normalizeModeId, fullModeUri } from "./acp.mjs";
 import { escapeHtml } from "./formatter.mjs";
+import { createLogger } from "./logger.mjs";
+
+const log = createLogger('commands');
 
 export function parseSlashCommand(text, botUsername) {
     const match = text.match(/^\/([a-zA-Z0-9_]+)(?:@([a-zA-Z0-9_]+))?\s*([\s\S]*)?$/);
@@ -16,7 +19,7 @@ export function parseSlashCommand(text, botUsername) {
 }
 
 export async function handleSlashCommand(ctx, command, args) {
-    const { acp, telegram, transport, chatId, chatIds, ref, scope, scopeMgr, log, buttons, models, modes, history,
+    const { acp, telegram, transport, chatId, chatIds, ref, scope, scopeMgr, buttons, models, modes, history,
             currentModel, currentMode, availableCommands, knownTools, pairing, sessionMgr, bridge, config, promptActive } = ctx;
     const reply = (text) => telegram.enqueue(() => telegram.sendMessage(chatId, text));
     const broadcast = (text) => {

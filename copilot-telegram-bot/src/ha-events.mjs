@@ -6,17 +6,18 @@
 // re-emits normalized events via EventEmitter.
 
 import { EventEmitter } from "node:events";
+import { createLogger } from "./logger.mjs";
 
 const DEFAULT_URL = "ws://supervisor/core/websocket";
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 60000;
 const NORMAL_CLOSE_CODE = 1000;
 const STOP_TIMEOUT_MS = 5000;
+const log = createLogger("ha");
 
 export class HAEventListener extends EventEmitter {
     #token;
     #url;
-    #log;
     #ws = null;
     #connected = false;
     #shouldReconnect = false;
@@ -30,12 +31,10 @@ export class HAEventListener extends EventEmitter {
 
     constructor({
         token = process.env.SUPERVISOR_TOKEN,
-        log = console.log,
         url = DEFAULT_URL,
     } = {}) {
         super();
         this.#token = token;
-        this.#log = typeof log === "function" ? log : console.log;
         this.#url = url || DEFAULT_URL;
     }
 
@@ -104,7 +103,7 @@ export class HAEventListener extends EventEmitter {
             return;
         }
 
-        this.#log(`HA WS connecting to ${this.#url}`);
+        log.info(`HA WS connecting to ${this.#url}`);
 
         let ws;
         try {
@@ -120,7 +119,7 @@ export class HAEventListener extends EventEmitter {
 
         ws.addEventListener("open", () => {
             if (ws !== this.#ws) return;
-            this.#log("HA WS connected; waiting for auth challenge");
+            log.info("HA WS connected; waiting for auth challenge");
         });
 
         ws.addEventListener("message", (event) => {
@@ -131,7 +130,7 @@ export class HAEventListener extends EventEmitter {
             const err = event?.error instanceof Error
                 ? event.error
                 : new Error("HA WebSocket transport error");
-            this.#log(`HA WS error: ${err.message}`);
+            log.warn(`HA WS error: ${err.message}`);
             this.#emitError(err);
         });
 
@@ -152,27 +151,27 @@ export class HAEventListener extends EventEmitter {
             message = JSON.parse(await this.#messageText(event.data));
         } catch (err) {
             const error = new Error(`Failed to parse HA WebSocket message: ${err instanceof Error ? err.message : String(err)}`);
-            this.#log(error.message);
+            log.error(error.message);
             this.#emitError(error);
             return;
         }
 
         switch (message?.type) {
         case "auth_required":
-            this.#log("HA WS auth_required received");
+            log.debug("HA WS auth_required received");
             this.#send({ type: "auth", access_token: this.#token });
             break;
         case "auth_ok":
             this.#connected = true;
             this.#reconnectDelayMs = INITIAL_BACKOFF_MS;
-            this.#log("HA WS authenticated");
+            log.info("HA WS authenticated");
             this.emit("connected");
             this.#resolveConnectPromise();
             this.#subscribeToStateChanged();
             break;
         case "auth_invalid": {
             const error = new Error(`HA WebSocket auth failed: ${message.message || "auth_invalid"}`);
-            this.#log(error.message);
+            log.error(error.message);
             this.#emitError(error);
             this.#safeClose(4001, "Authentication failed");
             break;
@@ -191,7 +190,7 @@ export class HAEventListener extends EventEmitter {
             this.#handleEvent(message.event);
             break;
         default:
-            this.#log(`HA WS ignored message type: ${String(message?.type || "unknown")}`);
+            log.debug(`HA WS ignored message type: ${String(message?.type || "unknown")}`);
         }
     }
 
@@ -201,14 +200,14 @@ export class HAEventListener extends EventEmitter {
 
         if (message.success) {
             if (requestType === "subscribe_events") {
-                this.#log("HA WS subscribed to state_changed events");
+                log.info("HA WS subscribed to state_changed events");
             }
             return;
         }
 
         const detail = message.error ? JSON.stringify(message.error) : "unknown error";
         const error = new Error(`HA WebSocket request failed${requestType ? ` (${requestType})` : ""}: ${detail}`);
-        this.#log(error.message);
+        log.error(error.message);
         this.#emitError(error);
         this.#safeClose(1011, "Request failed");
     }
@@ -260,7 +259,7 @@ export class HAEventListener extends EventEmitter {
         if (this.#ws?.readyState === WebSocket.CLOSED || cleanStop) this.#ws = null;
 
         if (wasConnected && !cleanStop) {
-            this.#log("HA WS disconnected");
+            log.warn("HA WS disconnected");
             this.emit("disconnected");
         }
 
@@ -268,7 +267,7 @@ export class HAEventListener extends EventEmitter {
 
         const delayMs = this.#reconnectDelayMs;
         this.#reconnectDelayMs = Math.min(delayMs * 2, MAX_BACKOFF_MS);
-        this.#log(`${error.message}; reconnecting in ${Math.round(delayMs / 1000)}s`);
+        log.warn(`${error.message}; reconnecting in ${Math.round(delayMs / 1000)}s`);
 
         if (this.#reconnectTimer) return;
         this.#reconnectTimer = setTimeout(() => {

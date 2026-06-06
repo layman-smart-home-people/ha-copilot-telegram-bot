@@ -17,6 +17,7 @@ import { HAEventListener } from "./ha-events.mjs";
 import { StandingInstructionManager } from "./standing-instructions.mjs";
 import { StandingInstructionOrchestrator } from "./standing-instruction-orchestrator.mjs";
 import { WebUIServer } from "./webui/server.mjs";
+import { createLogger, setLogLevel } from "./logger.mjs";
 
 // --- Set timezone from HA system before any Date operations ---
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
@@ -36,42 +37,35 @@ if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC")
 
 // --- Config ---
 
-function log(msg) {
-    // Use local time (respects TZ env) in ISO-ish format
-    const d = new Date();
-    const pad = (n) => String(n).padStart(2, "0");
-    const ms = String(d.getMilliseconds()).padStart(3, "0");
-    const ts = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${ms}`;
-    console.log(`[${ts}] ${msg}`);
-}
+const log = createLogger('main');
 
 // Log timezone after it's been set
-log(`Copilot Telegram Bot starting... (TZ=${process.env.TZ || "UTC"})`);
+log.info(`Copilot Telegram Bot starting... (TZ=${process.env.TZ || "UTC"})`);
 
 // --- Startup validation ---
 
 async function validate(config) {
     if (!config.botToken) {
-        log("ERROR: No bot_token configured. Set it in the add-on configuration.");
+        log.error("No bot_token configured. Set it in the add-on configuration.");
         process.exit(1);
     }
 
     if (config.allowedChatIds.length === 0) {
-        log("WARNING: No allowed_chat_ids configured. The bot will not respond to anyone.");
-        log("Add your Telegram chat ID to the add-on configuration.");
+        log.warn("No allowed_chat_ids configured. The bot will not respond to anyone.");
+        log.warn("Add your Telegram chat ID to the add-on configuration.");
     }
 
     // Validate copilot binary
     if (!existsSync(config.copilotBinary)) {
-        log(`WARNING: Copilot binary not found at ${config.copilotBinary}`);
-        log("If copilot_binary is set to 'auto', the bootstrap script should have installed it.");
-        log("Check the add-on logs for init-copilot bootstrap errors.");
-        log("The bot will start but Copilot won't work until the binary is available.");
+        log.warn(`Copilot binary not found at ${config.copilotBinary}`);
+        log.warn("If copilot_binary is set to 'auto', the bootstrap script should have installed it.");
+        log.warn("Check the add-on logs for init-copilot bootstrap errors.");
+        log.warn("The bot will start but Copilot won't work until the binary is available.");
         return; // Don't exit — let the bot start anyway
     }
 
     // Quick ACP handshake test
-    log("Testing Copilot ACP connection...");
+    log.info("Testing Copilot ACP connection...");
     const testAcp = new ACPClient({
         binary: config.copilotBinary,
         cwd: config.workingDirectory,
@@ -88,14 +82,14 @@ async function validate(config) {
     try {
         const result = await testAcp.start();
         const authMethods = result.authMethods?.map(m => m.id).join(", ") || "none";
-        log(`Copilot ACP OK: ${result.agentInfo?.name} v${result.agentInfo?.version} (auth methods: ${authMethods})`);
+        log.info(`Copilot ACP OK: ${result.agentInfo?.name} v${result.agentInfo?.version} (auth methods: ${authMethods})`);
         await testAcp.stop();
     } catch (err) {
-        log(`WARNING: Copilot ACP test failed: ${err.message}`);
+        log.warn(`Copilot ACP test failed: ${err.message}`);
         if (stderrLines.length > 0) {
-            log(`Copilot stderr: ${stderrLines.join(" | ")}`);
+            log.warn(`Copilot stderr: ${stderrLines.join(" | ")}`);
         }
-        log("The bot will start but Copilot may not work until the issue is resolved.");
+        log.warn("The bot will start but Copilot may not work until the issue is resolved.");
         try { await testAcp.stop(); } catch {}
     }
 }
@@ -104,19 +98,23 @@ async function validate(config) {
 
 async function main() {
 
-    const config = await loadConfig(log);
-    log(`Copilot binary: ${config.copilotBinary}`);
-    log(`Copilot config: ${config.copilotConfigDir}`);
+    const config = await loadConfig();
+
+    // Set log level from config (must happen early)
+    setLogLevel(config.logLevel);
+    log.info(`Log level: ${config.logLevel}`);
+    log.info(`Copilot binary: ${config.copilotBinary}`);
+    log.info(`Copilot config: ${config.copilotConfigDir}`);
 
     // Inject github_token into env BEFORE validation so the ACP test has it
     if (config.githubToken) {
         if (config.githubToken.startsWith("ghp_")) {
-            log("WARNING: Classic PATs (ghp_) are NOT supported by Copilot CLI.");
-            log("Use a fine-grained PAT (github_pat_) with 'Copilot Requests' permission.");
-            log("Ignoring configured token — will use stored credentials or device login.");
+            log.warn("Classic PATs (ghp_) are NOT supported by Copilot CLI.");
+            log.warn("Use a fine-grained PAT (github_pat_) with 'Copilot Requests' permission.");
+            log.warn("Ignoring configured token — will use stored credentials or device login.");
         } else {
             process.env.COPILOT_GITHUB_TOKEN = config.githubToken;
-            log("Using configured GitHub token for authentication");
+            log.info("Using configured GitHub token for authentication");
         }
     }
 
@@ -130,14 +128,14 @@ async function main() {
     // Validate bot token
     try {
         const me = await telegram.getMe();
-        log(`Telegram bot: @${me.username} (${me.first_name})`);
-        log(`Bot settings: can_join_groups=${me.can_join_groups} can_read_all_group_messages=${me.can_read_all_group_messages} supports_inline_queries=${me.supports_inline_queries}`);
+        log.info(`Telegram bot: @${me.username} (${me.first_name})`);
+        log.debug(`Bot settings: can_join_groups=${me.can_join_groups} can_read_all_group_messages=${me.can_read_all_group_messages} supports_inline_queries=${me.supports_inline_queries}`);
         if (!me.can_read_all_group_messages) {
-            log(`WARNING: Bot privacy mode is ON. In groups, the bot can only see @mentions, replies, and /commands.`);
-            log(`To receive all group messages, disable privacy mode in BotFather: /mybots → Bot Settings → Group Privacy → Turn off`);
+            log.warn("Bot privacy mode is ON. In groups, the bot can only see @mentions, replies, and /commands.");
+            log.warn("To receive all group messages, disable privacy mode in BotFather: /mybots → Bot Settings → Group Privacy → Turn off");
         }
     } catch (err) {
-        log(`ERROR: Invalid bot token: ${err.message}`);
+        log.error(`Invalid bot token: ${err.message}`);
         process.exit(1);
     }
 
@@ -168,9 +166,9 @@ async function main() {
                 { command: "clear", description: "Reset current conversation" },
             ],
         });
-        log("Registered bot commands with Telegram");
+        log.info("Registered bot commands with Telegram");
     } catch (err) {
-        log(`WARNING: Failed to register commands: ${err.message}`);
+        log.warn(`Failed to register commands: ${err.message}`);
     }
 
     // Create ACP client
@@ -187,13 +185,11 @@ async function main() {
     const pairing = new PairingManager({
         persistPath: "/data/paired_users.json",
         preApprovedIds: config.allowedChatIds || [],
-        log,
     });
 
     // Create session manager
     const sessionMgr = new SessionManager({
         persistPath: "/data/sessions.json",
-        log,
     });
 
     // Owner scope key(s) — never evicted from LRU cache
@@ -204,14 +200,12 @@ async function main() {
         persistPath: "/data/scopes.json",
         defaultAllowAll: config.permissionPolicy === "allow_all",
         protectedKeys: ownerProtectedKeys,
-        log,
     });
 
     const bridge = new Bridge({
         telegram,
         acp,
         config,
-        log,
         pairing,
         sessionMgr,
         scopeMgr,
@@ -225,23 +219,21 @@ async function main() {
     // --- Standing Instructions Orchestrator ---
     const standingMgr = new StandingInstructionManager({
         persistPath: "/data/standing_instructions.json",
-        log,
     });
-    const haEvents = new HAEventListener({ log });
+    const haEvents = new HAEventListener();
     const orchestrator = new StandingInstructionOrchestrator({
         eventListener: haEvents,
         manager: standingMgr,
         bridge,
         telegram,
         ownerChatId,
-        log,
     });
     bridge.standingOrchestrator = orchestrator;
     _orchestrator = orchestrator;
 
     // Start Telegram polling FIRST so the bot can send/receive messages
     // during login flow
-    log("Starting Telegram polling...");
+    log.info("Starting Telegram polling...");
     telegram.startPolling();
 
     // Auto-start Copilot if configured
@@ -249,17 +241,17 @@ async function main() {
         try {
             await bridge.startCopilot();
         } catch (err) {
-            log(`Auto-start failed: ${err.message}. Will retry on first message.`);
+            log.warn(`Auto-start failed: ${err.message}. Will retry on first message.`);
         }
     }
 
     // Start standing instruction orchestrator (non-blocking)
     orchestrator.start().catch(err => {
-        log(`Standing instruction orchestrator failed to start: ${err.message}`);
+        log.error(`Standing instruction orchestrator failed to start: ${err.message}`);
     });
 
     // Start Web UI server (ingress)
-    const webui = new WebUIServer({ port: 8099, log });
+    const webui = new WebUIServer({ port: 8099 });
     webui.attach({
         bridge,
         orchestrator,
@@ -270,7 +262,7 @@ async function main() {
         startedAt: Date.now(),
     });
     webui.start().catch(err => {
-        log(`Web UI server failed to start: ${err.message}`);
+        log.error(`Web UI server failed to start: ${err.message}`);
     });
     _webui = webui;
 
@@ -289,7 +281,7 @@ async function main() {
             if (idleTimer) clearTimeout(idleTimer);
             idleTimer = setTimeout(async () => {
                 if (acp.alive && !bridge.promptActive) {
-                    log(`Idle timeout (${config.idleTimeoutMinutes}min) — stopping Copilot`);
+                    log.info(`Idle timeout (${config.idleTimeoutMinutes}min) — stopping Copilot`);
                     for (const chatId of bridge.allowedChatIds) {
                         telegram.enqueue(() =>
                             telegram.sendMessage(chatId, `⏸️ Copilot stopped (idle ${config.idleTimeoutMinutes}min). Send a message to restart.`)
@@ -305,7 +297,7 @@ async function main() {
 
     // Startup logged (no user-facing message)
     for (const chatId of bridge.allowedChatIds) {
-        log(`Bot online, chat ${chatId} ready`);
+        log.info(`Bot online, chat ${chatId} ready`);
     }
 }
 
@@ -317,26 +309,26 @@ let _orchestrator = null;
 let _webui = null;
 
 async function shutdown(signal) {
-    log(`Received ${signal}, shutting down...`);
+    log.info(`Received ${signal}, shutting down...`);
 
     const timer = setTimeout(() => process.exit(0), 5000);
 
     try {
         if (_webui) await _webui.stop();
     } catch (err) {
-        log(`WebUI shutdown error: ${err.message}`);
+        log.error(`WebUI shutdown error: ${err.message}`);
     }
 
     try {
         if (_orchestrator) await _orchestrator.stop();
     } catch (err) {
-        log(`Orchestrator shutdown error: ${err.message}`);
+        log.error(`Orchestrator shutdown error: ${err.message}`);
     }
 
     try {
         if (_scopeMgr) _scopeMgr.shutdown();
     } catch (err) {
-        log(`Scope shutdown error: ${err.message}`);
+        log.error(`Scope shutdown error: ${err.message}`);
     }
 
     try {
@@ -353,6 +345,6 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
 main().catch(err => {
-    log(`FATAL: ${err.stack || err.message}`);
+    log.error(`FATAL: ${err.stack || err.message}`);
     process.exit(1);
 });

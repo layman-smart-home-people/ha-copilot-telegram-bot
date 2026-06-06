@@ -10,8 +10,10 @@ import { join, extname, resolve, basename, dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 import { ACPClient } from "../acp.mjs";
 import { AgentMemory } from "../agent-memory.mjs";
+import { createLogger } from "../logger.mjs";
 
 const STATIC_DIR = new URL("./dist/", import.meta.url).pathname;
+const log = createLogger("webui");
 
 const MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -28,7 +30,6 @@ const MIME_TYPES = {
 export class WebUIServer {
     #server = null;
     #port;
-    #log;
     #ctx = {}; // references to bot internals
     #logBuffer = [];       // circular buffer for recent log lines
     #logMaxLines = 500;
@@ -40,9 +41,8 @@ export class WebUIServer {
     #chatSessionId = null; // current ACP session ID for web chat
     #chatInitPromise = null; // deduplicates concurrent init calls
 
-    constructor({ port = 8099, log = console.log } = {}) {
+    constructor({ port = 8099 } = {}) {
         this.#port = port;
-        this.#log = typeof log === "function" ? log : console.log;
     }
 
     /**
@@ -76,7 +76,7 @@ export class WebUIServer {
     async start() {
         this.#server = http.createServer((req, res) => this.#handleRequest(req, res));
         this.#server.listen(this.#port, () => {
-            this.#log(`[WEBUI] Server listening on port ${this.#port}`);
+            log.info(`Server listening on port ${this.#port}`);
         });
     }
 
@@ -90,7 +90,7 @@ export class WebUIServer {
         if (this.#server) {
             return new Promise((resolve) => {
                 this.#server.close(() => {
-                    this.#log("[WEBUI] Server stopped");
+                    log.info("Server stopped");
                     resolve();
                 });
             });
@@ -117,7 +117,7 @@ export class WebUIServer {
             // Static file serving
             return this.#serveStatic(res, pathname);
         } catch (err) {
-            this.#log(`[WEBUI] Request error: ${err.message}`);
+            log.error(`Request error: ${err.message}`);
             this.#json(res, 500, { error: "Internal server error" });
         }
     }
@@ -776,12 +776,12 @@ export class WebUIServer {
 
         // Auto-approve all permission requests for web chat
         acp.on("permission_request", (req) => {
-            this.#log("[WEBUI-CHAT] Auto-approving permission request");
+            log.debug("Auto-approving permission request");
             acp.respondPermission(req.requestId, "allow_always");
         });
 
         acp.on("exit", ({ code, signal }) => {
-            this.#log(`[WEBUI-CHAT] ACP exited: code=${code} signal=${signal}`);
+            log.info(`ACP exited: code=${code} signal=${signal}`);
             this.#chatBusy = false;
             this.#chatSessionId = null;
             this.#chatAcp = null;
@@ -790,7 +790,7 @@ export class WebUIServer {
 
         acp.on("log", (text) => {
             if (!text.includes("agent_message_chunk") && !text.includes("agent_thought_chunk")) {
-                this.#log(`[WEBUI-CHAT] ${text}`);
+                log.debug(text);
             }
         });
 
@@ -799,7 +799,7 @@ export class WebUIServer {
         try {
             await acp.start();
 
-            const agentMemory = new AgentMemory({ agentDir: config.agentDir, log: this.#log });
+            const agentMemory = new AgentMemory({ agentDir: config.agentDir });
             const session = await acp.newSession({
                 cwd: config.workingDirectory,
                 mcpServers: config.mcpServers || [],
@@ -822,7 +822,7 @@ export class WebUIServer {
             try {
                 await acp.prompt(preamble, { mode: undefined });
             } catch (err) {
-                this.#log(`[WEBUI-CHAT] Preamble failed: ${err.message}`);
+                log.warn(`Preamble failed: ${err.message}`);
             }
             this.#chatBusy = false;
 
@@ -830,7 +830,7 @@ export class WebUIServer {
             return acp;
         } catch (err) {
             // Clean up on init failure so next call retries cleanly
-            this.#log(`[WEBUI-CHAT] Init failed: ${err.message}`);
+            log.error(`Init failed: ${err.message}`);
             try { await acp.stop(); } catch {}
             this.#chatAcp = null;
             this.#chatSessionId = null;
@@ -868,7 +868,7 @@ export class WebUIServer {
         // Auto-initialize chat ACP on first SSE connection
         if (!this.#chatAcp?.alive && !this.#chatInitPromise) {
             this.#ensureChatAcp().catch((err) => {
-                this.#log(`[WEBUI-CHAT] Auto-init failed: ${err.message}`);
+                log.warn(`Auto-init failed: ${err.message}`);
             });
         }
     }
@@ -893,7 +893,7 @@ export class WebUIServer {
             acp.prompt(text, { timeout: 0 }).catch((err) => {
                 this.#chatBusy = false;
                 this.#chatSseEmit({ type: "error", message: err.message });
-                this.#log(`[WEBUI-CHAT] Prompt error: ${err.message}`);
+                log.warn(`Prompt error: ${err.message}`);
             });
         } catch (err) {
             this.#chatBusy = false;
