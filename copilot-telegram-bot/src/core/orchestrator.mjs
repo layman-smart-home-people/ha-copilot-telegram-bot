@@ -1302,6 +1302,7 @@ export class Orchestrator {
                 } else {
                     // Other slash commands: treat as the answer text
                     scope.pendingElicitation.resolve(text);
+                    scope.pendingElicitation = null;
                     return;
                 }
             } else {
@@ -1321,6 +1322,7 @@ export class Orchestrator {
                     value = schema.type === "integer" ? Math.round(num) : num;
                 }
                 resolve(value);
+                scope.pendingElicitation = null;
                 return;
             }
         }

@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.43.0] — 2026-06-06
+
+### Fixed
+- **Security: Path traversal in docs API** — `startsWith(dir)` check was vulnerable to sibling-prefix attacks (e.g. `../copilot-telegram-bot-evil/`). Fixed by appending `"/"` to prefix check. (`webui/server.mjs`)
+- **ACP zombie on init failure** — If the `initialize` RPC failed after process spawn, the process was left alive but unusable. Now wrapped in try/catch with `this.stop()` on failure. (`ai/copilot/acp-client.mjs`)
+- **Elicitation answer swallows next message** — `scope.pendingElicitation` was not cleared after resolve, causing the next user message to be silently consumed. Fixed by nulling after resolve. (`core/orchestrator.mjs`)
+- **Thinking timer never auto-updates** — `#scheduleElapsedUpdate()` was called before `#messageId` was set, so the guard returned immediately and the "Thinking... (Ns)" counter never ticked. Moved call to after message send. (`transport/telegram/response-composer.mjs`)
+- **Undo button missing for `deactivate`** — `UNDO_REVERSE_MAP` had `activate→deactivate` but not the reverse. Added `deactivate→activate`. (`core/tool-notifications.mjs`)
+- **SI one-shot can fire twice on rapid triggers** — Two rapid state changes could both enter `#gateAndExecute()` concurrently, bypassing one-shot/cooldown guards. Added per-instruction gating lock (`Set`) to prevent concurrent gate evaluations. (`ha/orchestrator.mjs`)
+- **"No changelog" popup never shown** — Generic `answerCallbackQuery` was called unconditionally before the "No changelog" `show_alert` handler, silently blocking it. Restructured to let custom answers fire first. (`transport/telegram/adapter.mjs`)
+
 ## [0.42.0] — 2026-06-06
 
 ### Changed

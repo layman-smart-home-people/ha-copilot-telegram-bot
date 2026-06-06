@@ -28,6 +28,7 @@ const UNDO_REVERSE_MAP = Object.freeze({
     "lock": "unlock",
     "unlock": "lock",
     "activate": "deactivate",
+    "deactivate": "activate",
 });
 
 export class ToolNotifications {

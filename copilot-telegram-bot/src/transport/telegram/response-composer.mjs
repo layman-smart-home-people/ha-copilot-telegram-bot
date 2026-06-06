@@ -60,9 +60,6 @@ export class ResponseComposer {
         this.#thoughtActive = true;
         this.#planEntries = [];
 
-        // Periodic elapsed time updates — interval scales up with turn duration
-        this.#scheduleElapsedUpdate();
-
         const params = {
             chat_id: ref.chatId,
             text: "🤔 <i>Thinking...</i>",
@@ -78,6 +75,8 @@ export class ResponseComposer {
             const sent = await this.#telegram.call("sendMessage", params);
             this.#messageId = sent?.message_id;
             log.debug(`placeholder sent (msg=${this.#messageId})`);
+            // Start periodic elapsed time updates after messageId is set
+            this.#scheduleElapsedUpdate();
         } catch (err) {
             log.warn(`placeholder failed: ${err.message}`);
             if (this.#elapsedTimer) {

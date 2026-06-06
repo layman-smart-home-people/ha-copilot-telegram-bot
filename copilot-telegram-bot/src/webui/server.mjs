@@ -451,7 +451,7 @@ export class WebUIServer {
         const filePath = resolve(agentDir, name);
 
         // Security: ensure path stays within agent dir
-        if (!filePath.startsWith(resolve(agentDir))) {
+        if (!filePath.startsWith(resolve(agentDir) + "/")) {
             return this.#json(res, 403, { error: "Access denied" });
         }
 
@@ -472,7 +472,7 @@ export class WebUIServer {
         const filePath = resolve(agentDir, name);
 
         // Security: ensure path stays within agent dir
-        if (!filePath.startsWith(resolve(agentDir))) {
+        if (!filePath.startsWith(resolve(agentDir) + "/")) {
             return this.#json(res, 403, { error: "Access denied" });
         }
 

@@ -41,6 +41,7 @@ export class StandingInstructionOrchestrator {
     #haBaseUrl;
     #haToken;
     #fileWatcher = null;
+    #gatingInProgress = new Set();  // instruction IDs currently being gate-checked
 
     constructor({ eventListener, manager, bridge, telegram, ownerChatId, haBaseUrl, haToken }) {
         this.#eventListener = eventListener;
@@ -268,27 +269,39 @@ export class StandingInstructionOrchestrator {
     }
 
     async #gateAndExecute(instruction, context) {
-        // Evaluate conditions (if any) before executing actions
-        if (instruction.conditions && instruction.conditions.length > 0) {
-            try {
-                const pass = await this.#evaluateConditions(instruction.conditions);
-                if (!pass) {
-                    log.info(`Conditions not met: "${instruction.description}" (${instruction.id})`);
+        // Prevent concurrent gate evaluations for the same instruction
+        // (guards against one-shot firing twice on rapid triggers)
+        if (this.#gatingInProgress.has(instruction.id)) {
+            log.debug(`Skipping "${instruction.description}" (${instruction.id}) — gate already in progress`);
+            return;
+        }
+        this.#gatingInProgress.add(instruction.id);
+
+        try {
+            // Evaluate conditions (if any) before executing actions
+            if (instruction.conditions && instruction.conditions.length > 0) {
+                try {
+                    const pass = await this.#evaluateConditions(instruction.conditions);
+                    if (!pass) {
+                        log.info(`Conditions not met: "${instruction.description}" (${instruction.id})`);
+                        return;
+                    }
+                } catch (err) {
+                    log.warn(`Condition evaluation failed for "${instruction.description}": ${err.message} — skipping action (fail-closed)`);
                     return;
                 }
-            } catch (err) {
-                log.warn(`Condition evaluation failed for "${instruction.description}": ${err.message} — skipping action (fail-closed)`);
-                return;
             }
+
+            // Mark triggered AFTER conditions pass — ensures one-shot/max_triggers/cooldown
+            // only consume when the action actually runs.
+            this.#manager.markTriggered(instruction.id);
+            this.#triggerCount++;
+
+            this.#processChain(instruction);
+            await this.#executeActions(instruction, context);
+        } finally {
+            this.#gatingInProgress.delete(instruction.id);
         }
-
-        // Mark triggered AFTER conditions pass — ensures one-shot/max_triggers/cooldown
-        // only consume when the action actually runs.
-        this.#manager.markTriggered(instruction.id);
-        this.#triggerCount++;
-
-        this.#processChain(instruction);
-        await this.#executeActions(instruction, context);
     }
 
     async #executeActions(instruction, context) {

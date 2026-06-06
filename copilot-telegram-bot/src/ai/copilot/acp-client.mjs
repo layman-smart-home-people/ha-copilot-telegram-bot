@@ -168,13 +168,19 @@ export class ACPClient extends EventEmitter {
             this.#process.on("spawn", () => resolve());
         });
 
-        // Initialize ACP
-        const initResult = await this.#send("initialize", {
-            protocolVersion: 1,
-            clientCapabilities: {
-                elicitation: { form: {} },
-            },
-        });
+        // Initialize ACP — stop process if initialization fails to prevent zombies
+        let initResult;
+        try {
+            initResult = await this.#send("initialize", {
+                protocolVersion: 1,
+                clientCapabilities: {
+                    elicitation: { form: {} },
+                },
+            });
+        } catch (err) {
+            await this.stop();
+            throw err;
+        }
         this.#initialized = true;
         this.#authMethods = initResult.authMethods || [];
         this.emit("initialized", initResult);

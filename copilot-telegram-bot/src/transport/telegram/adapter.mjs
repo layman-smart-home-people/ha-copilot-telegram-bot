@@ -290,7 +290,19 @@ export class TelegramAdapter {
         // Try ButtonManager first (handles btn: prefix callbacks)
         if (await this.#buttons.handleCallback(query)) return;
 
-        // Legacy callback handling — acknowledge the button press
+        // Handlers with custom callback answers (must answer before generic fallback)
+        if ((data === "changelog" || data.startsWith("changelog:")) && !(this.#config?.changelog?.length)) {
+            try {
+                await this.#telegram.call("answerCallbackQuery", {
+                    callback_query_id: query.id,
+                    text: "No changelog available",
+                    show_alert: true,
+                });
+            } catch {}
+            return;
+        }
+
+        // Generic acknowledge for all other legacy callbacks
         try {
             await this.#telegram.call("answerCallbackQuery", { callback_query_id: query.id });
         } catch {}
@@ -309,19 +321,9 @@ export class TelegramAdapter {
             return;
         }
 
-        // Handle changelog viewer
+        // Handle changelog viewer (empty case already handled above)
         if (data === "changelog" || data.startsWith("changelog:")) {
             const entries = this.#config?.changelog || [];
-            if (entries.length === 0) {
-                try {
-                    await this.#telegram.call("answerCallbackQuery", {
-                        callback_query_id: query.id,
-                        text: "No changelog available",
-                        show_alert: true,
-                    });
-                } catch {}
-                return;
-            }
             const page = data === "changelog" ? 0 : parseInt(data.split(":")[1]) || 0;
             const entry = entries[page];
             if (!entry) return;
