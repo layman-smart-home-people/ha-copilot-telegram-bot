@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.48.1] — 2026-06-07
+
+### Fixed
+- **`evaluate` action validation** — Added `evaluate` to `VALID_ACTION_TYPES` and `#normalizeSingleAction()` in standing instructions. The executor already handled it, but the API validator rejected creation attempts.
+- **Timer + failed condition infinite loop** — Timers with conditions that fail are now consumed (`markTriggered`) regardless of condition outcome. Sends a skip notification (⏭️) to the user. Also handles condition evaluation errors. Cron and state-change triggers are unaffected.
+
+### Added
+- **Custom SI IDs** — `si_create` now accepts an optional `id` field. If provided, the custom ID is used instead of auto-generated UUID. Collision check prevents duplicates. Enables creating chained SIs in any order.
+
 ## [0.48.0] — 2026-06-07
 
 ### Added

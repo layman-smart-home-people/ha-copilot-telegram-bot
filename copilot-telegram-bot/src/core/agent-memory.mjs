@@ -138,7 +138,7 @@ tg-ux-ask_user({
 Manage automated alerts, reminders, and scheduled tasks. **Always use these tools — NEVER edit \`/data/standing_instructions.json\` directly.** Direct file edits bypass validation and cause silent failures.
 
 ### Tools
-- **\`si_create\`** — create a new instruction (bot validates and auto-fills \`id\`, \`created_at\`, etc.)
+- **\`si_create\`** — create a new instruction (bot validates and auto-fills \`created_at\`, etc.). Accepts optional \`id\` for custom IDs (useful for chaining); auto-generates UUID if omitted.
 - **\`si_list\`** — list all instructions with status
 - **\`si_get\`** — get one by ID
 - **\`si_update\`** — modify an existing instruction (partial update — only send changed fields)
@@ -158,6 +158,7 @@ Manage automated alerts, reminders, and scheduled tasks. **Always use these tool
   - \`evaluate\`: \`template\` (Jinja2 string), optional \`condition\` (Jinja2 — use \`{{ result }}\` for template output), optional \`message\` (use \`{{ result }}\` for template output). Zero ACP overhead.
 
 ### Optional fields
+- \`id\` (string). Custom ID for the instruction. If omitted, a UUID is auto-generated. Useful when setting up \`chain_enable\` — create with known IDs so instructions can reference each other.
 - \`conditions\` (array). Gate between trigger and action. Top-level is AND. Types:
   - \`state\`: \`entity_id\` + \`state\` (exact match)
   - \`numeric_state\`: \`entity_id\` + \`above\`/\`below\`

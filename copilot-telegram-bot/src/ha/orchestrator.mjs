@@ -285,10 +285,24 @@ export class StandingInstructionOrchestrator {
                     const pass = await this.#evaluateConditions(instruction.conditions);
                     if (!pass) {
                         log.info(`Conditions not met: "${instruction.description}" (${instruction.id})`);
+                        // Timers must be consumed even when conditions fail —
+                        // they represent a specific moment in time and should not retry indefinitely
+                        if (context.trigger_type === "timer") {
+                            this.#manager.markTriggered(instruction.id);
+                            if (this.#ownerChatId) {
+                                this.#telegram.enqueue(() =>
+                                    this.#telegram.sendMessage(this.#ownerChatId, `⏭️ "${instruction.description}" — timer fired but conditions not met, skipped.`)
+                                ).catch(err => log.warn(`Failed to send skip notification: ${err.message}`));
+                            }
+                        }
                         return;
                     }
                 } catch (err) {
                     log.warn(`Condition evaluation failed for "${instruction.description}": ${err.message} — skipping action (fail-closed)`);
+                    // Also consume timers on condition evaluation errors
+                    if (context.trigger_type === "timer") {
+                        this.#manager.markTriggered(instruction.id);
+                    }
                     return;
                 }
             }

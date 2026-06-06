@@ -6,7 +6,7 @@ import { createLogger } from "../logger.mjs";
 const DEFAULT_PERSIST_PATH = "/data/standing_instructions.json";
 const DEFAULT_COOLDOWN_SECONDS = 300;
 const VALID_TRIGGER_TYPES = new Set(["state_change", "cron", "timer"]);
-const VALID_ACTION_TYPES = new Set(["wake_agent", "notify", "ha_service"]);
+const VALID_ACTION_TYPES = new Set(["wake_agent", "notify", "ha_service", "evaluate"]);
 const VALID_ACTION_MODES = new Set(["sequential", "parallel"]);
 const VALID_CONDITION_TYPES = new Set(["state", "numeric_state", "time", "and", "or", "not"]);
 const log = createLogger("standing");
@@ -23,6 +23,10 @@ export class StandingInstructionManager {
 
     create(spec) {
         const instruction = this.#normalizeInstruction(spec, { existing: false });
+        // Check for ID collision (custom or generated)
+        if (this.#findById(instruction.id)) {
+            throw new Error(`Instruction with id "${instruction.id}" already exists.`);
+        }
         this.#instructions.push(instruction);
         this.#save();
         return this.#clone(instruction);
@@ -252,7 +256,9 @@ export class StandingInstructionManager {
         }
 
         return {
-            id: existing ? this.#requireString(spec.id, "Instruction id is required.") : randomUUID(),
+            id: existing
+                ? this.#requireString(spec.id, "Instruction id is required.")
+                : (spec.id != null ? this.#requireString(spec.id, "Instruction id must be a string.") : randomUUID()),
             description: this.#requireString(spec.description, "Instruction description is required."),
             enabled: this.#normalizeBoolean(spec.enabled, true, "Instruction enabled must be a boolean."),
             trigger: this.#normalizeTrigger(spec.trigger),
@@ -354,6 +360,13 @@ export class StandingInstructionManager {
                     service: this.#requireHaIdentifier(action.service, "ha_service action.service"),
                     data: action.data != null && typeof action.data === "object" && !Array.isArray(action.data) ? action.data : {},
                     message: action.message != null ? this.#requireString(action.message, "ha_service action.message must be a string.") : null,
+                };
+            case "evaluate":
+                return {
+                    type: "evaluate",
+                    template: this.#requireString(action.template, "evaluate action.template is required."),
+                    condition: action.condition != null ? this.#requireString(action.condition, "evaluate action.condition must be a string.") : null,
+                    message: action.message != null ? this.#requireString(action.message, "evaluate action.message must be a string.") : null,
                 };
             default:
                 throw new Error(`Unsupported action type: ${action.type}.`);
