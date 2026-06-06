@@ -278,7 +278,10 @@ export class Bridge {
             }
         }
 
-        this.#queuePrompt(prefix + text, {}, ref);
+        // Fire-and-forget but handle promise rejection properly
+        this.#queuePrompt(prefix + text, {}, ref).catch(err => {
+            log.error(`Injected prompt failed: ${err.message}`);
+        });
     }
 
     #resolveScopeKey(scope, ref = null) {

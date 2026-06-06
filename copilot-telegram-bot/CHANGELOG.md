@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.36.1] — 2026-06-06
+
+### Fixed
+- **`/stop` and `/cancel` now work during SI-triggered prompts** — previously, scope mismatch between `standing:chatId` and `dm:chatId` caused "No active request" even when the agent was busy processing a standing instruction wake_agent
+- **`injectSystemPrompt` unhandled promise rejection** — the `#queuePrompt` call was fire-and-forget without a `.catch()`, causing unhandled rejections when SI prompts failed
+
 ## [0.36.0] — 2026-06-06
 
 ### Added

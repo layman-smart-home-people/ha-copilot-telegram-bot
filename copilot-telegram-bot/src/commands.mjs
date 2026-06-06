@@ -258,13 +258,19 @@ export async function handleSlashCommand(ctx, command, args) {
             case "stop":
             case "cancel": {
                 if (!acp?.alive) { reply("⚠️ Copilot not running"); return true; }
-                if (!scopeMgr || !bridge?.promptActive || scopeMgr.activeScope !== scope) {
-                    reply("⚠️ No active request in this conversation.");
+                if (!bridge?.promptActive) {
+                    reply("⚠️ No active request to cancel.");
                     return true;
                 }
+                // Allow cancelling any active prompt (including SI-triggered ones
+                // from a different scope, e.g. standing:chatId vs dm:chatId)
                 try {
                     await acp.cancel();
-                    reply("🛑 Cancelled current operation");
+                    const activeKey = scopeMgr?.activeScope?.key;
+                    const isCrossScope = activeKey && scope && activeKey !== scope.key;
+                    reply(isCrossScope
+                        ? `🛑 Cancelled operation (was running in scope: ${activeKey})`
+                        : "🛑 Cancelled current operation");
                 } catch (err) {
                     reply(`⚠️ Cancel failed: ${err.message}`);
                 }
