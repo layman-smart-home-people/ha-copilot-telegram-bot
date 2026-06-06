@@ -12,8 +12,10 @@ import { ResponseComposer } from "./transport/telegram/response-composer.mjs";
 import { formatError } from "./core/errors.mjs";
 import { MessageTransport, makeRef } from "./transport/telegram/transport-ref.mjs";
 import { AgentMemory } from "./core/agent-memory.mjs";
+import { PromptBuilder, sanitizePinnedInstruction } from "./ai/copilot/prompt-builder.mjs";
+import { CopilotLifecycle } from "./ai/copilot/lifecycle.mjs";
+import { StatusMenu } from "./core/status.mjs";
 import { createLogger } from "./logger.mjs";
-import { spawn } from "node:child_process";
 import { createServer as createNetServer } from "node:net";
 import { unlinkSync, chmodSync } from "node:fs";
 
@@ -91,11 +93,11 @@ export class Bridge {
     #userMessageTimes = new Map(); // userId → [timestamps]
 
 
-    // Login lock — prevents multiple concurrent login flows
-    #loginPromise = null;
+    // Prompt builder (extracted module)
+    #promptBuilder;
 
-    // startCopilot lock — prevents overlapping start attempts
-    #startPromise = null;
+    // Copilot lifecycle manager (extracted module)
+    #lifecycle;
 
     // Button manager for inline keyboards
     #buttons;
@@ -106,9 +108,8 @@ export class Bridge {
     #availableCommands = [];  // Copilot slash commands from ACP
     #knownTools = new Map();  // MCP tool names seen → description
 
-    // Active status menu (singleton — only one at a time)
-    #statusMsg = null; // { chatId, messageId, createdAt }
-    #statusRefreshPaused = false; // true during intentional restart (skip exit event refresh)
+    // Active status menu — managed by StatusMenu module
+    #statusMenu;
 
     // UDS server for tg-ux MCP sidecar IPC
     #udsServer = null;
@@ -133,6 +134,39 @@ export class Bridge {
         this.#scopeMgr = scopeMgr || null;
         this.#sessionMgr = sessionMgr || null;
         this.#agentMemory = new AgentMemory({ agentDir: config.agentDir });
+
+        // Extracted modules
+        this.#promptBuilder = new PromptBuilder({
+            config,
+            agentMemory: this.#agentMemory,
+            scopeMgr: this.#scopeMgr,
+            pinnedInstructions: this.#pinnedInstructions,
+            getActiveScope: () => this.#activeScope,
+            getActiveRef: () => this.#activeRef,
+        });
+
+        this.#statusMenu = new StatusMenu({
+            telegram,
+            acp: this.#acp,
+            config,
+            scopeMgr: this.#scopeMgr,
+            getActiveScope: () => this.#activeScope,
+            getModels: () => this.#models,
+            getModes: () => this.#modes,
+            getAllowedChatIds: () => this.#allowedChatIds,
+            getPairing: () => this.#pairing,
+            getStandingOrchestrator: () => this.standingOrchestrator,
+        });
+
+        this.#lifecycle = new CopilotLifecycle({
+            acp: this.#acp,
+            config,
+            scopeMgr: this.#scopeMgr,
+            resetPreamble: () => this.resetPreamble(),
+            refreshStatus: () => this.#statusMenu.refreshIfAlive(),
+            clearKnownTools: () => this.#knownTools.clear(),
+            broadcastAdmin: (text) => this.#broadcastAdmin(text),
+        });
     }
 
     get allowedChatIds() { return this.#allowedChatIds; }
@@ -166,27 +200,7 @@ export class Bridge {
     }
 
     resetPreamble() {
-        // Clear preambleSent on ALL scopes
-        if (this.#scopeMgr) {
-            for (const entry of this.#scopeMgr.list()) {
-                const scope = this.#scopeMgr.get(entry.key);
-                if (scope) scope.preambleSent = false;
-            }
-        }
-    }
-
-    #sanitizePinnedInstruction(text) {
-        return String(text || "")
-            .replace(/\[\/SYSTEM/gi, "/system")
-            .replace(/\[SYSTEM/gi, "system")
-            .replace(/\[\/INST/gi, "/instruction")
-            .replace(/\[INST/gi, "instruction")
-            .replace(/<\|system\|>/gi, "system")
-            .replace(/<\|assistant\|>/gi, "assistant")
-            .replace(/<\|user\|>/gi, "user")
-            .replace(/<\/system>/gi, "/system")
-            .replace(/<system>/gi, "system")
-            .trim();
+        this.#promptBuilder.resetPreamble();
     }
 
     /** Best-effort notification before process exit. */
@@ -208,17 +222,7 @@ export class Bridge {
         }
 
         // Update status menu if one exists
-        if (this.#statusMsg) {
-            promises.push(
-                this.#telegram.call("editMessageText", {
-                    chat_id: this.#statusMsg.chatId,
-                    message_id: this.#statusMsg.messageId,
-                    text: "⏹️ Copilot Stopped\n\nAdd-on was shut down.",
-                    reply_markup: { inline_keyboard: [] },
-                }).catch(() => {})
-            );
-            this.#statusMsg = null;
-        }
+        promises.push(this.#statusMenu.handleShutdown());
 
         if (promises.length > 0) {
             await Promise.allSettled(promises);
@@ -229,7 +233,7 @@ export class Bridge {
 
     /** Re-submit a message as if the user sent it (for /retry) */
     submitRetry(ref, text) {
-        this.#queuePrompt(this.#getPrefix(ref) + text, {}, ref);
+        this.#queuePrompt(this.#promptBuilder.getPrefix(ref) + text, {}, ref);
     }
 
     /** Send an ACP slash command without the [Via Telegram] prefix. */
@@ -250,7 +254,7 @@ export class Bridge {
         }
         const ref = makeRef(targetChatId, null, null, "private");
         ref.scopeKey = `standing:${targetChatId}`;
-        const prefix = this.#getPrefix(ref);
+        const prefix = this.#promptBuilder.getPrefix(ref);
         log.info(`Injecting system prompt to chat=${targetChatId}`);
 
         // Ensure copilot is running
@@ -303,191 +307,10 @@ export class Bridge {
         return false;
     }
 
-    // --- Status menu (singleton with auto-refresh) ---
+    // --- Status menu (delegated to StatusMenu module) ---
 
-    static #STATUS_TTL_MS = 5 * 60 * 1000; // 5 min expiry
-
-    /** Send or refresh the status menu. Dismisses any previous one. */
     async showStatusMenu(chatId, scope = null) {
-        // Dismiss old status message if exists
-        await this.#dismissOldStatus(chatId);
-
-        const requestedScope = scope || this.#activeScope || this.#scopeMgr?.activeScope || null;
-        const { text, buttons } = this.#buildStatusContent(requestedScope);
-        const sent = await this.#telegram.sendMessage(chatId, text, undefined, buttons);
-        if (sent?.message_id) {
-            this.#statusMsg = {
-                chatId,
-                messageId: sent.message_id,
-                createdAt: Date.now(),
-                scopeKey: requestedScope?.key || null,
-            };
-        }
-    }
-
-    /** Edit the existing status menu if it's still fresh. Called on state changes. */
-    async #refreshStatusIfAlive() {
-        if (!this.#statusMsg) {
-            log.debug("Status refresh: no active status message");
-            return;
-        }
-        if (this.#statusRefreshPaused) {
-            log.debug("Status refresh: paused (restart in progress)");
-            return;
-        }
-        if (Date.now() - this.#statusMsg.createdAt > Bridge.#STATUS_TTL_MS) {
-            log.debug("Status refresh: expired");
-            this.#statusMsg = null;
-            return;
-        }
-        const scope = this.#statusMsg.scopeKey ? this.#scopeMgr?.get(this.#statusMsg.scopeKey) : null;
-        const { text, buttons } = this.#buildStatusContent(scope);
-        const firstLine = text.split("\n")[0];
-        log.debug(`Status refresh: updating to "${firstLine}" (msgId=${this.#statusMsg.messageId})`);
-        try {
-            await this.#telegram.call("editMessageText", {
-                chat_id: this.#statusMsg.chatId,
-                message_id: this.#statusMsg.messageId,
-                text,
-                reply_markup: buttons,
-            });
-            log.debug("Status refresh: edit succeeded");
-        } catch (err) {
-            if (/message is not modified/i.test(err?.message)) {
-                log.debug("Status refresh: no change needed");
-                return;
-            }
-            log.warn(`Status refresh: edit failed — ${err.message}`);
-            this.#statusMsg = null; // message gone
-        }
-    }
-
-    async #dismissOldStatus(newChatId) {
-        if (!this.#statusMsg) return;
-        try {
-            await this.#telegram.call("deleteMessage", {
-                chat_id: this.#statusMsg.chatId,
-                message_id: this.#statusMsg.messageId,
-            });
-        } catch {}
-        this.#statusMsg = null;
-    }
-
-    #buildStatusContent(requestedScope = null) {
-        const alive = this.#acp?.alive;
-        const hasSession = !!this.#acp?.sessionId;
-        const ready = alive && hasSession;
-        const scope = requestedScope || this.#activeScope || this.#scopeMgr?.activeScope;
-        const scopeType = scope?.key?.startsWith("forum:") ? "Forum"
-            : scope?.key?.startsWith("group:") ? "Group"
-            : "DM";
-        const scopeSessionId = scope?.sessionId || this.#acp?.sessionId || null;
-
-        const lines = [];
-        lines.push(ready ? "✅ Copilot Ready" : alive ? "⏳ Copilot Starting..." : "⏹️ Copilot Stopped");
-        if (this.#config?.version) lines.push(`📦 Version: ${this.#config.version}`);
-        lines.push("");
-
-        if (scope) {
-            lines.push(`🗂️ Scope: ${scopeType}`);
-            lines.push(`🔑 Scope key: ${scope.key}`);
-        }
-
-        if (ready) {
-            const currentModel = scope?.model || "";
-            const currentMode = scope?.mode || "";
-            const modelName = this.#models?.find(m => m.modelId === currentModel)?.name || currentModel || "unknown";
-            const modeName = this.#modes?.find(m => normalizeModeId(m.id) === currentMode)?.name || currentMode || "unknown";
-            const modeIcon = currentMode === "autopilot" ? "🟢" : currentMode === "plan" ? "📝" : "💬";
-            lines.push(`🤖 Model: ${modelName}`);
-            lines.push(`${modeIcon} Mode: ${modeName}`);
-            lines.push(`🔗 Session: ${scopeSessionId ? `${scopeSessionId.slice(0, 8)}…` : "none"}`);
-            lines.push(`📊 Models available: ${this.#models?.length || 0}`);
-        }
-
-        const scopeAllowAll = scope?.allowAll ?? false;
-        if (scopeAllowAll) {
-            lines.push(`🔓 Permissions: allow-all`);
-        } else {
-            lines.push(`🔐 Permissions: interactive`);
-        }
-
-        // HA integration status
-        if (this.#config?.haConnected) {
-            lines.push(`🏠 HA API: ✅ ${this.#config.haVersion || "connected"}`);
-        } else {
-            lines.push(`🏠 HA API: ❌ unavailable`);
-        }
-        if (this.#config?.mcpServers?.length > 0) {
-            lines.push(`🔌 MCP: ${this.#config.mcpServers.length} server(s)`);
-        }
-
-        // Standing instructions status
-        if (this.standingOrchestrator) {
-            const orch = this.standingOrchestrator;
-            const mgr = orch.manager;
-            const instructions = mgr.list();
-            const enabled = instructions.filter(i => i.enabled).length;
-            const haWs = orch.eventListener.connected ? "🟢" : "🔴";
-            lines.push(`📡 HA Events: ${haWs} | Standing: ${enabled}/${instructions.length} active`);
-        }
-
-        lines.push(`📱 Telegram: connected`);
-        lines.push(`👥 Chats: ${this.#allowedChatIds.length}`);
-        if (this.#pairing) {
-            lines.push(`🔐 Paired users: ${this.#pairing.getPairedUsers().length}`);
-        }
-        if (this.#scopeMgr) {
-            const stats = this.#scopeMgr.stats();
-            lines.push(`🗂️ Scopes: ${stats.total} (${stats.dm} DM, ${stats.group} group, ${stats.forum} forum)`);
-        }
-        if (scope?.history) lines.push(`📜 History: ${scope.history.length} messages`);
-
-        const currentMode = scope?.mode || "";
-        const modeButtonIcon = currentMode === "autopilot" ? "🟢" : currentMode === "plan" ? "📝" : "💬";
-        const modeButtonLabel = currentMode && currentMode !== "interactive"
-            ? `${modeButtonIcon} ${currentMode.charAt(0).toUpperCase() + currentMode.slice(1)}`
-            : `${modeButtonIcon} Mode`;
-
-        const statusButtons = {
-            inline_keyboard: ready ? [
-                [
-                    { text: "🤖 Model", callback_data: "/model" },
-                    { text: modeButtonLabel, callback_data: "/mode" },
-                ],
-                [
-                    { text: "📊 Usage", callback_data: "/usage" },
-                    { text: "🗜️ Compact", callback_data: "/compact" },
-                ],
-                [
-                    { text: scopeAllowAll ? "\u{1F512} Allow-all OFF" : "\u{1F513} Allow-all ON",
-                      callback_data: scopeAllowAll ? "/allowall off" : "/allowall on" },
-                    { text: "📡 Standing", callback_data: "/standing" },
-                ],
-                [
-                    { text: "🔄 Restart", callback_data: "/session new" },
-                    { text: "⏹️ Stop", callback_data: "/session stop" },
-                ],
-                [
-                    { text: "📋 Changelog", callback_data: "changelog" },
-                    { text: "✕ Dismiss", callback_data: "dismiss" },
-                ],
-            ] : alive ? [
-                [{ text: "🔄 Refresh", callback_data: "/status" }],
-                [
-                    { text: "📋 Changelog", callback_data: "changelog" },
-                    { text: "✕ Dismiss", callback_data: "dismiss" },
-                ],
-            ] : [
-                [{ text: "🚀 Start Copilot", callback_data: "/session new" }],
-                [
-                    { text: "📋 Changelog", callback_data: "changelog" },
-                    { text: "✕ Dismiss", callback_data: "dismiss" },
-                ],
-            ],
-        };
-
-        return { text: lines.join("\n"), buttons: statusButtons };
+        await this.#statusMenu.show(chatId, scope);
     }
 
     // --- Setup event handlers ---
@@ -662,7 +485,7 @@ export class Bridge {
             if (scope && modeId) {
                 scope.mode = normalizeModeId(modeId);
                 log.debug(`Mode updated [${tag}]: ${scope.mode}`);
-                this.#refreshStatusIfAlive();
+                this.#statusMenu.refreshIfAlive();
             }
         });
 
@@ -731,7 +554,7 @@ export class Bridge {
             if (modeOpt?.currentValue && scope) {
                 scope.mode = normalizeModeId(modeOpt.currentValue);
             }
-            this.#refreshStatusIfAlive();
+            this.#statusMenu.refreshIfAlive();
         });
 
         // Capture available commands (copilot slash commands)
@@ -1017,10 +840,8 @@ export class Bridge {
             exitScope.promptRunning = false;
             exitScope.acpTag = null;
         }
-        this.#refreshStatusIfAlive().catch(() => {});
+        this.#statusMenu.refreshIfAlive().catch(() => {});
     }
-
-    /** Handle elicitation_request events from ACP (structured questions). */
     async #handleElicitationRequest(req, acp, scope, getRef, tag) {
         if (scope.pendingElicitation) {
             acp.respondElicitation(req.requestId, "cancel");
@@ -1641,8 +1462,8 @@ export class Bridge {
                 });
             } catch {}
             // Also clear status tracking if this was the active status
-            if (this.#statusMsg?.messageId === query.message.message_id) {
-                this.#statusMsg = null;
+            if (this.#statusMenu.statusMsg?.messageId === query.message.message_id) {
+                this.#statusMenu.statusMsg = null;
             }
             return;
         }
@@ -1712,7 +1533,7 @@ export class Bridge {
             const ref = makeRef(chatId, threadId, null, query.message?.chat?.type || null);
             ref.userId = userId;
             const scope = this.#buildCommandContext(ref).scope;
-            const { text, buttons } = this.#buildStatusContent(scope);
+            const { text, buttons } = this.#statusMenu.buildContent(scope);
             try {
                 await this.#telegram.call("editMessageText", {
                     chat_id: chatId,
@@ -1720,7 +1541,7 @@ export class Bridge {
                     text,
                     reply_markup: buttons,
                 });
-                this.#statusMsg = {
+                this.#statusMenu.statusMsg = {
                     chatId,
                     messageId: query.message.message_id,
                     createdAt: Date.now(),
@@ -1743,7 +1564,7 @@ export class Bridge {
 
         // If a state-changing command is triggered from the active status menu,
         // immediately show transitional state, execute command, then refresh
-        const isFromStatusMenu = this.#statusMsg?.messageId === query.message?.message_id;
+        const isFromStatusMenu = this.#statusMenu.statusMsg?.messageId === query.message?.message_id;
         if (isFromStatusMenu && (data === "/session new" || data === "/session stop")) {
             const label = data === "/session new" ? "⏳ Starting a new scope session..." : "⏳ Stopping Copilot...";
             try {
@@ -1758,20 +1579,20 @@ export class Bridge {
             const ref = makeRef(chatId, threadId, null, query.message?.chat?.type || null);
             ref.userId = userId;
             try {
-                this.#statusRefreshPaused = true;
-                const pauseGuard = setTimeout(() => { this.#statusRefreshPaused = false; }, 60000);
+                this.#statusMenu.refreshPaused = true;
+                const pauseGuard = setTimeout(() => { this.#statusMenu.refreshPaused = false; }, 60000);
                 try {
                     await handleSlashCommand(this.#buildCommandContext(ref), "session", data === "/session new" ? "new" : "stop");
                 } finally {
                     clearTimeout(pauseGuard);
-                    this.#statusRefreshPaused = false;
+                    this.#statusMenu.refreshPaused = false;
                 }
             } catch (err) {
-                this.#statusRefreshPaused = false;
+                this.#statusMenu.refreshPaused = false;
                 log.error(`Status menu action failed: ${err.message}`);
             }
             // Explicitly refresh to final state (don't rely on fire-and-forget hooks)
-            await this.#refreshStatusIfAlive();
+            await this.#statusMenu.refreshIfAlive();
             return;
         }
 
@@ -1888,7 +1709,7 @@ export class Bridge {
         if (queueIdx !== -1) {
             const entry = this.#promptQueue[queueIdx];
             const ref = entry.ref;
-            const prefix = this.#getPrefix(ref);
+            const prefix = this.#promptBuilder.getPrefix(ref);
             entry.text = prefix + editedText;
             log.debug(`Updated queued prompt with edited text for msg=${messageId}`);
             this.#telegram.enqueue(() =>
@@ -1917,7 +1738,7 @@ export class Bridge {
             editRef.firstName = edited.from?.first_name || null;
             editRef.triggerMessageId = messageId;
             if (this.#scopeMgr) editRef.scopeKey = this.#scopeMgr.resolveKey(editRef);
-            const editPrefix = this.#getPrefix(editRef);
+            const editPrefix = this.#promptBuilder.getPrefix(editRef);
             this.#promptQueue.unshift({
                 text: editPrefix + editedText,
                 opts: {},
@@ -1957,7 +1778,7 @@ export class Bridge {
             ref.scopeKey = this.#scopeMgr.resolveKey(ref);
         }
 
-        const prefix = this.#getPrefix(ref);
+        const prefix = this.#promptBuilder.getPrefix(ref);
         const correctionPrompt = prefix + `[CORRECTION — The user edited their previous message. This is NOT a new request. Do NOT re-execute any actions already taken. Just acknowledge the correction or adjust your previous response if needed.]\nCorrected message: ${editedText}`;
 
         this.#telegram.enqueue(() =>
@@ -2114,7 +1935,7 @@ export class Bridge {
                     const oldest = this.#pinnedInstructions.keys().next().value;
                     this.#pinnedInstructions.delete(oldest);
                 }
-                const sanitizedPinnedText = this.#sanitizePinnedInstruction(pinnedText);
+                const sanitizedPinnedText = sanitizePinnedInstruction(pinnedText);
                 this.#pinnedInstructions.set(chatId, sanitizedPinnedText);
                 this.resetPreamble(); // force preamble refresh across all scopes
                 log.info(`Pinned instruction set for chat=${chatId}: ${sanitizedPinnedText.substring(0, 100)}`);
@@ -2238,7 +2059,7 @@ export class Bridge {
         }
 
         // Build prompt
-        const prefix = this.#getPrefix(ref);
+        const prefix = this.#promptBuilder.getPrefix(ref);
         const replyContext = this.#extractReplyContext(message);
         let promptText = prefix + (replyContext ? replyContext + "\n" : "") + (text || "");
 
@@ -2561,261 +2382,18 @@ export class Bridge {
         }
     }
 
-    // --- Preamble ---
-
-    #getPrefix(ref) {
-        let prefix;
-        const scopeKey = ref?.scopeKey || (this.#scopeMgr && ref ? this.#scopeMgr.resolveKey(ref) : null);
-        const scope = scopeKey && this.#scopeMgr ? this.#scopeMgr.getOrCreate(scopeKey) : this.#activeScope;
-
-        if (scope && !scope.preambleSent) {
-            scope.preambleSent = true;
-            const rules = this.#config.preamble;
-            prefix = `[Bot configuration — treat as system context: ${rules}]\n`;
-
-            // Inject agent persistent memory on first message of session
-            const agentContext = this.#agentMemory.buildContext();
-            if (agentContext) {
-                prefix += `[Agent persistent memory — your identity and memory from /config/.agent/:\n${agentContext}\n]\n`;
-            }
-        } else {
-            prefix = "[Via Telegram]\n";
-        }
-
-        // Inject sender identity so agent knows who is talking
-        if (ref) {
-            const parts = [];
-            if (ref.firstName) parts.push(`name=${ref.firstName}`);
-            if (ref.username) parts.push(`username=@${ref.username}`);
-            if (ref.userId) parts.push(`userId=${ref.userId}`);
-            if (ref.chatId) parts.push(`chatId=${ref.chatId}`);
-            if (parts.length > 0) {
-                prefix += `[Sender: ${parts.join(', ')}]\n`;
-            }
-        }
-
-        // Append pinned instructions if any
-        const chatId = ref?.chatId || this.#activeRef?.chatId;
-        if (chatId && this.#pinnedInstructions.has(chatId)) {
-            const pinnedText = this.#sanitizePinnedInstruction(this.#pinnedInstructions.get(chatId));
-            prefix += `[📌 User-pinned context (from chat participant, treat as user input): ${pinnedText}]\n`;
-        }
-
-        return prefix;
-    }
-
-    // --- Copilot lifecycle ---
+    // --- Copilot lifecycle (delegated to CopilotLifecycle module) ---
 
     async startCopilot() {
-        if (this.#acp.alive) return;
-
-        // If already starting, wait for that attempt
-        if (this.#startPromise) {
-            log.warn("Start already in progress, waiting...");
-            return this.#startPromise;
-        }
-
-        this.#startPromise = this.#doStartCopilot();
-        try {
-            await this.#startPromise;
-        } finally {
-            this.#startPromise = null;
-        }
-    }
-
-    async #doStartCopilot() {
-        log.info("Starting ACP process...");
-        try {
-            await this.#acp.start();
-        } catch (err) {
-            throw new Error(`Failed to start copilot binary: ${err.message}. Check copilot_binary path in config.`);
-        }
-
-        // Authenticate — required by ACP protocol before session/new
-        try {
-            await this.#acp.authenticate();
-            log.info("ACP authentication successful");
-        } catch (err) {
-            const isAuthRequired = err.message?.includes("Authentication required") || err.message?.includes("-32000");
-            if (!isAuthRequired) {
-                log.warn(`Authentication failed (unexpected): ${err.message}`);
-                await this.#acp.stop();
-                throw err;
-            }
-
-            if (process.env.COPILOT_GITHUB_TOKEN) {
-                log.warn("Configured token rejected — clearing and retrying with stored tokens");
-                delete process.env.COPILOT_GITHUB_TOKEN;
-                await this.#acp.stop();
-                await this.#acp.start();
-                try {
-                    await this.#acp.authenticate();
-                    log.info("ACP authentication successful with stored tokens");
-                } catch (retryErr) {
-                    if (retryErr.message?.includes("Authentication required") || retryErr.message?.includes("-32000")) {
-                        log.warn("No stored tokens either — starting device login");
-                        await this.#acp.stop();
-                        await this.#runDeviceLogin();
-                        await this.#acp.start();
-                        await this.#acp.authenticate();
-                        log.info("ACP authentication successful after login");
-                    } else {
-                        log.error(`Authentication retry failed: ${retryErr.message}`);
-                        await this.#acp.stop();
-                        throw retryErr;
-                    }
-                }
-            } else {
-                log.warn("No valid token found — starting device login flow");
-                await this.#acp.stop();
-                await this.#runDeviceLogin();
-                await this.#acp.start();
-                await this.#acp.authenticate();
-                log.info("ACP authentication successful after login");
-            }
-        }
-
-        // Create session (small delay to let auth propagate in the ACP process)
-        await new Promise(r => setTimeout(r, 500));
-        log.info("Creating new ACP session...");
-        try {
-            await this.#acp.newSession({
-                cwd: this.#config.workingDirectory || "/config",
-            });
-        } catch (err) {
-            if (err.message?.includes("-32000")) {
-                throw new Error(`Session creation failed: ${err.message}. This usually means the copilot token is expired or COPILOT_HOME is misconfigured.`);
-            }
-            throw new Error(`Session creation failed: ${err.message}`);
-        }
-
-        // Clear stale scope sessionIds — old ACP sessions don't survive restart
-        if (this.#scopeMgr) {
-            this.#scopeMgr.clearAllSessions();
-            log.info("Cleared stale scope sessions after ACP restart");
-        }
-        this.resetPreamble();
-        log.info(`Copilot started, session: ${this.#acp.sessionId}`);
-        this.#refreshStatusIfAlive().catch(() => {});
-    }
-
-    async #runDeviceLogin() {
-        // If PAT token is configured, no login needed
-        if (process.env.COPILOT_GITHUB_TOKEN) {
-            log.info("GitHub token configured — skipping device login");
-            return;
-        }
-
-        // If login is already in progress, wait for that one
-        if (this.#loginPromise) {
-            log.warn("Login already in progress, waiting...");
-            return this.#loginPromise;
-        }
-
-        log.info("Authentication required — starting device login flow...");
-        const binary = this.#config.copilotBinary || "/share/copilot-tools/copilot";
-
-        this.#loginPromise = new Promise((resolve, reject) => {
-            // Spawn the configured binary directly so it is never interpreted by a shell.
-            log.info(`[login] Spawning: ${binary} login`);
-            const proc = spawn(binary, ["login"], {
-                stdio: ["pipe", "pipe", "pipe"],
-                env: { ...process.env },
-            });
-            const sendAutoConfirm = () => {
-                if (proc.stdin && !proc.stdin.destroyed && proc.exitCode === null) {
-                    proc.stdin.write("y\n");
-                }
-            };
-            sendAutoConfirm();
-            const yesInterval = setInterval(sendAutoConfirm, 100);
-            const clearAutoConfirm = () => clearInterval(yesInterval);
-            proc.stdin?.on("error", () => {});
-
-            let stdout = "";
-            let stderr = "";
-            let codeSent = false;
-            let resolved = false;
-
-            const timeout = setTimeout(() => {
-                if (!resolved) {
-                    resolved = true;
-                    clearAutoConfirm();
-                    log.error("[login] Timed out after 10 minutes");
-                    proc.kill();
-                    this.#broadcastAdmin("⏰ Login timed out. Send any message to get a fresh code.");
-                    reject(new Error("Login timed out"));
-                }
-            }, 10 * 60 * 1000);
-
-            proc.stdout.on("data", (chunk) => {
-                const text = chunk.toString();
-                stdout += text;
-                log.debug(`[login] stdout: ${text.trim()}`);
-                if (!codeSent) {
-                    const match = stdout.match(/enter code ([A-Z0-9]{4}-[A-Z0-9]{4})/);
-                    if (match) {
-                        codeSent = true;
-                        const code = match[1];
-                        log.info(`[login] Device code: ${code}`);
-                        this.#broadcastAdmin(
-                            `🔐 GitHub authentication required\n\n` +
-                            `1️⃣ Visit: https://github.com/login/device\n` +
-                            `2️⃣ Enter code: ${code}\n\n` +
-                            `⏳ Waiting for you to authorize...\n` +
-                            `(One-time setup — takes 30 seconds)`
-                        );
-                    }
-                }
-            });
-
-            proc.stderr.on("data", (chunk) => {
-                const text = chunk.toString().trim();
-                if (text) {
-                    stderr += text + "\n";
-                    log.debug(`[login] stderr: ${text}`);
-                }
-            });
-
-            proc.on("close", (exitCode) => {
-                clearTimeout(timeout);
-                clearAutoConfirm();
-                this.#loginPromise = null;
-                if (resolved) return;
-                resolved = true;
-                log.info(`[login] Process exited with code ${exitCode}`);
-                if (stderr) log.debug(`[login] stderr: ${stderr.trim()}`);
-
-                // Always resolve — the caller will verify auth via acp.authenticate()
-                // Login may exit non-zero due to browser/clipboard warnings in containers
-                this.#broadcastAdmin("✅ Login flow completed — verifying token...");
-                resolve();
-            });
-
-            proc.on("error", (err) => {
-                clearTimeout(timeout);
-                clearAutoConfirm();
-                this.#loginPromise = null;
-                if (!resolved) {
-                    resolved = true;
-                    log.error(`[login] Spawn error: ${err.message}`);
-                    reject(err);
-                }
-            });
-        });
-
-        return this.#loginPromise;
+        await this.#lifecycle.start();
     }
 
     async stopCopilot() {
-        await this.#acp.stop();
-        this.resetPreamble();
+        await this.#lifecycle.stop();
     }
 
     async restartCopilot() {
-        await this.stopCopilot();
-        this.#knownTools.clear();
-        await this.startCopilot();
+        await this.#lifecycle.restart();
     }
 
     // --- Reply-to context extraction ---

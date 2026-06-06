@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.34.0] — 2026-06-06
+
+### Changed
+- **Phase 3 refactor: Extract clean cuts from bridge.mjs** — three modules extracted with zero behavior changes:
+  - `ai/copilot/prompt-builder.mjs` — `PromptBuilder` class handles preamble injection, agent memory context, sender identity, and pinned instruction sanitization
+  - `ai/copilot/lifecycle.mjs` — `CopilotLifecycle` class manages ACP start/stop/restart and device login flow
+  - `core/status.mjs` — `StatusMenu` class manages the singleton status menu with auto-refresh
+- bridge.mjs reduced from 3,296 → 2,874 lines (−422 lines)
+
 ## [0.33.0] — 2026-06-06
 
 ### Added
