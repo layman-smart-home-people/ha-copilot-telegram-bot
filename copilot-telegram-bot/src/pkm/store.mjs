@@ -14,7 +14,7 @@ const log = createLogger("pkm-store");
 
 // ── Constants ──────────────────────────────────────────────
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const DEFAULT_LIMITS = {
     maxNotesPerUser: 10_000,
@@ -189,6 +189,69 @@ CREATE INDEX IF NOT EXISTS idx_events_user ON memory_events(user_id, created_at 
 CREATE INDEX IF NOT EXISTS idx_events_cleanup ON memory_events(created_at);
 `;
 
+const MIGRATION_V2_SQL = `
+CREATE TABLE IF NOT EXISTS topics (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    parent_id   TEXT,
+    name        TEXT NOT NULL,
+    icon        TEXT,
+    description TEXT,
+    sort_order  INTEGER DEFAULT 0,
+    note_count  INTEGER DEFAULT 0,
+    activation  REAL DEFAULT 1.0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    FOREIGN KEY (parent_id) REFERENCES topics(id)
+);
+CREATE INDEX IF NOT EXISTS idx_topics_tree ON topics(user_id, parent_id);
+CREATE INDEX IF NOT EXISTS idx_topics_name ON topics(user_id, name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS note_topics (
+    note_id    TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    topic_id   TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    is_primary INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (note_id, topic_id)
+);
+CREATE INDEX IF NOT EXISTS idx_nt_topic ON note_topics(topic_id, is_primary);
+
+CREATE TABLE IF NOT EXISTS collections (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    topic_id    TEXT REFERENCES topics(id),
+    name        TEXT NOT NULL,
+    description TEXT,
+    schema_json TEXT NOT NULL,
+    item_count  INTEGER DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_collections_user ON collections(user_id);
+
+CREATE TABLE IF NOT EXISTS pkm_cache (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+`;
+
+const MIGRATION_V2_ALTERS = [
+    "ALTER TABLE notes ADD COLUMN primary_topic_id TEXT REFERENCES topics(id)",
+    "ALTER TABLE notes ADD COLUMN activation REAL DEFAULT 1.0",
+    "ALTER TABLE notes ADD COLUMN last_accessed_at TEXT",
+    "ALTER TABLE notes ADD COLUMN access_count INTEGER DEFAULT 0",
+    "ALTER TABLE notes ADD COLUMN confirmations INTEGER DEFAULT 0",
+    "ALTER TABLE notes ADD COLUMN collection_id TEXT REFERENCES collections(id)",
+    "ALTER TABLE note_links ADD COLUMN weight REAL DEFAULT 1.0",
+];
+
+const MIGRATION_V2_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_notes_topic ON notes(primary_topic_id, activation DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_notes_activation ON notes(user_id, activation DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_notes_collection ON notes(collection_id) WHERE collection_id IS NOT NULL",
+];
+
 // ── PkmStore class ─────────────────────────────────────────
 
 export class PkmStore {
@@ -199,6 +262,30 @@ export class PkmStore {
     constructor(dbPath, limits = {}) {
         this.#dbPath = dbPath;
         this.#limits = { ...DEFAULT_LIMITS, ...limits };
+    }
+
+    static #levenshtein(a, b) {
+        const an = a.length;
+        const bn = b.length;
+        if (an === 0) return bn;
+        if (bn === 0) return an;
+        const matrix = Array.from({ length: an + 1 }, (_, i) => {
+            const row = new Array(bn + 1);
+            row[0] = i;
+            return row;
+        });
+        for (let j = 1; j <= bn; j++) matrix[0][j] = j;
+        for (let i = 1; i <= an; i++) {
+            for (let j = 1; j <= bn; j++) {
+                const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j] + 1,
+                    matrix[i][j - 1] + 1,
+                    matrix[i - 1][j - 1] + cost
+                );
+            }
+        }
+        return matrix[an][bn];
     }
 
     // ── Lifecycle ──────────────────────────────────────────
@@ -225,11 +312,60 @@ export class PkmStore {
 
         // Track schema version
         const existing = this.#db.prepare("SELECT value FROM pkm_schema WHERE key = 'version'").get();
+        let schemaVersion = existing?.value || "1";
         if (!existing) {
-            this.#db.prepare("INSERT INTO pkm_schema (key, value) VALUES ('version', ?)").run(String(SCHEMA_VERSION));
-            log.info(`PKM schema v${SCHEMA_VERSION} initialized`);
+            this.#db.prepare("INSERT INTO pkm_schema (key, value) VALUES ('version', ?)").run(schemaVersion);
+            log.info(`PKM schema v${schemaVersion} initialized`);
         } else {
-            log.info(`PKM schema v${existing.value} loaded`);
+            log.info(`PKM schema v${schemaVersion} loaded`);
+        }
+
+        if (schemaVersion === "1") {
+            log.info("Running PKM schema v2 migration");
+            this.#db.exec("BEGIN");
+            try {
+                this.#db.exec(MIGRATION_V2_SQL);
+                log.info("Ensured PKM v2 tables");
+
+                for (const sql of MIGRATION_V2_ALTERS) {
+                    try {
+                        this.#db.exec(sql);
+                        log.info(`Applied PKM v2 alter: ${sql}`);
+                    } catch (e) {
+                        if (e.message?.includes("duplicate column name")) {
+                            log.info(`Skipping existing PKM v2 column: ${sql}`);
+                            continue;
+                        }
+                        throw e;
+                    }
+                }
+
+                for (const sql of MIGRATION_V2_INDEXES) {
+                    this.#db.exec(sql);
+                }
+                log.info("Ensured PKM v2 indexes");
+
+                const enabledUsers = this.#db.prepare(
+                    "SELECT user_id FROM pkm_settings WHERE enabled = 1"
+                ).all();
+                for (const { user_id: userId } of enabledUsers) {
+                    this.#seedDefaultTopics(userId);
+                }
+                log.info(`Seeded default topics for ${enabledUsers.length} enabled users`);
+
+                this.#db.prepare("UPDATE pkm_schema SET value = ? WHERE key = 'version'").run(String(SCHEMA_VERSION));
+                this.#db.exec("COMMIT");
+                schemaVersion = String(SCHEMA_VERSION);
+                log.info(`PKM schema migrated to v${schemaVersion}`);
+            } catch (e) {
+                try {
+                    this.#db.exec("ROLLBACK");
+                } catch {
+                    // ignore rollback failures
+                }
+                log.error(`PKM schema v2 migration failed: ${e.message}`);
+                throw e;
+            }
         }
 
         return this;
@@ -1159,6 +1295,351 @@ export class PkmStore {
         sql += " ORDER BY n.created_at DESC LIMIT ?";
         params.push(limit);
         return this.#db.prepare(sql).all(...params);
+    }
+
+    // ── Topics ─────────────────────────────────────────────
+
+    #seedDefaultTopics(userId) {
+        try {
+            const existing = this.#db.prepare(
+                "SELECT 1 FROM topics WHERE user_id = ? LIMIT 1"
+            ).get(userId);
+            if (existing) return;
+
+            for (const topic of [
+                { name: "People", icon: "👥" },
+                { name: "Home", icon: "🏠" },
+                { name: "Life", icon: "🌱" },
+            ]) {
+                this.createTopic(userId, topic.name, { icon: topic.icon });
+            }
+            log.info(`Seeded default topics for user ${userId}`);
+        } catch (e) {
+            if (/already exists|Similar topic/i.test(e.message)) return;
+            log.warn(`Default topic seed skipped for user ${userId}: ${e.message}`);
+        }
+    }
+
+    createTopic(userId, name, { parentId = null, icon = null, description = null } = {}) {
+        const trimmedName = String(name || "").trim();
+        if (!trimmedName) throw new Error("Topic name is required");
+
+        if (parentId) {
+            const parent = this.#db.prepare(
+                "SELECT id, user_id, name FROM topics WHERE id = ?"
+            ).get(parentId);
+            if (!parent || parent.user_id !== userId) {
+                throw new Error("Parent topic not found");
+            }
+            if (this.#getTopicDepth(parentId) >= 2) {
+                throw new Error("Topic tree depth limit reached");
+            }
+        }
+
+        const siblings = parentId
+            ? this.#db.prepare(
+                "SELECT id, name FROM topics WHERE user_id = ? AND parent_id = ? ORDER BY name COLLATE NOCASE"
+            ).all(userId, parentId)
+            : this.#db.prepare(
+                "SELECT id, name FROM topics WHERE user_id = ? AND parent_id IS NULL ORDER BY name COLLATE NOCASE"
+            ).all(userId);
+
+        const exact = siblings.find(topic => topic.name.toLowerCase() === trimmedName.toLowerCase());
+        if (exact) {
+            throw new Error(`Topic "${trimmedName}" already exists here`);
+        }
+
+        const similar = siblings
+            .map(topic => ({
+                topic,
+                distance: PkmStore.#levenshtein(topic.name.toLowerCase(), trimmedName.toLowerCase()),
+            }))
+            .filter(candidate => candidate.distance <= 2)
+            .sort((a, b) => a.distance - b.distance || a.topic.name.localeCompare(b.topic.name))[0];
+        if (similar) {
+            throw new Error(`Similar topic already exists: ${similar.topic.name}`);
+        }
+
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        this.#db.prepare(
+            `INSERT INTO topics (id, user_id, parent_id, name, icon, description, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(id, userId, parentId, trimmedName, icon, description, now, now);
+        log.info(`Created topic ${id} (${trimmedName}) for user ${userId}`);
+        return { id, name: trimmedName };
+    }
+
+    getTopics(userId, { parentId } = {}) {
+        if (parentId) {
+            return this.#db.prepare(
+                `SELECT * FROM topics
+                 WHERE user_id = ? AND parent_id = ?
+                 ORDER BY sort_order, name COLLATE NOCASE`
+            ).all(userId, parentId);
+        }
+
+        return this.#db.prepare(
+            `SELECT * FROM topics
+             WHERE user_id = ? AND parent_id IS NULL
+             ORDER BY sort_order, name COLLATE NOCASE`
+        ).all(userId);
+    }
+
+    getTopic(topicId) {
+        return this.#db.prepare("SELECT * FROM topics WHERE id = ?").get(topicId) || null;
+    }
+
+    updateTopic(topicId, userId, updates = {}) {
+        const topic = this.getTopic(topicId);
+        if (!topic) throw new Error("Topic not found");
+        if (topic.user_id !== userId) throw new Error("Access denied");
+
+        const nextName = updates.name === undefined ? topic.name : String(updates.name || "").trim();
+        if (!nextName) throw new Error("Topic name is required");
+
+        if (nextName.toLowerCase() !== topic.name.toLowerCase()) {
+            const duplicate = topic.parent_id
+                ? this.#db.prepare(
+                    `SELECT id FROM topics
+                     WHERE user_id = ? AND parent_id = ? AND LOWER(name) = LOWER(?) AND id != ?`
+                ).get(userId, topic.parent_id, nextName, topicId)
+                : this.#db.prepare(
+                    `SELECT id FROM topics
+                     WHERE user_id = ? AND parent_id IS NULL AND LOWER(name) = LOWER(?) AND id != ?`
+                ).get(userId, nextName, topicId);
+            if (duplicate) {
+                throw new Error(`Topic "${nextName}" already exists here`);
+            }
+        }
+
+        const allowed = new Map([
+            ["name", nextName],
+            ["icon", updates.icon],
+            ["description", updates.description],
+            ["sort_order", updates.sort_order ?? updates.sortOrder],
+        ]);
+        const now = new Date().toISOString();
+        const sets = ["updated_at = ?"];
+        const values = [now];
+
+        for (const [key, value] of allowed.entries()) {
+            if (value !== undefined) {
+                sets.push(`${key} = ?`);
+                values.push(value);
+            }
+        }
+
+        values.push(topicId);
+        this.#db.prepare(`UPDATE topics SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+        return this.getTopic(topicId);
+    }
+
+    deleteTopic(topicId, userId) {
+        const topic = this.getTopic(topicId);
+        if (!topic) throw new Error("Topic not found");
+        if (topic.user_id !== userId) throw new Error("Access denied");
+
+        const now = new Date().toISOString();
+        const reassigned = this.#db.prepare(
+            "UPDATE notes SET primary_topic_id = ?, updated_at = ? WHERE primary_topic_id = ?"
+        ).run(topic.parent_id, now, topicId).changes;
+
+        if (topic.parent_id) {
+            this.#db.prepare(
+                `INSERT OR IGNORE INTO note_topics (note_id, topic_id, is_primary, created_at)
+                 SELECT note_id, ?, is_primary, created_at
+                 FROM note_topics WHERE topic_id = ?`
+            ).run(topic.parent_id, topicId);
+        }
+        this.#db.prepare("DELETE FROM note_topics WHERE topic_id = ?").run(topicId);
+        this.#db.prepare("UPDATE topics SET parent_id = ?, updated_at = ? WHERE parent_id = ?").run(topic.parent_id, now, topicId);
+        this.#db.prepare("DELETE FROM topics WHERE id = ?").run(topicId);
+
+        if (topic.parent_id) {
+            const noteCount = this.#db.prepare(
+                `SELECT COUNT(DISTINCT note_id) AS cnt FROM (
+                    SELECT id AS note_id FROM notes WHERE primary_topic_id = ?
+                    UNION
+                    SELECT note_id FROM note_topics WHERE topic_id = ?
+                )`
+            ).get(topic.parent_id, topic.parent_id)?.cnt || 0;
+            this.#db.prepare(
+                "UPDATE topics SET note_count = ?, updated_at = ? WHERE id = ?"
+            ).run(noteCount, now, topic.parent_id);
+        }
+
+        log.info(`Deleted topic ${topicId} for user ${userId}`);
+        return reassigned;
+    }
+
+    moveTopic(topicId, newParentId, userId) {
+        const topic = this.getTopic(topicId);
+        if (!topic) throw new Error("Topic not found");
+        if (topic.user_id !== userId) throw new Error("Access denied");
+        if (newParentId === topicId) throw new Error("A topic cannot be its own parent");
+
+        if (newParentId) {
+            const parent = this.getTopic(newParentId);
+            if (!parent || parent.user_id !== userId) {
+                throw new Error("New parent topic not found");
+            }
+
+            const descendant = this.#db.prepare(
+                `WITH RECURSIVE subtree(id) AS (
+                    SELECT id FROM topics WHERE parent_id = ?
+                    UNION ALL
+                    SELECT t.id FROM topics t
+                    JOIN subtree s ON t.parent_id = s.id
+                )
+                SELECT 1 FROM subtree WHERE id = ? LIMIT 1`
+            ).get(topicId, newParentId);
+            if (descendant) {
+                throw new Error("Cannot move a topic into its own subtree");
+            }
+
+            const duplicate = this.#db.prepare(
+                `SELECT id FROM topics
+                 WHERE user_id = ? AND parent_id = ? AND LOWER(name) = LOWER(?) AND id != ?`
+            ).get(userId, newParentId, topic.name, topicId);
+            if (duplicate) {
+                throw new Error(`Topic "${topic.name}" already exists here`);
+            }
+        } else {
+            const duplicate = this.#db.prepare(
+                `SELECT id FROM topics
+                 WHERE user_id = ? AND parent_id IS NULL AND LOWER(name) = LOWER(?) AND id != ?`
+            ).get(userId, topic.name, topicId);
+            if (duplicate) {
+                throw new Error(`Topic "${topic.name}" already exists here`);
+            }
+        }
+
+        const subtreeDepth = this.#db.prepare(
+            `WITH RECURSIVE subtree(id, depth) AS (
+                SELECT id, 0 FROM topics WHERE id = ?
+                UNION ALL
+                SELECT t.id, subtree.depth + 1
+                FROM topics t
+                JOIN subtree ON t.parent_id = subtree.id
+            )
+            SELECT MAX(depth) AS max_depth FROM subtree`
+        ).get(topicId)?.max_depth || 0;
+        const parentDepth = newParentId ? this.#getTopicDepth(newParentId) + 1 : 0;
+        if (parentDepth + subtreeDepth > 2) {
+            throw new Error("Topic tree depth limit reached");
+        }
+
+        const now = new Date().toISOString();
+        this.#db.prepare(
+            "UPDATE topics SET parent_id = ?, updated_at = ? WHERE id = ?"
+        ).run(newParentId, now, topicId);
+        return this.getTopic(topicId);
+    }
+
+    mergeTopics(sourceId, targetId, userId) {
+        if (sourceId === targetId) throw new Error("Source and target topics must differ");
+
+        const source = this.getTopic(sourceId);
+        const target = this.getTopic(targetId);
+        if (!source || source.user_id !== userId) throw new Error("Source topic not found");
+        if (!target || target.user_id !== userId) throw new Error("Target topic not found");
+
+        const descendant = this.#db.prepare(
+            `WITH RECURSIVE subtree(id) AS (
+                SELECT id FROM topics WHERE parent_id = ?
+                UNION ALL
+                SELECT t.id FROM topics t
+                JOIN subtree s ON t.parent_id = s.id
+            )
+            SELECT 1 FROM subtree WHERE id = ? LIMIT 1`
+        ).get(sourceId, targetId);
+        if (descendant) {
+            throw new Error("Cannot merge a topic into its own subtree");
+        }
+
+        const movedNotes = this.#db.prepare(
+            `SELECT COUNT(DISTINCT note_id) AS cnt FROM (
+                SELECT id AS note_id FROM notes WHERE primary_topic_id = ?
+                UNION
+                SELECT note_id FROM note_topics WHERE topic_id = ?
+            )`
+        ).get(sourceId, sourceId)?.cnt || 0;
+        const now = new Date().toISOString();
+
+        this.#db.prepare(
+            `INSERT OR IGNORE INTO note_topics (note_id, topic_id, is_primary, created_at)
+             SELECT note_id, ?, is_primary, created_at
+             FROM note_topics WHERE topic_id = ?`
+        ).run(targetId, sourceId);
+        this.#db.prepare(
+            "UPDATE topics SET parent_id = ?, updated_at = ? WHERE parent_id = ?"
+        ).run(targetId, now, sourceId);
+        this.#db.prepare(
+            "UPDATE notes SET primary_topic_id = ?, updated_at = ? WHERE primary_topic_id = ?"
+        ).run(targetId, now, sourceId);
+        this.#db.prepare("DELETE FROM topics WHERE id = ?").run(sourceId);
+
+        const noteCount = this.#db.prepare(
+            `SELECT COUNT(DISTINCT note_id) AS cnt FROM (
+                SELECT id AS note_id FROM notes WHERE primary_topic_id = ?
+                UNION
+                SELECT note_id FROM note_topics WHERE topic_id = ?
+            )`
+        ).get(targetId, targetId)?.cnt || 0;
+        this.#db.prepare(
+            "UPDATE topics SET note_count = ?, updated_at = ? WHERE id = ?"
+        ).run(noteCount, now, targetId);
+
+        log.info(`Merged topic ${sourceId} into ${targetId} for user ${userId}`);
+        return movedNotes;
+    }
+
+    resolveTopicName(userId, name) {
+        const trimmedName = String(name || "").trim();
+        if (!trimmedName) return null;
+
+        const exact = this.#db.prepare(
+            `SELECT * FROM topics
+             WHERE user_id = ? AND LOWER(name) = LOWER(?)
+             ORDER BY sort_order, name COLLATE NOCASE
+             LIMIT 1`
+        ).get(userId, trimmedName);
+        if (exact) return exact;
+
+        const candidates = this.#db.prepare(
+            "SELECT * FROM topics WHERE user_id = ? ORDER BY sort_order, name COLLATE NOCASE"
+        ).all(userId);
+        const best = candidates
+            .map(topic => ({
+                topic,
+                distance: PkmStore.#levenshtein(topic.name.toLowerCase(), trimmedName.toLowerCase()),
+            }))
+            .sort((a, b) => a.distance - b.distance || a.topic.name.localeCompare(b.topic.name))[0];
+
+        return best && best.distance <= 2 ? best.topic : null;
+    }
+
+    #getTopicDepth(topicId) {
+        let depth = 0;
+        let currentId = topicId;
+        const seen = new Set();
+
+        while (currentId) {
+            if (seen.has(currentId)) {
+                throw new Error("Topic tree contains a cycle");
+            }
+            seen.add(currentId);
+
+            const row = this.#db.prepare(
+                "SELECT parent_id FROM topics WHERE id = ?"
+            ).get(currentId);
+            if (!row?.parent_id) break;
+            depth += 1;
+            currentId = row.parent_id;
+        }
+
+        return depth;
     }
 
     // ── Contradiction detection ────────────────────────────

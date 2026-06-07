@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.66.0] — 2026-06-08
+
+### Added — PKM v2 Phase 1: Schema Migration + Topic Tree Foundation
+- **Schema v2 migration** — 4 new tables (`topics`, `note_topics`, `collections`, `pkm_cache`) + 7 new columns on `notes`/`note_links` + 3 new indexes
+- **Topic tree** — hierarchical topics with max depth 3, icons, descriptions, sort order
+- **Topic CRUD** — `createTopic`, `getTopics`, `getTopic`, `updateTopic`, `deleteTopic`
+- **Topic operations** — `moveTopic` (reparent with cycle/depth checks), `mergeTopics` (combine with note reassignment)
+- **Fuzzy name matching** — `resolveTopicName` with case-insensitive exact match → Levenshtein ≤ 2 fuzzy fallback
+- **Default topic seeding** — People 👥, Home 🏠, Life 🌱 auto-created for existing enabled users on migration
+- **Migration safety** — idempotent (IF NOT EXISTS + try/catch on ALTER), transactional, with rollback on failure
+
 ## [0.65.2] — 2026-06-08
 
 ### Added — Memory Map (`pkm_map`)
