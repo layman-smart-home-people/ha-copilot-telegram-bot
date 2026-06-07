@@ -43,6 +43,14 @@ if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC")
 
 const log = createLogger('main');
 
+// --- Global crash guards ---
+// Prevent unhandled promise rejections from crashing the process.
+// Individual errors are already logged at their source; this is the safety net.
+process.on('unhandledRejection', (reason) => {
+    log.error(`Unhandled rejection (process kept alive): ${reason?.message || reason}`);
+    if (reason?.stack) log.debug(reason.stack);
+});
+
 // Log timezone after it's been set
 log.info(`Copilot Telegram Bot starting... (TZ=${process.env.TZ || "UTC"})`);
 

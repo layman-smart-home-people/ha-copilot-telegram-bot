@@ -5,8 +5,10 @@
 // send queue, and all methods needed for a rich bot experience.
 
 import { EventEmitter } from "node:events";
+import { createLogger } from "../../logger.mjs";
 
 const TELEGRAM_API = "https://api.telegram.org";
+const log = createLogger("tg-client");
 
 export class TelegramClient extends EventEmitter {
     #token;
@@ -65,6 +67,12 @@ export class TelegramClient extends EventEmitter {
         }
         if (!res.ok) {
             const body = await res.text().catch(() => "");
+            // Auto-recover from stale/invalid thread IDs (e.g., forum→non-forum switch)
+            if (res.status === 400 && /thread not found/i.test(body) && params.message_thread_id) {
+                log.warn(`Thread ${params.message_thread_id} not found in ${method}, retrying without threadId`);
+                const { message_thread_id: _, ...retryParams } = params;
+                return this.call(method, retryParams);
+            }
             const err = new Error(`Telegram API ${method} failed: ${res.status} ${body}`);
             err.status = res.status;
             throw err;
@@ -125,6 +133,12 @@ export class TelegramClient extends EventEmitter {
         });
         if (!res.ok) {
             const body = await res.text().catch(() => "");
+            // Auto-recover from stale/invalid thread IDs
+            if (res.status === 400 && /thread not found/i.test(body) && form.has("message_thread_id")) {
+                log.warn(`Thread not found in ${method}, retrying without threadId`);
+                form.delete("message_thread_id");
+                return this.callForm(method, form);
+            }
             throw new Error(`Telegram ${method} failed: ${res.status} ${body}`);
         }
         return (await res.json()).result;

@@ -2,6 +2,13 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.51.4] — 2026-06-07
+
+### Fixed
+- **Comprehensive Telegram thread resilience** — Moved thread-not-found recovery from individual callers to the `TelegramClient` API layer (`call()` and `callForm()`). When Telegram returns 400 "message thread not found" (e.g., switching a chat between forum/non-forum mode), the client auto-retries the request without `message_thread_id`. This protects ALL outbound API calls — sends, edits, photos, documents, chat actions — with zero caller changes needed.
+- **Global crash guard** — Added `process.on('unhandledRejection')` handler to prevent any unhandled promise rejection from killing the bot process. Errors are logged but the bot stays alive.
+- **Simplified composer placeholder** — Reverted the placeholder retry to the original simple form since the client layer now handles thread recovery transparently.
+
 ## [0.51.3] — 2026-06-07
 
 ### Fixed
