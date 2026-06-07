@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.67.0] — 2026-06-08
+
+### Added — PKM v2 Phase 2: Note-Topic Assignment + Activation + Entity Dedup
+- **Note-topic assignment** — `assignNoteToTopic`, `removeNoteFromTopic`, `getNoteTopics` with primary/secondary support
+- **Activation model** — ACT-R simplified: `ln(access_count+1) - decay_rate × days + importance × 0.5` with durability-based decay rates
+- **Access tracking** — `trackAccess` increments count + recomputes activation; `decayAllActivations` for batch maintenance
+- **Auto-topic assignment** — Keyword classifier in extractor assigns notes to People/Home/Life topics (max 2 per note)
+- **Entity dedup** — 3-step matching: exact name → alias → substring (e.g. "Dan" matches "Daniel"), auto-enriches aliases
+- **Topic backfill** — Existing notes assigned to topics during v2 migration based on content/entities/tags
+- **createNote topics** — Optional `topics` array parameter resolves names and assigns primary + secondary
+- **Activation decay** — Runs in maintenance timer for all enabled users
+
 ## [0.66.0] — 2026-06-08
 
 ### Added — PKM v2 Phase 1: Schema Migration + Topic Tree Foundation

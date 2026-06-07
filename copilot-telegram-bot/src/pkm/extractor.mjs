@@ -59,6 +59,20 @@ const STRUCTURED_PATTERNS = [
     },
 ];
 
+const TOPIC_KEYWORDS = {
+    People: [
+        /\b(family|friend|colleague|coworker|birthday|anniversary|wedding|dad|mom|mum|father|mother|brother|sister|wife|husband|son|daughter|uncle|aunt|nephew|niece|cousin|grandpa|grandma|boss|teacher|doctor)\b/i,
+        /\b(met|visited|called|texted|dinner with|lunch with|meeting with)\b/i,
+    ],
+    Home: [
+        /\b(home|house|apartment|flat|kitchen|bedroom|bathroom|living room|garage|garden|yard|renovation|repair|wifi|router|appliance|furniture|cleaning|laundry|cook|recipe|grocery|groceries)\b/i,
+        /\b(home assistant|smart home|automation|sensor|temperature|humidity|light|switch|plug|thermostat)\b/i,
+    ],
+    Life: [
+        /\b(health|exercise|workout|gym|run|jog|walk|swim|yoga|meditation|diet|nutrition|sleep|energy|mood|stress|anxiety|happiness|goal|plan|habit|routine|hobby|travel|vacation|trip|book|movie|music|show|game|sport|study|learn|course|class|career|job|work|project|invest|budget|saving|finance|money)\b/i,
+    ],
+};
+
 // ── Extraction prompt template ─────────────────────────────
 
 function buildExtractionPrompt(messages, securityPrompt) {
@@ -86,6 +100,25 @@ CONVERSATION:
 ${messages.map(m => `[${m.role}]: ${m.text}`).join("\n")}
 
 Return ONLY a valid JSON array. If nothing is worth remembering, return [].`;
+}
+
+function classifyTopics(text) {
+    const scores = {};
+    const combined = (text || "").toLowerCase();
+
+    for (const [topic, patterns] of Object.entries(TOPIC_KEYWORDS)) {
+        let matchCount = 0;
+        for (const pattern of patterns) {
+            const matches = combined.match(pattern);
+            if (matches) matchCount += matches.length;
+        }
+        if (matchCount > 0) scores[topic] = matchCount;
+    }
+
+    return Object.entries(scores)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 2)
+        .map(([name]) => name);
 }
 
 // ── PkmExtractor class ─────────────────────────────────────
@@ -254,6 +287,20 @@ export class PkmExtractor {
                     this.#store.processEntities(result.id, window.user_id, note.entities);
                 }
 
+                // Auto-topic assignment
+                const noteText = `${note.title || ""} ${note.content || ""} ${Array.isArray(note.tags) ? note.tags.join(" ") : ""}`;
+                const topicNames = classifyTopics(noteText);
+                for (let i = 0; i < topicNames.length; i++) {
+                    try {
+                        const topic = this.#store.resolveTopicName(window.user_id, topicNames[i]);
+                        if (topic) {
+                            this.#store.assignNoteToTopic(result.id, topic.id, i === 0);
+                        }
+                    } catch (e) {
+                        log.warn(`Auto-topic assignment failed: ${e.message}`);
+                    }
+                }
+
                 // Contradiction detection
                 this.#store.detectContradictions(result.id, window.user_id, {
                     type: note.type || "fact",
@@ -310,6 +357,16 @@ export class PkmExtractor {
                         ).run(sdId, noteResult.id, window.user_id, data.dataType, data.value,
                             data.unit || null, new Date().toISOString(),
                             data.metadata ? JSON.stringify(data.metadata) : null);
+
+                        // Auto-assign health data to Life topic
+                        try {
+                            const lifeTopic = this.#store.resolveTopicName(window.user_id, "Life");
+                            if (lifeTopic) {
+                                this.#store.assignNoteToTopic(noteResult.id, lifeTopic.id, true);
+                            }
+                        } catch (e) {
+                            log.warn(`Auto-topic for structured data failed: ${e.message}`);
+                        }
 
                         // Contradiction detection — supersede older readings of same type
                         this.#store.detectContradictions(noteResult.id, window.user_id, {
@@ -413,6 +470,18 @@ export class PkmExtractor {
 
             // 6. Purge old audit logs (>90 days)
             this.#store.purgeOldAuditLogs(90);
+
+            // 7. Decay activations
+            try {
+                const enabledUsers = this.#store.db.prepare(
+                    "SELECT user_id FROM pkm_settings WHERE enabled = 1"
+                ).all();
+                for (const { user_id: userId } of enabledUsers) {
+                    this.#store.decayAllActivations(userId);
+                }
+            } catch (e) {
+                log.warn(`Activation decay failed: ${e.message}`);
+            }
 
         } catch (e) {
             log.error(`Maintenance cycle failed: ${e.message}`);

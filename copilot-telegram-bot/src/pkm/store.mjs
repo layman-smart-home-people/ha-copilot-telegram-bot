@@ -353,6 +353,18 @@ export class PkmStore {
                 }
                 log.info(`Seeded default topics for ${enabledUsers.length} enabled users`);
 
+                // Backfill existing notes to topics
+                for (const { user_id: userId } of enabledUsers) {
+                    try {
+                        const backfilled = this.backfillTopics(userId);
+                        if (backfilled > 0) {
+                            log.info(`Backfilled ${backfilled} notes to topics for user ${userId}`);
+                        }
+                    } catch (e) {
+                        log.warn(`Topic backfill failed for user ${userId}: ${e.message}`);
+                    }
+                }
+
                 this.#db.prepare("UPDATE pkm_schema SET value = ? WHERE key = 'version'").run(String(SCHEMA_VERSION));
                 this.#db.exec("COMMIT");
                 schemaVersion = String(SCHEMA_VERSION);
@@ -427,7 +439,7 @@ export class PkmStore {
         userId, chatId, type = "fact", title, content, searchKeywords, tags,
         metadata, validFrom, sourceType = "extracted", confidence = 0.8,
         durability = "normal", importance = 0.5, scope = "user", scopeId,
-        evidenceMsgIds, conversationId,
+        evidenceMsgIds, conversationId, topics,
     }) {
         // Rate limit check
         const count = this.getNoteCount(userId);
@@ -453,6 +465,21 @@ export class PkmStore {
             evidJson, conversationId || null, now, now);
 
         this.logEvent(id, userId, "create", { type, scope, title: title?.substring(0, 100) });
+
+        // Assign to topics if provided
+        if (Array.isArray(topics) && topics.length > 0) {
+            const resolved = [];
+            for (const topicName of topics.slice(0, 2)) {
+                const topic = this.resolveTopicName(userId, topicName);
+                if (topic) resolved.push(topic);
+            }
+            if (resolved.length > 0) {
+                this.assignNoteToTopic(id, resolved[0].id, true);
+                if (resolved.length > 1) {
+                    this.assignNoteToTopic(id, resolved[1].id, false);
+                }
+            }
+        }
 
         return { id, createdAt: now };
     }
@@ -1216,10 +1243,44 @@ export class PkmStore {
         const type = entityDef.type || "unknown";
         const nameLower = name.toLowerCase();
 
-        // Find existing entity by name or alias (case-insensitive)
         let entity = this.#db.prepare(
-            `SELECT * FROM entities WHERE user_id = ? AND (LOWER(name) = ? OR LOWER(aliases) LIKE ?)`
-        ).get(userId, nameLower, `%${nameLower}%`);
+            `SELECT * FROM entities WHERE user_id = ? AND LOWER(name) = ?`
+        ).get(userId, nameLower);
+        let matchType = entity ? "exact" : null;
+
+        if (!entity) {
+            entity = this.#db.prepare(
+                `SELECT * FROM entities WHERE user_id = ? AND LOWER(aliases) LIKE ?`
+            ).get(userId, `%${nameLower}%`);
+            if (entity) matchType = "alias";
+        }
+
+        if (!entity && nameLower.length >= 3) {
+            const candidates = this.#db.prepare(
+                `SELECT * FROM entities WHERE user_id = ?
+                 AND (LOWER(name) LIKE ? OR ? LIKE '%' || LOWER(name) || '%')`
+            ).all(userId, `%${nameLower}%`, nameLower);
+
+            if (candidates.length === 1) {
+                entity = candidates[0];
+                matchType = "substring";
+            } else if (candidates.length > 1) {
+                entity = candidates.sort((a, b) => a.name.length - b.name.length)[0];
+                matchType = "substring";
+            }
+        }
+
+        if (entity && matchType === "substring") {
+            const existingAliases = entity.aliases ? JSON.parse(entity.aliases) : [];
+            if (!existingAliases.includes(nameLower)) {
+                existingAliases.push(nameLower);
+                const now = new Date().toISOString();
+                this.#db.prepare(
+                    "UPDATE entities SET aliases = ?, updated_at = ? WHERE id = ?"
+                ).run(JSON.stringify(existingAliases), now, entity.id);
+                entity = { ...entity, aliases: JSON.stringify(existingAliases), updated_at: now };
+            }
+        }
 
         if (!entity) {
             // Create new entity
@@ -1640,6 +1701,193 @@ export class PkmStore {
         }
 
         return depth;
+    }
+
+    // ── Note-Topic Assignment + Activation ─────────────────
+
+    assignNoteToTopic(noteId, topicId, isPrimary = false) {
+        const note = this.getNote(noteId);
+        if (!note) throw new Error("Note not found");
+        const topic = this.getTopic(topicId);
+        if (!topic) throw new Error("Topic not found");
+        if (topic.user_id !== note.user_id) throw new Error("Topic and note owner mismatch");
+
+        this.#db.prepare(
+            `INSERT OR IGNORE INTO note_topics (note_id, topic_id, is_primary, created_at)
+             VALUES (?, ?, ?, datetime('now'))`
+        ).run(noteId, topicId, isPrimary ? 1 : 0);
+
+        if (isPrimary) {
+            this.#db.prepare(
+                "UPDATE note_topics SET is_primary = CASE WHEN topic_id = ? THEN 1 ELSE 0 END WHERE note_id = ?"
+            ).run(topicId, noteId);
+            this.#db.prepare(
+                "UPDATE notes SET primary_topic_id = ?, updated_at = ? WHERE id = ?"
+            ).run(topicId, new Date().toISOString(), noteId);
+        }
+
+        this.#refreshTopicNoteCount(topicId);
+        this.logEvent(noteId, note.user_id, "topic_assigned", { topic_id: topicId, is_primary: !!isPrimary });
+        return true;
+    }
+
+    removeNoteFromTopic(noteId, topicId) {
+        const note = this.getNote(noteId);
+        if (!note) throw new Error("Note not found");
+        const topic = this.getTopic(topicId);
+        if (!topic) throw new Error("Topic not found");
+        if (topic.user_id !== note.user_id) throw new Error("Topic and note owner mismatch");
+
+        this.#db.prepare(
+            "DELETE FROM note_topics WHERE note_id = ? AND topic_id = ?"
+        ).run(noteId, topicId);
+
+        let nextPrimaryId = note.primary_topic_id;
+        if (note.primary_topic_id === topicId) {
+            const nextPrimary = this.#db.prepare(
+                `SELECT topic_id FROM note_topics
+                 WHERE note_id = ?
+                 ORDER BY is_primary DESC, created_at ASC
+                 LIMIT 1`
+            ).get(noteId);
+            nextPrimaryId = nextPrimary?.topic_id || null;
+            const now = new Date().toISOString();
+            this.#db.prepare(
+                "UPDATE notes SET primary_topic_id = ?, updated_at = ? WHERE id = ?"
+            ).run(nextPrimaryId, now, noteId);
+            this.#db.prepare(
+                "UPDATE note_topics SET is_primary = CASE WHEN topic_id = ? THEN 1 ELSE 0 END WHERE note_id = ?"
+            ).run(nextPrimaryId, noteId);
+        }
+
+        this.#refreshTopicNoteCount(topicId);
+        this.logEvent(noteId, note.user_id, "topic_removed", { topic_id: topicId, next_primary_topic_id: nextPrimaryId });
+        return true;
+    }
+
+    getNoteTopics(noteId) {
+        return this.#db.prepare(
+            `SELECT t.*, nt.is_primary
+             FROM note_topics nt
+             JOIN topics t ON t.id = nt.topic_id
+             WHERE nt.note_id = ?
+             ORDER BY nt.is_primary DESC, t.name COLLATE NOCASE`
+        ).all(noteId);
+    }
+
+    computeActivation(note) {
+        const accessCount = Number(note?.access_count || 0);
+        const importance = Number(note?.importance || 0);
+        const durability = String(note?.durability || "normal").toLowerCase();
+        const decayRate = durability === "permanent"
+            ? 0.001
+            : durability === "ephemeral"
+                ? 0.2
+                : 0.05;
+        const anchor = note?.last_accessed_at || note?.created_at;
+        const anchorMs = anchor ? new Date(anchor).getTime() : Date.now();
+        const daysSinceLastAccess = Math.max(0, (Date.now() - anchorMs) / 86400000);
+        const floor = durability === "permanent" ? 0.5 : 0.01;
+        const activation = Math.log(accessCount + 1) - (decayRate * daysSinceLastAccess) + (importance * 0.5);
+        return Math.max(floor, activation);
+    }
+
+    trackAccess(noteId) {
+        const note = this.getNote(noteId);
+        if (!note) return null;
+
+        const now = new Date().toISOString();
+        this.#db.prepare(
+            `UPDATE notes
+             SET last_accessed_at = ?, access_count = COALESCE(access_count, 0) + 1, updated_at = ?
+             WHERE id = ?`
+        ).run(now, now, noteId);
+
+        const updatedNote = this.getNote(noteId);
+        const activation = this.computeActivation(updatedNote);
+        this.#db.prepare("UPDATE notes SET activation = ? WHERE id = ?").run(activation, noteId);
+        return activation;
+    }
+
+    decayAllActivations(userId) {
+        const notes = this.#db.prepare(
+            `SELECT id, access_count, last_accessed_at, created_at, importance, durability
+             FROM notes
+             WHERE user_id = ? AND valid_to IS NULL`
+        ).all(userId);
+        const update = this.#db.prepare("UPDATE notes SET activation = ? WHERE id = ?");
+        for (const note of notes) {
+            update.run(this.computeActivation(note), note.id);
+        }
+        log.info(`Decayed activations for ${notes.length} notes (user=${userId})`);
+        return notes.length;
+    }
+
+    backfillTopics(userId) {
+        const notes = this.#db.prepare(
+            `SELECT id, title, content, tags
+             FROM notes
+             WHERE user_id = ? AND valid_to IS NULL AND primary_topic_id IS NULL`
+        ).all(userId);
+        if (notes.length === 0) return 0;
+
+        const rootTopics = this.getTopics(userId);
+        const topicsByName = new Map(rootTopics.map(topic => [topic.name.toLowerCase(), topic]));
+        const peopleTopic = topicsByName.get("people") || this.resolveTopicName(userId, "People");
+        const homeTopic = topicsByName.get("home") || this.resolveTopicName(userId, "Home");
+        const lifeTopic = topicsByName.get("life") || this.resolveTopicName(userId, "Life");
+        const entityStmt = this.#db.prepare(
+            `SELECT e.name
+             FROM entity_notes en
+             JOIN entities e ON e.id = en.entity_id
+             WHERE en.note_id = ?`
+        );
+
+        const peoplePattern = /\b(family|friend|colleague|birthday|meeting)\b/i;
+        const homePattern = /\b(home|house|kitchen|bedroom|wifi|appliance|garden|renovation)\b/i;
+
+        let backfilled = 0;
+        for (const note of notes) {
+            const entityNames = entityStmt.all(note.id).map(entity => entity.name).join(" ");
+            const tags = (() => {
+                try {
+                    return note.tags ? JSON.parse(note.tags) : [];
+                } catch {
+                    return [];
+                }
+            })();
+            const haystack = [note.title, note.content, Array.isArray(tags) ? tags.join(" ") : note.tags, entityNames]
+                .filter(Boolean)
+                .join(" ");
+
+            let topic = lifeTopic;
+            if (peopleTopic && (entityNames || peoplePattern.test(haystack))) {
+                topic = peopleTopic;
+            } else if (homeTopic && homePattern.test(haystack)) {
+                topic = homeTopic;
+            }
+
+            if (!topic) continue;
+            this.assignNoteToTopic(note.id, topic.id, true);
+            backfilled += 1;
+        }
+
+        return backfilled;
+    }
+
+    #refreshTopicNoteCount(topicId) {
+        if (!topicId) return 0;
+        const noteCount = this.#db.prepare(
+            `SELECT COUNT(DISTINCT note_id) AS cnt FROM (
+                SELECT id AS note_id FROM notes WHERE primary_topic_id = ?
+                UNION
+                SELECT note_id FROM note_topics WHERE topic_id = ?
+            )`
+        ).get(topicId, topicId)?.cnt || 0;
+        this.#db.prepare(
+            "UPDATE topics SET note_count = ?, updated_at = ? WHERE id = ?"
+        ).run(noteCount, new Date().toISOString(), topicId);
+        return noteCount;
     }
 
     // ── Contradiction detection ────────────────────────────
