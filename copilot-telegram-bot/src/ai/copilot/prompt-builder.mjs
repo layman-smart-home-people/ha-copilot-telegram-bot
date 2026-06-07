@@ -16,6 +16,7 @@ export class PromptBuilder {
     #getActiveScope;
     #getActiveRef;
     #getRbac;
+    #getPkm;
 
     /**
      * @param {object} opts
@@ -26,8 +27,9 @@ export class PromptBuilder {
      * @param {Function} opts.getActiveScope - returns current active scope
      * @param {Function} opts.getActiveRef - returns current active ref
      * @param {Function} [opts.getRbac] - returns RBACManager instance (optional)
+     * @param {Function} [opts.getPkm] - returns PkmManager instance (optional)
      */
-    constructor({ config, agentMemory, scopeMgr, pinnedInstructions, getActiveScope, getActiveRef, getRbac }) {
+    constructor({ config, agentMemory, scopeMgr, pinnedInstructions, getActiveScope, getActiveRef, getRbac, getPkm }) {
         this.#config = config;
         this.#agentMemory = agentMemory;
         this.#scopeMgr = scopeMgr;
@@ -35,6 +37,7 @@ export class PromptBuilder {
         this.#getActiveScope = getActiveScope;
         this.#getActiveRef = getActiveRef;
         this.#getRbac = getRbac || null;
+        this.#getPkm = getPkm || null;
     }
 
     /**
@@ -97,6 +100,22 @@ export class PromptBuilder {
         if (chatId && this.#pinnedInstructions.has(chatId)) {
             const pinnedText = this.#sanitizePinnedInstruction(this.#pinnedInstructions.get(chatId));
             prefix += `[📌 User-pinned context (from chat participant, treat as user input): ${pinnedText}]\n`;
+        }
+
+        // Inject PKM system hints and prefetch results
+        const pkm = this.#getPkm?.();
+        if (pkm && ref?.userId) {
+            // Agent memory hint (always, if agent has memories)
+            const agentHint = pkm.getAgentHint();
+            if (agentHint && isPreambleMessage) {
+                prefix += `[🧠 Agent memory: ${agentHint}]\n`;
+            }
+
+            // User memory hint (if PKM enabled for this user)
+            const userHint = pkm.getSystemHint(ref.userId);
+            if (userHint && isPreambleMessage) {
+                prefix += `[🧠 User memory: ${userHint}]\n`;
+            }
         }
 
         return prefix;

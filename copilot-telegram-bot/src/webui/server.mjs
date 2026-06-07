@@ -52,8 +52,8 @@ export class WebUIServer {
      * Attach bot internals so API routes can access them.
      * Call this before start().
      */
-    attach({ bridge, orchestrator, scopeMgr, config, acp, telegram, startedAt, pairing }) {
-        this.#ctx = { bridge, orchestrator, scopeMgr, config, acp, telegram, startedAt, pairing };
+    attach({ bridge, orchestrator, scopeMgr, config, acp, telegram, startedAt, pairing, pkm }) {
+        this.#ctx = { bridge, orchestrator, scopeMgr, config, acp, telegram, startedAt, pairing, pkm };
     }
 
     /**
@@ -359,6 +359,23 @@ export class WebUIServer {
         // GET /api/rbac/audit — get audit log entries
         if (pathname === "/api/rbac/audit" && method === "GET") {
             return this.#apiRbacGetAudit(res, params);
+        }
+
+        // ── PKM API ────────────────────────────────────────────────
+        if (pathname.startsWith("/api/pkm/")) {
+            const pkm = this.#ctx.pkm;
+            if (!pkm) return this.#json(res, 503, { error: "PKM system not available" });
+
+            // Resolve user context from X-Scope-Key header (set by MCP server)
+            const scopeKey = req.headers["x-scope-key"] || "";
+            const pkmContext = this.#resolvePkmContext(scopeKey);
+
+            const body = (method === "POST" || method === "PUT" || method === "DELETE")
+                ? await this.#readBody(req)
+                : {};
+
+            const { status, data } = pkm.handleApi(method, pathname, body, pkmContext);
+            return this.#json(res, status, data);
         }
 
         this.#json(res, 404, { error: "Not found" });
@@ -1089,6 +1106,35 @@ export class WebUIServer {
     }
 
     // ── Helpers ─────────────────────────────────────────────────
+
+    /** Resolve PKM user context from a scope key (e.g. "dm:430432097" or "group:-123456") */
+    #resolvePkmContext(scopeKey) {
+        if (!scopeKey) {
+            // Fallback: try to get from active scope
+            const bridge = this.#ctx.bridge;
+            const ref = bridge?.getActiveRef?.();
+            return {
+                userId: ref?.userId ? String(ref.userId) : null,
+                chatId: ref?.chatId ? String(ref.chatId) : null,
+                chatType: ref?.chatType || "dm",
+            };
+        }
+        // Parse scope key: "dm:userId", "group:chatId", "standing:chatId"
+        const parts = scopeKey.split(":");
+        const scopeType = parts[0];
+        const scopeId = parts.slice(1).join(":");
+        if (scopeType === "dm") {
+            return { userId: scopeId, chatId: scopeId, chatType: "dm" };
+        }
+        if (scopeType === "group" || scopeType === "supergroup") {
+            return { userId: null, chatId: scopeId, chatType: scopeType };
+        }
+        // Standing instruction context — agent-only, no user
+        if (scopeType === "standing") {
+            return { userId: null, chatId: scopeId, chatType: "standing" };
+        }
+        return { userId: scopeId || null, chatId: null, chatType: "dm" };
+    }
 
     #json(res, status, data = null) {
         res.writeHead(status, {

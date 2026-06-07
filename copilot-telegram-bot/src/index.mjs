@@ -22,6 +22,7 @@ import { createLogger, setLogLevel } from "./logger.mjs";
 import { eventLog } from "./core/event-log.mjs";
 import { metrics } from "./core/metrics.mjs";
 import { ensureCopilotBinary, ensureCopilotConfigDir } from "./copilot-bootstrap.mjs";
+import { PkmManager } from "./pkm/index.mjs";
 
 // --- Set timezone from HA system before any Date operations ---
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
@@ -262,6 +263,17 @@ async function main() {
     bridge.standingOrchestrator = orchestrator;
     _orchestrator = orchestrator;
 
+    // --- PKM (Personal Knowledge Management) ---
+    let pkm = null;
+    try {
+        pkm = new PkmManager({ dbPath: "/data/pkm.db" });
+        pkm.start();
+        bridge.pkm = pkm;
+        log.info("PKM system initialized");
+    } catch (err) {
+        log.warn(`PKM system failed to initialize: ${err.message}. Memory features disabled.`);
+    }
+
     // Start Telegram polling FIRST so the bot can send/receive messages
     // during login flow
     log.info("Starting Telegram polling...");
@@ -299,6 +311,7 @@ async function main() {
         telegram,
         startedAt: Date.now(),
         pairing,
+        pkm,
     });
     webui.start().catch(err => {
         log.error(`Web UI server failed to start: ${err.message}`);

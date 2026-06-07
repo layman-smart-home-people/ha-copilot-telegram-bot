@@ -726,6 +726,59 @@ export async function handleSlashCommand(ctx, command, args) {
                 telegram.enqueue(() => telegram.sendMessage(chatId, text, "HTML"));
                 return true;
             }
+            case "memory": {
+                const pkm = ctx.pkm;
+                if (!pkm) {
+                    reply("🧠 Memory system is not available.");
+                    return true;
+                }
+                if (!ref?.userId) {
+                    reply("🧠 Cannot determine user identity.");
+                    return true;
+                }
+                const sub = args.split(/\s+/)[0]?.toLowerCase() || "";
+                const userId = String(ref.userId);
+
+                if (sub === "enable") {
+                    pkm.store.enableUser(userId);
+                    reply("🧠 ✅ Memory enabled! I'll start learning from our conversations.\n\nUse /memory disable to turn off.");
+                    return true;
+                }
+                if (sub === "disable") {
+                    pkm.store.disableUser(userId);
+                    reply("🧠 Memory disabled. I won't store new memories.\n\nExisting memories are preserved. Use /memory delete to remove them.");
+                    return true;
+                }
+                if (sub === "stats") {
+                    const count = pkm.store.getNoteCount(userId);
+                    const enabled = pkm.store.isEnabled(userId);
+                    reply(`🧠 **Memory Stats**\n• Status: ${enabled ? "✅ Enabled" : "❌ Disabled"}\n• Memories: ${count}`);
+                    return true;
+                }
+                if (sub === "delete") {
+                    const subArg = args.split(/\s+/)[1]?.toLowerCase();
+                    if (subArg === "all") {
+                        pkm.store.deleteAllNotes(userId);
+                        reply("🧠 🗑️ All your memories have been securely deleted.");
+                    } else {
+                        reply("🧠 Usage: /memory delete all\n\n⚠️ This permanently deletes all your stored memories.");
+                    }
+                    return true;
+                }
+                // Default: show help
+                const enabled = pkm.store.isEnabled(userId);
+                const count = pkm.store.getNoteCount(userId);
+                reply(
+                    `🧠 **Memory System**\n` +
+                    `Status: ${enabled ? "✅ Enabled" : "❌ Disabled"} | ${count} memories\n\n` +
+                    `Commands:\n` +
+                    `• /memory enable — start learning\n` +
+                    `• /memory disable — stop learning\n` +
+                    `• /memory stats — show stats\n` +
+                    `• /memory delete all — erase all memories`
+                );
+                return true;
+            }
             default:
                 return false; // Unknown command — fall through to prompt
         }

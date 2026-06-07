@@ -2,6 +2,22 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.61.0] — 2026-06-08
+
+### Added — PKM (Personal Knowledge Management) Phase 1
+- **Core memory system** — SQLite-backed long-term memory with FTS5 full-text search, per-user privacy isolation, and secure deletion
+- **6 new modules**: `store.mjs` (schema + CRUD), `security.mjs` (scrubbing + injection defense), `extractor.mjs` (conversation window tracking + extraction pipeline), `search.mjs` (FTS5 + prefetch + deep recall), `pkm-mcp-server.mjs` (10 MCP tools), `index.mjs` (coordinator)
+- **10 MCP tools**: `pkm_search`, `pkm_write`, `pkm_read`, `pkm_update`, `pkm_delete`, `pkm_recent`, `pkm_stats`, `pkm_settings`, `pkm_agent_search`, `pkm_agent_write`
+- **RBAC integration** — `pkm:read`, `pkm:write`, `pkm:admin` capabilities with role-based defaults
+- **Conversation tracking** — User and agent messages tracked in conversation windows for future extraction
+- **Prompt builder PKM hints** — Agent and user memory hints injected into preamble when PKM is enabled
+- **REST API** — `/api/pkm/*` routes in webui server for MCP server communication
+- **/memory command** — `/memory enable|disable|stats|delete all` for user self-service
+- **Secure deletion** — `PRAGMA secure_delete`, FTS5 secure-delete mode, WAL checkpoint for forensic-grade data removal
+- **Sensitive content scrubbing** — Credit cards, passwords, OTPs, API keys, and tokens automatically scrubbed before storage
+- **Prompt injection defense** — 4-layer detection (system prompt manipulation, role-play attacks, output override, data exfiltration)
+- **Agent private memory** — Separate memory scope for agent's own operational knowledge, bootstrapped from MEMORY.md
+
 ## [0.60.0] — 2026-06-07
 
 ### Fixed (RBAC UX Audit)

@@ -154,6 +154,7 @@ export class Orchestrator {
             getActiveScope: () => this.#activeScope,
             getActiveRef: () => this.#activeRef,
             getRbac: () => this.#pairing,
+            getPkm: () => this.pkm,
         });
 
         this.#statusMenu = new StatusMenu({
@@ -231,6 +232,7 @@ export class Orchestrator {
     get agentMemory() { return this.#agentMemory; }
     get acpMgr() { return this.#acpMgr; }
     standingOrchestrator = null;
+    pkm = null; // Set externally after construction
     get allowAll() { return this.#activeScope?.allowAll ?? false; }
     set allowAll(v) {
         const val = !!v;
@@ -1188,6 +1190,7 @@ export class Orchestrator {
             acpLastMessageAge: this.#acp?.lastMessageAt ? Math.round((Date.now() - this.#acp.lastMessageAt) / 1000) : null,
             acpLastMessageType: this.#acp?.lastMessageType || null,
             queueDepth: this.#promptQueue.length,
+            pkm: this.pkm,
         };
     }
 
@@ -1561,6 +1564,15 @@ export class Orchestrator {
                 if (handled) return;
             }
             // Unknown command — fall through to prompt
+        }
+
+        // Track user message for PKM (before prefix is prepended)
+        if (this.pkm && text.trim()) {
+            try {
+                this.pkm.trackMessage(String(userId), String(chatId), text, "user");
+            } catch (err) {
+                log.debug(`PKM track failed: ${err.message}`);
+            }
         }
 
         // Start typing
@@ -1947,6 +1959,18 @@ export class Orchestrator {
             await this.#finalizeComposer();
             this.#stopTyping();
             if (scope) scope.activeTools.clear();
+
+            // Track agent response for PKM (after composer finalized, so we get full text)
+            if (this.pkm && ref?.userId && scope?.history?.length) {
+                try {
+                    const lastEntry = scope.history[scope.history.length - 1];
+                    if (lastEntry?.role === "bot" && lastEntry.text) {
+                        this.pkm.trackMessage(String(ref.userId), String(ref.chatId), lastEntry.text, "agent");
+                    }
+                } catch (err) {
+                    log.debug(`PKM agent track failed: ${err.message}`);
+                }
+            }
 
             this.#promptActive = false;
             this.#activeRef = null;

@@ -51,6 +51,9 @@ export const ALL_CAPABILITIES = new Set([
     "agent:memory",
     "background:task",
     "reminder:manage",
+    "pkm:read",
+    "pkm:write",
+    "pkm:admin",
 ]);
 
 // Capability → tool mapping
@@ -114,6 +117,15 @@ const CAPABILITY_TOOLS = {
     "reminder:manage": [
         // Reminder tools — checked contextually
     ],
+    "pkm:read": [
+        "pkm_search", "pkm_get", "pkm_recent", "pkm_stats", "pkm_settings",
+    ],
+    "pkm:write": [
+        "pkm_write", "pkm_update", "pkm_delete",
+    ],
+    "pkm:admin": [
+        // Admin PKM stats — checked contextually
+    ],
 };
 
 // Build reverse map: toolName → capability
@@ -159,6 +171,7 @@ const DEFAULT_ROLES = {
             "dashboard:read", "dashboard:write", "si:manage:all",
             "user:manage", "role:manage", "system:manage",
             "dev:tools", "agent:memory", "background:task", "reminder:manage",
+            "pkm:read", "pkm:write", "pkm:admin",
         ],
         builtin: true,
         icon: "🛡️",
@@ -171,6 +184,7 @@ const DEFAULT_ROLES = {
             "entity:read", "entity:search", "entity:control:safe",
             "automation:read", "dashboard:read",
             "si:manage:own", "reminder:manage",
+            "pkm:read", "pkm:write",
         ],
         builtin: true,
         icon: "👤",
