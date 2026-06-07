@@ -6,6 +6,7 @@ import LogViewer from "./components/LogViewer";
 import ConfigEditor from "./components/ConfigEditor";
 import SystemInfo from "./components/SystemInfo";
 import ChatPanel from "./components/ChatPanel";
+import UsersRoles from "./components/UsersRoles";
 import Toast from "./components/Toast";
 import ErrorCollector from "./components/ErrorCollector";
 
@@ -13,6 +14,7 @@ const TABS = [
   { id: "dashboard", label: "📊 Dashboard" },
   { id: "chat", label: "💬 Chat" },
   { id: "instructions", label: "📋 Instructions" },
+  { id: "users", label: "🔐 Users" },
   { id: "docs", label: "📚 Docs" },
   { id: "logs", label: "📜 Logs" },
   { id: "config", label: "⚙️ Config" },
@@ -73,6 +75,7 @@ export default function App() {
         {activeTab === "instructions" && (
           <Instructions toast={toast} onCountChange={setInstrCount} />
         )}
+        {activeTab === "users" && <UsersRoles toast={toast} />}
         {activeTab === "docs" && <DocsEditor toast={toast} />}
         {activeTab === "logs" && <LogViewer toast={toast} />}
         {activeTab === "config" && <ConfigEditor toast={toast} />}

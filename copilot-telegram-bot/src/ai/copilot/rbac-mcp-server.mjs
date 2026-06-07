@@ -159,6 +159,67 @@ const TOOLS = [
             required: ["role"],
         },
     },
+    {
+        name: "rbac_list_overrides",
+        description:
+            "List per-entity access overrides. Overrides grant or deny specific capabilities on specific entities " +
+            "(e.g., deny 'entity:control:safe' on 'lock.*' for role 'guest'). Supports optional filters.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                entity_id: { type: "string", description: "Filter by entity ID or domain wildcard (e.g., 'light.bedroom', 'climate.*')" },
+                target_type: { type: "string", enum: ["user", "role"], description: "Filter by target type" },
+                target_id: { type: "string", description: "Filter by target ID (role name or user ID)" },
+            },
+        },
+    },
+    {
+        name: "rbac_set_override",
+        description:
+            "Add or update a per-entity access override. Overrides let you grant or deny specific capabilities " +
+            "on specific entities for a role or user. Deny always wins over base role capabilities. " +
+            "Entity can be a specific ID (light.bedroom) or domain wildcard (climate.*).",
+        inputSchema: {
+            type: "object",
+            properties: {
+                entity_id: { type: "string", description: "Entity ID or domain wildcard (e.g., 'light.bedroom', 'lock.*')" },
+                target_type: { type: "string", enum: ["user", "role"], description: "Whether this override applies to a user or role" },
+                target_id: { type: "string", description: "Role name (e.g., 'guest') or user ID (e.g., '12345')" },
+                grants: { type: "array", items: { type: "string" }, description: "Capabilities to grant on this entity" },
+                denies: { type: "array", items: { type: "string" }, description: "Capabilities to deny on this entity (deny wins over base role)" },
+            },
+            required: ["entity_id", "target_type", "target_id"],
+        },
+    },
+    {
+        name: "rbac_delete_override",
+        description: "Remove a per-entity access override.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                entity_id: { type: "string", description: "Entity ID or domain wildcard" },
+                target_type: { type: "string", enum: ["user", "role"], description: "Target type" },
+                target_id: { type: "string", description: "Role name or user ID" },
+            },
+            required: ["entity_id", "target_type", "target_id"],
+        },
+    },
+    {
+        name: "rbac_get_audit_log",
+        description:
+            "View the RBAC audit log — records of all permission changes (role grants, revokes, overrides, invites). " +
+            "Supports pagination and filtering. Newest entries first.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                limit: { type: "number", description: "Max entries to return (default: 20, max: 200)" },
+                offset: { type: "number", description: "Skip this many entries (for pagination)" },
+                event: { type: "string", description: "Filter by event type: ROLE_GRANT, ROLE_REVOKE, ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE, ROLE_EXPIRE, OVERRIDE_ADD, OVERRIDE_REMOVE, INVITE_CREATE, INVITE_USE" },
+                actor: { type: "string", description: "Filter by actor (user ID or 'system')" },
+                target: { type: "string", description: "Filter by target (user ID, role name, etc.)" },
+            },
+        },
+    },
 ];
 
 // ── REST API helpers ────────────────────────────────────────
@@ -326,6 +387,79 @@ async function handleTool(name, args) {
                     return ok(`🔗 Invite created for role: ${role}\n\nToken: ${data.token}\nDeep link: /start invite_${data.token}\n\n${JSON.stringify(data, null, 2)}`);
                 }
                 return err(`Error (${status}): ${data?.error || JSON.stringify(data)}`);
+            }
+
+            case "rbac_list_overrides": {
+                const { entity_id, target_type, target_id } = args || {};
+                const qs = new URLSearchParams();
+                if (entity_id) qs.set("entity_id", entity_id);
+                if (target_type) qs.set("target_type", target_type);
+                if (target_id) qs.set("target_id", target_id);
+                const qStr = qs.toString();
+                const path = "/api/rbac/overrides" + (qStr ? `?${qStr}` : "");
+                const { status, data } = await apiCall("GET", path);
+                if (status === 200) {
+                    if (!Array.isArray(data) || data.length === 0) {
+                        return ok("No overrides configured.");
+                    }
+                    const summary = data.map(o => {
+                        const g = o.grants?.length ? ` grants: ${o.grants.join(", ")}` : "";
+                        const d = o.denies?.length ? ` denies: ${o.denies.join(", ")}` : "";
+                        return `• ${o.entity_id} → ${o.target_type}:${o.target_id}${g}${d}`;
+                    }).join("\n");
+                    return ok(`${data.length} override(s):\n\n${summary}\n\nFull data:\n${JSON.stringify(data, null, 2)}`);
+                }
+                return err(`API error (${status}): ${data?.error || JSON.stringify(data)}`);
+            }
+
+            case "rbac_set_override": {
+                const { entity_id, target_type, target_id, grants, denies } = args || {};
+                if (!entity_id) return err("entity_id is required");
+                if (!target_type) return err("target_type is required");
+                if (!target_id) return err("target_id is required");
+                const body = { entity_id, target_type, target_id, grants, denies };
+                const { status, data } = await apiCall("POST", "/api/rbac/overrides", body);
+                if (status === 201) {
+                    return ok(`✅ Override set: ${target_type}:${target_id} on ${entity_id}\n\n${JSON.stringify(data, null, 2)}`);
+                }
+                return err(`Error (${status}): ${data?.error || JSON.stringify(data)}`);
+            }
+
+            case "rbac_delete_override": {
+                const { entity_id, target_type, target_id } = args || {};
+                if (!entity_id) return err("entity_id is required");
+                if (!target_type) return err("target_type is required");
+                if (!target_id) return err("target_id is required");
+                const body = { entity_id, target_type, target_id };
+                const { status, data } = await apiCall("DELETE", "/api/rbac/overrides", body);
+                if (status === 204) return ok(`🗑️ Override removed: ${target_type}:${target_id} on ${entity_id}`);
+                if (status === 404) return err("Override not found");
+                return err(`Error (${status}): ${data?.error || JSON.stringify(data)}`);
+            }
+
+            case "rbac_get_audit_log": {
+                const { limit, offset, event, actor, target } = args || {};
+                const qs = new URLSearchParams();
+                if (limit) qs.set("limit", String(limit));
+                if (offset) qs.set("offset", String(offset));
+                if (event) qs.set("event", event);
+                if (actor) qs.set("actor", String(actor));
+                if (target) qs.set("target", String(target));
+                const qStr = qs.toString();
+                const path = "/api/rbac/audit" + (qStr ? `?${qStr}` : "");
+                const { status, data } = await apiCall("GET", path);
+                if (status === 200) {
+                    const entries = data.entries || [];
+                    if (entries.length === 0) {
+                        return ok(`No audit log entries found (total: ${data.total || 0}).`);
+                    }
+                    const summary = entries.slice(0, 20).map(e => {
+                        const ts = e.timestamp?.slice(0, 19).replace("T", " ") || "?";
+                        return `[${ts}] ${e.event} — actor: ${e.actor}, target: ${e.target}`;
+                    }).join("\n");
+                    return ok(`Audit log (${entries.length}/${data.total} entries):\n\n${summary}\n\nFull data:\n${JSON.stringify(data, null, 2)}`);
+                }
+                return err(`API error (${status}): ${data?.error || JSON.stringify(data)}`);
             }
 
             default:

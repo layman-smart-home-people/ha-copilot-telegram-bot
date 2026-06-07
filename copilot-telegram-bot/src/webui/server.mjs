@@ -328,6 +328,28 @@ export class WebUIServer {
             return this.#apiRbacCreateInvite(res, body);
         }
 
+        // GET /api/rbac/overrides — list overrides
+        if (pathname === "/api/rbac/overrides" && method === "GET") {
+            return this.#apiRbacListOverrides(res, params);
+        }
+
+        // POST /api/rbac/overrides — add/update override
+        if (pathname === "/api/rbac/overrides" && method === "POST") {
+            const body = await this.#readBody(req);
+            return this.#apiRbacSetOverride(res, body);
+        }
+
+        // DELETE /api/rbac/overrides — remove override
+        if (pathname === "/api/rbac/overrides" && method === "DELETE") {
+            const body = await this.#readBody(req);
+            return this.#apiRbacDeleteOverride(res, body);
+        }
+
+        // GET /api/rbac/audit — get audit log entries
+        if (pathname === "/api/rbac/audit" && method === "GET") {
+            return this.#apiRbacGetAudit(res, params);
+        }
+
         this.#json(res, 404, { error: "Not found" });
     }
 
@@ -1273,6 +1295,63 @@ export class WebUIServer {
         } catch (err) {
             return this.#json(res, 400, { error: err.message });
         }
+    }
+
+    #apiRbacListOverrides(res, params) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const filters = {};
+        if (params.entity_id) filters.entity_id = params.entity_id;
+        if (params.target_type) filters.target_type = params.target_type;
+        if (params.target_id) filters.target_id = params.target_id;
+        return this.#json(res, 200, rbac.getOverrides(filters));
+    }
+
+    #apiRbacSetOverride(res, body) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        try {
+            const { entity_id, target_type, target_id, grants, denies } = body || {};
+            if (!entity_id) return this.#json(res, 400, { error: "entity_id is required" });
+            if (!target_type) return this.#json(res, 400, { error: "target_type is required" });
+            if (!target_id) return this.#json(res, 400, { error: "target_id is required" });
+
+            rbac.addOverride({ entity_id, target_type, target_id, grants, denies });
+            return this.#json(res, 201, { entity_id, target_type, target_id, grants, denies });
+        } catch (err) {
+            return this.#json(res, 400, { error: err.message });
+        }
+    }
+
+    #apiRbacDeleteOverride(res, body) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const { entity_id, target_type, target_id } = body || {};
+        if (!entity_id || !target_type || !target_id) {
+            return this.#json(res, 400, { error: "entity_id, target_type, and target_id are required" });
+        }
+        const removed = rbac.removeOverride(entity_id, target_type, target_id);
+        if (!removed) return this.#json(res, 404, { error: "Override not found" });
+        return this.#json(res, 204, null);
+    }
+
+    #apiRbacGetAudit(res, params) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const limit = Math.min(parseInt(params.limit) || 50, 200);
+        const offset = parseInt(params.offset) || 0;
+        const result = rbac.getAuditLog({
+            limit,
+            offset,
+            event: params.event || undefined,
+            actor: params.actor || undefined,
+            target: params.target || undefined,
+        });
+        return this.#json(res, 200, result);
     }
 
     async #readBody(req) {

@@ -5,7 +5,7 @@
 // per-entity overrides, and delegation boundaries.
 // Backward-compatible API: isPaired(), isAdmin(), etc.
 
-import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, renameSync, appendFileSync, statSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { createLogger } from "../logger.mjs";
 
@@ -16,6 +16,8 @@ const log = createLogger("rbac");
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const CODE_LENGTH = 6;
 const CODE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const AUDIT_MAX_LINES = 10000;
+const AUDIT_TRIM_TO = 7500; // trim to this when exceeding max
 
 // Safe domains — controllable by entity:control:safe
 export const SAFE_DOMAINS = new Set([
@@ -187,6 +189,7 @@ const DEFAULT_ROLES = {
 
 export class RBACManager {
     #persistPath;
+    #auditPath;
     #roles = {};           // roleName → { rank, inherits, capabilities[], builtin, icon, description }
     #users = new Map();    // userId → { username, displayName, role, pairedAt, pairedBy, expiresAt }
     #overrides = [];       // [{ entity_id, target_type, target_id, grants[], denies[] }]
@@ -198,6 +201,7 @@ export class RBACManager {
 
     constructor({ persistPath, preApprovedIds = [] }) {
         this.#persistPath = persistPath;
+        this.#auditPath = persistPath.replace(/\.json$/, "-audit.log");
         this.#adminIds = new Set(preApprovedIds.map(Number));
         this.#load();
 
@@ -275,10 +279,12 @@ export class RBACManager {
         userId = Number(userId);
         // Cannot revoke pre-approved admin (owner) users
         if (this.#adminIds.has(userId)) return false;
+        const user = this.#users.get(userId);
         const existed = this.#users.delete(userId);
         if (existed) {
             this.#invalidateCapabilityCache();
             this.#save();
+            this.audit("ROLE_REVOKE", "system", userId, { previousRole: user?.role });
         }
         return existed;
     }
@@ -588,6 +594,7 @@ export class RBACManager {
         }
 
         const existing = this.#users.get(userId);
+        const previousRole = existing?.role || null;
         this.#users.set(userId, {
             username: existing?.username || opts.username || null,
             displayName: opts.displayName !== undefined ? opts.displayName : (existing?.displayName || null),
@@ -602,6 +609,9 @@ export class RBACManager {
 
         this.#invalidateCapabilityCache();
         this.#save();
+        this.audit("ROLE_GRANT", opts.pairedBy || "system", userId, {
+            role, previousRole, expiresAt: opts.expiresAt || null,
+        });
         log.info(`User ${userId} assigned role: ${role}`);
     }
 
@@ -640,6 +650,7 @@ export class RBACManager {
 
         this.#invalidateCapabilityCache();
         this.#save();
+        this.audit("ROLE_CREATE", "system", name, { rank, inherits, capabilities, icon, description });
         log.info(`Created role: ${name} (rank ${rank})`);
     }
 
@@ -675,6 +686,7 @@ export class RBACManager {
 
         this.#invalidateCapabilityCache();
         this.#save();
+        this.audit("ROLE_UPDATE", "system", name, updates);
         log.info(`Updated role: ${name}`);
     }
 
@@ -701,6 +713,7 @@ export class RBACManager {
         delete this.#roles[name];
         this.#invalidateCapabilityCache();
         this.#save();
+        this.audit("ROLE_DELETE", "system", name, {});
         log.info(`Deleted role: ${name}`);
     }
 
@@ -723,9 +736,13 @@ export class RBACManager {
     // Override management (Phase 4 will expand)
     // ==============================
 
-    /** Get all overrides. */
-    getOverrides() {
-        return [...this.#overrides];
+    /** Get all overrides, optionally filtered. */
+    getOverrides(filters = {}) {
+        let result = [...this.#overrides];
+        if (filters.entity_id) result = result.filter(o => o.entity_id === filters.entity_id);
+        if (filters.target_type) result = result.filter(o => o.target_type === filters.target_type);
+        if (filters.target_id) result = result.filter(o => o.target_id === filters.target_id);
+        return result;
     }
 
     /** Add or update an override. */
@@ -746,6 +763,7 @@ export class RBACManager {
 
         this.#overrides.push({ entity_id, target_type, target_id, grants, denies });
         this.#save();
+        this.audit("OVERRIDE_ADD", "system", `${target_type}:${target_id}`, { entity_id, grants, denies });
         log.info(`Override added: ${target_type}:${target_id} on ${entity_id}`);
     }
 
@@ -757,6 +775,7 @@ export class RBACManager {
         );
         if (this.#overrides.length < before) {
             this.#save();
+            this.audit("OVERRIDE_REMOVE", "system", `${target_type}:${target_id}`, { entity_id });
             return true;
         }
         return false;
@@ -781,6 +800,7 @@ export class RBACManager {
             usedBy: null,
         };
         this.#save();
+        this.audit("INVITE_CREATE", createdBy || "system", role, { expiresAt, roleExpiresAt });
         return token;
     }
 
@@ -793,6 +813,7 @@ export class RBACManager {
 
         invite.usedBy = { userId, usedAt: new Date().toISOString() };
         this.#save();
+        this.audit("INVITE_USE", userId, invite.role, { token: token.slice(0, 8) + "..." });
         return { role: invite.role, roleExpiresAt: invite.roleExpiresAt };
     }
 
@@ -919,9 +940,73 @@ export class RBACManager {
             if (user.expiresAt && new Date(user.expiresAt) < now && !this.#expiryNotified.has(userId)) {
                 expired.push({ userId, username: user.username, displayName: user.displayName, role: user.role });
                 this.#expiryNotified.add(userId);
+                this.audit("ROLE_EXPIRE", "system", userId, { role: user.role });
             }
         }
         return expired;
+    }
+
+    // ==============================
+    // Audit log
+    // ==============================
+
+    /** Append an event to the audit log. */
+    audit(event, actor, target, details = {}) {
+        const entry = {
+            timestamp: new Date().toISOString(),
+            event,
+            actor: String(actor),
+            target: String(target),
+            details,
+        };
+        try {
+            appendFileSync(this.#auditPath, JSON.stringify(entry) + "\n");
+        } catch (err) {
+            log.error(`Audit log write failed: ${err.message}`);
+        }
+        // Rotate if needed (async-safe — just check size occasionally)
+        this.#maybeRotateAuditLog();
+    }
+
+    /** Read audit log entries with optional filters and pagination. */
+    getAuditLog({ limit = 50, offset = 0, event, actor, target } = {}) {
+        if (!existsSync(this.#auditPath)) return { entries: [], total: 0 };
+        try {
+            const raw = readFileSync(this.#auditPath, "utf-8");
+            let lines = raw.split("\n").filter(l => l.trim());
+            let entries = [];
+            for (const line of lines) {
+                try { entries.push(JSON.parse(line)); } catch { /* skip malformed */ }
+            }
+            // Newest first
+            entries.reverse();
+            // Apply filters
+            if (event) entries = entries.filter(e => e.event === event);
+            if (actor) entries = entries.filter(e => String(e.actor) === String(actor));
+            if (target) entries = entries.filter(e => String(e.target) === String(target));
+            const total = entries.length;
+            return { entries: entries.slice(offset, offset + limit), total };
+        } catch (err) {
+            log.error(`Audit log read failed: ${err.message}`);
+            return { entries: [], total: 0 };
+        }
+    }
+
+    #maybeRotateAuditLog() {
+        try {
+            if (!existsSync(this.#auditPath)) return;
+            const stat = statSync(this.#auditPath);
+            // Only check if file > 500KB (rough proxy for line count)
+            if (stat.size < 512 * 1024) return;
+            const raw = readFileSync(this.#auditPath, "utf-8");
+            const lines = raw.split("\n").filter(l => l.trim());
+            if (lines.length <= AUDIT_MAX_LINES) return;
+            const trimmed = lines.slice(-AUDIT_TRIM_TO).join("\n") + "\n";
+            writeFileSync(this.#auditPath, trimmed);
+            log.info(`Audit log rotated: ${lines.length} → ${AUDIT_TRIM_TO} entries`);
+        } catch (err) {
+            log.error(`Audit log rotation failed: ${err.message}`);
+        }
     }
 
     // ==============================

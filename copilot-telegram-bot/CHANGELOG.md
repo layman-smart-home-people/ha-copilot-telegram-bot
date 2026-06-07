@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.59.0] — 2026-06-07
+
+### Added
+- **Audit log** — Append-only JSONL audit trail at `/data/rbac-audit.log`. Records all RBAC mutations: role grants/revokes, role CRUD, overrides, invites, expiry events. Supports paginated reads with filtering by event/actor/target. Auto-rotates at 10K entries.
+- **Override MCP tools** — 4 new agent-callable tools: `rbac_list_overrides`, `rbac_set_override`, `rbac_delete_override`, `rbac_get_audit_log`.
+- **Override REST API** — `GET/POST/DELETE /api/rbac/overrides` and `GET /api/rbac/audit` endpoints.
+- **WebUI "Users & Roles" tab** — Full RBAC management UI with sub-tabs for Users (edit/revoke), Roles (create/delete/inspect), Overrides (create/delete), Audit log (paginated viewer), and Invites (link generator).
+- **Filtered override queries** — `getOverrides()` now accepts optional entity_id/target_type/target_id filters.
+
+### Fixed
+- Audit log rotation threshold lowered from 1MB to 512KB to ensure rotation fires before 10K-line limit.
+
 ## [0.58.0] — 2026-06-07
 
 ### Added
