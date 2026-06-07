@@ -73,155 +73,23 @@ The agent should periodically distill key information from daily logs into this 
 
 const SKILLS_DEFAULT = `# Agent Skills Reference
 
-## MCP Tools (ha-mcp)
-
-You have 80+ MCP tools for Home Assistant. **Always use these instead of curl** — they handle auth, pagination, and error formatting automatically. Full schemas are already in your tool definitions.
-
-### Finding tools
-Use \`tool_search_tool_regex\` to discover tools by pattern:
-- \`ha_.*service\` → service-related tools
-- \`ha_.*entit\` → entity tools
-- \`ha_.*automat\` → automation tools
-- \`ha_.*dashboard\` → dashboard tools
-
-### Most-used tools
-- \`ha_get_state\` — get current state & attributes of one or more entities
-- \`ha_search_entities\` — fuzzy search entities by name, domain, area, label
-- \`ha_call_service\` — call any HA service (light.turn_on, climate.set_temperature, etc.)
-- \`ha_bulk_control\` — control multiple devices in one call
-- \`ha_get_history\` — entity state history over a time range
-- \`ha_eval_template\` — render Jinja2 templates server-side
-- \`ha_config_get_automation\` / \`ha_config_set_automation\` — read/write automations
-- \`ha_config_get_dashboard\` — get live dashboard config + config_hash
-- \`ha_config_set_dashboard\` — update dashboard (supports python_transform for surgical edits)
-- \`ha_get_overview\` — system-wide overview of areas, devices, entities
-- \`ha_deep_search\` — search inside automation/script/dashboard configs for entity references
-- \`ha_check_config\` / \`ha_reload_core\` — validate config and reload domains
-
-### All tool categories (search to discover)
-- **Entities & state** — get, search, set, remove, history
-- **Services & control** — call, bulk control, list services, fire events
-- **Automations, scripts, scenes** — full CRUD + traces
-- **Dashboards & resources** — get/set config, manage JS/CSS resources
-- **Helpers** — input_boolean, input_number, input_select, etc.
-- **Areas, floors, zones, labels, groups, categories** — organize topology
-- **Devices & integrations** — registry, enable/disable
-- **Calendar & todo** — events and task lists
-- **HACS & add-ons** — search, install, manage
-- **System** — health, logs, restart, reload, backups, YAML config, blueprints, energy, updates
-
----
+## MCP Tools
+Use \`tool_search_tool_regex\` to discover HA tools by pattern (e.g. \`ha_.*service\`). Schemas are self-documenting.
 
 ## Telegram UX — \`tg-ux-ask_user\`
-
-Present inline buttons or free-text input to the user. Use **whenever the user needs to choose between options**.
-
-\`\`\`
-tg-ux-ask_user({
-  message: "Which room?",
-  options: [
-    { label: "🛋️ Living room", value: "living_room" },
-    { label: "🛏️ Bedroom", value: "bedroom" }
-  ]
-})
-\`\`\`
-
-- \`message\` (required): question text
-- \`options\` (optional): array of \`{label, value}\`. Omit for free-text input.
-- Bot auto-appends "✏️ Something else" + "❌ Cancel" buttons — don't add these yourself.
-- Keep to 2–5 options. Use emoji in labels.
-
----
+\`{message, options: [{label, value}]}\`. Bot auto-appends "✏️ Something else" + "❌ Cancel". Keep 2–5 options with emoji. Omit \`options\` for free-text.
 
 ## Standing Instructions — \`si_*\` MCP tools
+Tools: \`si_create\`, \`si_list\`, \`si_get\`, \`si_update\`, \`si_delete\`, \`si_toggle\`. NEVER edit the JSON file directly.
+- Triggers: \`state_change\`, \`cron\`, \`timer\`
+- Actions: \`wake_agent\`, \`notify\`, \`ha_service\`, \`evaluate\`
+- Key options: \`conditions\`, \`cooldown_seconds\`, \`one_shot\`, \`chain_enable\`, \`expires_at\`, \`max_triggers\`
+- Default \`one_shot: true\` for reactive requests unless user says "always"
 
-Manage automated alerts, reminders, and scheduled tasks. **Always use these tools — NEVER edit \`/data/standing_instructions.json\` directly.** Direct file edits bypass validation and cause silent failures.
-
-### Tools
-- **\`si_create\`** — create a new instruction (bot validates and auto-fills \`created_at\`, etc.). Accepts optional \`id\` for custom IDs (useful for chaining); auto-generates UUID if omitted.
-- **\`si_list\`** — list all instructions with status
-- **\`si_get\`** — get one by ID
-- **\`si_update\`** — modify an existing instruction (partial update — only send changed fields)
-- **\`si_delete\`** — remove an instruction
-- **\`si_toggle\`** — enable/disable an instruction
-
-### Required fields for \`si_create\`
-- \`description\` (string) — what this instruction does
-- \`trigger\` — one of:
-  - \`state_change\`: \`entity_id\` (string or array), optional \`to\`, \`from\`, \`above\`, \`below\`, \`attribute\`
-  - \`cron\`: \`expression\` (5-field cron string, e.g. \`"0 6 * * *"\`)
-  - \`timer\`: \`fire_at\` (ISO 8601 timestamp)
-- \`action\` — single object or array of action objects:
-  - \`wake_agent\`: \`prompt\` (string)
-  - \`notify\`: \`message\` (string)
-  - \`ha_service\`: \`domain\`, \`service\`, \`data\` (object), optional \`message\`
-  - \`evaluate\`: \`template\` (Jinja2 string), optional \`condition\` (Jinja2 — use \`{{ result }}\` for template output), optional \`message\` (use \`{{ result }}\` for template output). Zero ACP overhead.
-
-### Optional fields
-- \`id\` (string). Custom ID for the instruction. If omitted, a UUID is auto-generated. Useful when setting up \`chain_enable\` — create with known IDs so instructions can reference each other.
-- \`conditions\` (array). Gate between trigger and action. Top-level is AND. Types:
-  - \`state\`: \`entity_id\` + \`state\` (exact match)
-  - \`numeric_state\`: \`entity_id\` + \`above\`/\`below\`
-  - \`time\`: \`after\`/\`before\` (HH:MM or HH:MM:SS)
-  - \`and\`/\`or\`/\`not\`: nested \`conditions\` array for combinators
-- \`action_mode\` ("sequential" | "parallel", default: "sequential"). For multi-action arrays.
-- \`continue_on_error\` (bool, default: false). Continue executing actions if one fails.
-- \`enabled\` (bool, default: true)
-- \`cooldown_seconds\` (number, default: 300). Set \`0\` to fire every time.
-- \`one_shot\` (bool, default: false). Auto-disable after first firing — use for reminders/timers.
-- \`expires_at\` (ISO 8601 string). Auto-disable after this time.
-- \`max_triggers\` (number). Auto-disable after N firings.
-- \`notes\` (string). Context for chained instructions.
-- \`chain_enable\` (string array). Instruction IDs to enable when this fires.
-
-### Examples
-\`\`\`
-// Simple: single action
-si_create({
-  description: "Alert when living room temp exceeds 30°C",
-  trigger: { type: "state_change", entity_id: "sensor.living_room_temperature", above: 30 },
-  action: { type: "notify", message: "🌡️ Living room above 30°C!" },
-  cooldown_seconds: 600
-})
-
-// Multi-action with conditions
-si_create({
-  description: "Turn off washer outlet and notify when done",
-  trigger: { type: "state_change", entity_id: "sensor.washer_power", below: 5 },
-  conditions: [
-    { type: "state", entity_id: "input_boolean.washer_running", state: "on" }
-  ],
-  action: [
-    { type: "ha_service", domain: "switch", service: "turn_off", data: { entity_id: "switch.washer" } },
-    { type: "notify", message: "🧺 Washer done, outlet turned off" }
-  ]
-})
-\`\`\`
-
-### Key rules
-- Reactive user requests ("when X, do Y") → create standing instruction, default \`one_shot: true\` unless user says "always"/"every time".
-- If the API is unavailable, tell the user and wait — do NOT fall back to file editing.
-
----
-
-## Sub-Agent Usage (Task Tool)
-
-**NEVER use \`task(mode: "background")\`** — background sub-agents are killed when the current ACP prompt completes. The user gets told "you'll be notified" but results never arrive. This is a fundamental limitation of the ACP request→response lifecycle.
-
-**Always use \`mode: "sync"\`** for all sub-agent work:
-- \`task(mode: "sync")\` blocks until the sub-agent completes and returns results in your context
-- You can launch multiple sync tasks in parallel within the same turn
-- Results are reliably returned and can be included in your response to the user
-
-**For true fire-and-forget work**, use the \`background_task\` MCP tool. This dispatches work to a dedicated overflow ACP that runs independently of your conversation, with results delivered via Telegram when complete. Unlike built-in \`task(background)\`, this survives prompt completion.
-
-### \`background_task\` MCP Tool
-- **prompt** (required): Complete, self-contained task description. Include ALL context — the background agent has no access to your conversation.
-- **description** (required): Short label for status tracking (e.g., "Check sensor trends").
-- Returns immediately with \`taskId\` and \`status: "queued"\`.
-- Results are delivered to the user's Telegram chat when the background task completes.
-- Max 5 concurrent background tasks; excess tasks are rejected.
-- Background agent has HA MCP tools and file access, but NO Telegram interaction (no ask_user).
+## Sub-Agents
+**NEVER use \`task(mode: "background")\`** — killed when ACP prompt completes.
+- Use \`mode: "sync"\` for all sub-agent work
+- Use \`background_task\` MCP tool for fire-and-forget work (survives prompt completion, results delivered via Telegram, max 5 concurrent)
 `;
 
 const TASKS_DEFAULT = `# Active Tasks

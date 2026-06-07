@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.53.1] — 2026-06-07
+
+### Changed
+- **Trimmed SKILLS.md default seed** — reduced from ~5500 to ~1100 chars. Removed duplicated SI schema, MCP tool catalog, tg-ux examples, and sub-agent verbose docs. MCP tool schemas are self-documenting; SKILLS.md now contains only behavioral rules and pointers.
+
 ## [0.53.0] — 2026-06-07
 
 ### Changed
