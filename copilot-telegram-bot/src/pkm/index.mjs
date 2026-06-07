@@ -149,8 +149,7 @@ export class PkmManager {
                     }
                 }
 
-                const limit = Number(body.limit) || 7;
-                let { results } = this.#search.search(body.query, {
+                const { results, expanded } = this.#search.search(body.query, {
                     userId: ctx.userId,
                     scope,
                     scopeId,
@@ -158,22 +157,14 @@ export class PkmManager {
                     dateFrom: body.date_from,
                     dateTo: body.date_to,
                     tags: body.tags,
-                    limit: body.topic ? Math.max(limit * 3, limit + 10) : limit,
+                    limit: body.limit || 7,
+                    queries: body.queries,
+                    topic: body.topic,
+                    entity: body.entity,
+                    expandContext: body.expand_context,
                 });
 
-                if (body.topic) {
-                    const topic = this.#store.resolveTopicName(ctx.userId, body.topic);
-                    if (!topic) return { status: 200, data: { results: [] } };
-                    const topicNotes = this.#store.browseTopicNotes(topic.id, ctx.userId, {
-                        sort: "activation",
-                        limit: Math.max(limit * 5, 100),
-                        includeSecondary: true,
-                    });
-                    const topicNoteIds = new Set(topicNotes.map(note => note.id));
-                    results = results.filter(note => topicNoteIds.has(note.id)).slice(0, limit);
-                }
-
-                return { status: 200, data: { results } };
+                return { status: 200, data: { results, expanded } };
             }],
             ["POST:/api/pkm/write", (body = {}, ctx = {}) => {
                 requireUser(ctx);

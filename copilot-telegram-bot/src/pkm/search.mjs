@@ -39,37 +39,98 @@ export class PkmSearch {
 
     /**
      * Search memories for a user.
-     * Combines FTS5 search + buffer search + confidence/recency blending.
+     * Combines buffer search, activation-weighted FTS5 search, optional topic/entity
+     * filters, and optional context expansion.
      */
-    search(query, { userId, scope = "user", scopeId, type, dateFrom, dateTo, tags, limit = 7 } = {}) {
+    search(query, {
+        userId,
+        scope = "user",
+        scopeId,
+        type,
+        dateFrom,
+        dateTo,
+        tags,
+        limit = 7,
+        queries,
+        topic,
+        entity,
+        expandContext: doExpand = false,
+    } = {}) {
         // Rate limit check
         if (!this.#security.checkSearchRate(userId)) {
             log.warn(`Search rate limit exceeded for user ${userId}`);
-            return { results: [], rateLimited: true };
+            return { results: [], expanded: [], rateLimited: true };
         }
 
-        const results = [];
+        // Multi-query support: run each query, merge + deduplicate
+        const queryList = queries && Array.isArray(queries) && queries.length > 0
+            ? queries.slice(0, 5)
+            : query ? [query] : [];
 
-        // 1. Buffer search (current open conversation window)
-        const bufferResults = this.#searchBuffer(query, userId);
+        if (queryList.length === 0) return { results: [], expanded: [], rateLimited: false };
+
+        const safeLimit = Number(limit) || 7;
+        const results = [];
+        let topicNoteIds = null;
+        let entityNoteIds = null;
+
+        if (topic) {
+            let topicId = topic;
+            if (!topic.match(/^[0-9a-f-]{36}$/i)) {
+                const resolved = this.#store.resolveTopicName(userId, topic);
+                topicId = resolved?.id;
+            }
+            if (topicId) {
+                topicNoteIds = new Set();
+                const topicNotes = this.#store.db.prepare(
+                    `SELECT id FROM notes WHERE primary_topic_id = ?
+                     UNION
+                     SELECT note_id AS id FROM note_topics WHERE topic_id = ?`
+                ).all(topicId, topicId);
+                for (const row of topicNotes) topicNoteIds.add(row.id);
+            }
+        }
+
+        if (entity) {
+            const entityResults = this.#store.searchEntities(userId, entity, { limit: 5 });
+            if (entityResults.length > 0) {
+                entityNoteIds = new Set();
+                const entityStmt = this.#store.db.prepare(
+                    "SELECT note_id FROM entity_notes WHERE entity_id = ?"
+                );
+                for (const ent of entityResults) {
+                    const linkedNotes = entityStmt.all(ent.id);
+                    for (const row of linkedNotes) entityNoteIds.add(row.note_id);
+                }
+            }
+        }
+
+        // 1. Buffer search (using first query)
+        const bufferResults = this.#searchBuffer(queryList[0], userId);
         results.push(...bufferResults);
 
-        // 2. FTS5 search
-        const ftsResults = this.#store.searchNotes(query, {
-            userId, scope, scopeId, type, dateFrom, dateTo, tags, limit: limit + 5,
-        });
+        // 2. FTS5 search (for each query in list)
+        for (const q of queryList) {
+            let ftsResults = this.#store.searchNotes(q, {
+                userId, scope, scopeId, type, dateFrom, dateTo, tags, limit: safeLimit + 5,
+            });
 
-        // 3. Blend confidence × recency into final score
-        const now = Date.now();
-        for (const note of ftsResults) {
-            const ageDays = (now - new Date(note.created_at).getTime()) / 86400000;
-            const recencyFactor = ageDays < 30 ? 1.0 : ageDays < 365 ? 0.85 : 0.7;
-            note.finalScore = Math.abs(note.bm25_score) * (note.confidence || 0.8) * recencyFactor;
+            if (topicNoteIds) {
+                ftsResults = ftsResults.filter(n => topicNoteIds.has(n.id));
+            }
+
+            if (entityNoteIds) {
+                ftsResults = ftsResults.filter(n => entityNoteIds.has(n.id));
+            }
+
+            for (const note of ftsResults) {
+                const activation = Number(note.activation) || this.#store.computeActivation(note);
+                note.finalScore = Math.abs(note.bm25_score) * activation * (note.confidence || 0.8);
+            }
+
+            ftsResults.sort((a, b) => b.finalScore - a.finalScore);
+            results.push(...ftsResults);
         }
-
-        // Sort by final score (higher = better, BM25 scores are negative)
-        ftsResults.sort((a, b) => b.finalScore - a.finalScore);
-        results.push(...ftsResults);
 
         // Deduplicate by ID
         const seen = new Set();
@@ -79,13 +140,25 @@ export class PkmSearch {
             return true;
         });
 
+        // Context expansion (off by default)
+        let expandedResults = [];
+        if (doExpand) {
+            expandedResults = this.expandContext(deduped, userId, 10);
+        }
+
         // Audit log
         this.#store.logEvent(null, userId, "search", {
-            query: query.substring(0, 200),
-            scope, resultCount: deduped.length,
+            query: queryList.join(" | ").substring(0, 200),
+            scope,
+            resultCount: deduped.length,
+            expandedCount: expandedResults.length,
         });
 
-        return { results: deduped.slice(0, limit), rateLimited: false };
+        return {
+            results: deduped.slice(0, safeLimit),
+            expanded: expandedResults,
+            rateLimited: false,
+        };
     }
 
     /** Search current open conversation windows (buffer search) */
@@ -175,6 +248,39 @@ export class PkmSearch {
 
         log.info(`Agent prefetch triggered: ${results.length} results for "${message.substring(0, 50)}"`);
         return results;
+    }
+
+    expandContext(results, userId, limit = 10) {
+        if (!results || results.length === 0) return [];
+
+        const expanded = [];
+        const originalIds = new Set(results.map(r => r.id));
+        const seen = new Set(originalIds);
+
+        // Take top 3 results, find their neighbors
+        for (const result of results.slice(0, 3)) {
+            if (result.id?.startsWith("buffer-")) continue; // skip buffer results
+            try {
+                const neighbors = this.#store.getNeighbors(result.id, userId, { limit: 5 });
+                for (const neighbor of neighbors) {
+                    if (!seen.has(neighbor.id)) {
+                        seen.add(neighbor.id);
+                        expanded.push({
+                            ...neighbor,
+                            _expandedFrom: result.id,
+                            _isExpanded: true,
+                        });
+                    }
+                }
+            } catch {
+                // skip if getNeighbors fails (e.g., buffer result)
+            }
+        }
+
+        // Sort by activation, limit
+        return expanded
+            .sort((a, b) => (Number(b.activation) || 0) - (Number(a.activation) || 0))
+            .slice(0, limit);
     }
 
     // ── Deep recall strategy ───────────────────────────────

@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.70.0] — 2026-06-08
+
+### Changed — PKM v2 Phase 5: Search Upgrade
+- **Activation-weighted ranking** — replaced recency-based scoring with `|bm25| × activation × confidence`
+- **Multi-query support** — `queries` array (1–5) runs each, merges + deduplicates results
+- **Topic filtering** — `topic` param filters FTS5 results by primary_topic_id or note_topics entries; resolves names via fuzzy match
+- **Entity filtering** — `entity` param filters results to notes linked to matching entities
+- **Context expansion** — new `expandContext()` method finds neighbors of top-3 results via shared entities/topics/links; opt-in via `expand_context: true`
+- **Search route updated** — passes `queries`, `topic`, `entity`, `expand_context` to search engine; returns `{ results, expanded }`
+- **Removed route-level topic post-filtering** — topic filtering now handled inside search engine for consistency
+
 ## [0.69.0] — 2026-06-08
 
 ### Changed — PKM v2 Phase 4: MCP Tool Consolidation + REST API
