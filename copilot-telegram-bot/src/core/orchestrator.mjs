@@ -1365,6 +1365,17 @@ export class Orchestrator {
                     return;
                 }
 
+                // Check if user is expired (not new — they have a record)
+                const existingUser = this.#pairing.getUser(userId);
+                if (existingUser?.expiresAt && new Date(existingUser.expiresAt) < new Date()) {
+                    this.#telegram.enqueue(() =>
+                        this.#telegram.sendMessage(chatId,
+                            "⏳ Your access has expired. Contact an admin to renew your access."
+                        ).catch(() => {})
+                    );
+                    return;
+                }
+
                 // Not paired — request admin approval
                 await this.#requestApproval(userId, username, chatId, text, message.chat.type);
                 return;
@@ -2377,6 +2388,7 @@ export class Orchestrator {
         }
 
         const who = username ? `@${username}` : `User ${userId}`;
+        const viaLabel = chatType === "private" ? "Direct message" : `Group chat`;
         const preview = originalText ? `\n💬 "${originalText.slice(0, 100)}${originalText.length > 100 ? "…" : ""}"` : "";
 
         for (const adminId of adminIds) {
@@ -2398,7 +2410,7 @@ export class Orchestrator {
             // Fire-and-forget — each admin's response handled independently
             this.#buttons.prompt(
                 adminId,
-                `🔐 New access request\n\n👤 ${who} (ID: ${userId})${preview}`,
+                `🔐 New access request\n\n👤 ${who} (ID: ${userId})\n📱 Via: ${viaLabel}${preview}`,
                 rows,
                 { timeoutMs: 0 }
             ).then((result) => {
@@ -2452,7 +2464,7 @@ export class Orchestrator {
         try {
             this.#pairing.setUserRole(userId, roleOrDeny, {
                 username: pending.username,
-                pairedBy: "approval",
+                pairedBy: String(adminChatId),
             });
         } catch (err) {
             log.error(`Failed to set role for ${userId}: ${err.message}`);

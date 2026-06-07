@@ -2,6 +2,27 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.60.0] — 2026-06-07
+
+### Fixed (RBAC UX Audit)
+- **Expired users now get "access expired" message** instead of going through new-user approval flow
+- **Approval audit records admin's actual ID** instead of generic "approval" string
+- **Invite creation enforces delegation boundary** — `canGrantRole()` checked when `createdBy` is specified; prevents creating invites for roles above your rank
+- **TOOL_DENY events logged to audit** — Permission denials now recorded in RBAC audit log with tool, capability, entity, and reason
+- **Invite tokens masked in list APIs** — `listInvites()` returns 8-char ID prefix instead of full bearer token; revocation works by prefix match
+- **Invite revocation records actor** — `revokeInvite()` accepts `revokedBy` parameter for proper audit attribution
+
+### Added
+- **Invite revocation** — `revokeInvite()` method, `DELETE /api/rbac/invites` endpoint, `rbac_revoke_invite` MCP tool
+- **Invite listing** — `listInvites()` with status filter, `GET /api/rbac/invites` endpoint, `rbac_list_invites` MCP tool
+- **Default invite expiry** — Invites expire after 7 days if no custom expiry set
+- **Approval notification includes chat context** — Shows "Via: Direct message" or "Via: Group chat" in admin approval request
+- **WebUI: Invites list** — Active/used/expired invite listing with status badges and revoke buttons
+- **WebUI: Audit log filters** — Filter by event type and actor; dedicated filter UI with clear button
+- **WebUI: Role editor** — Inline edit form for roles with grouped capability picker (Entity/Automation/Dashboard/Admin/SI/Other)
+- **WebUI: Role creation with capabilities** — New role form now includes full capability picker
+- **WebUI: Built-in role editing** — Edit button on built-in roles for capability/rank customization
+
 ## [0.59.1] — 2026-06-07
 
 ### Fixed (Final Review)

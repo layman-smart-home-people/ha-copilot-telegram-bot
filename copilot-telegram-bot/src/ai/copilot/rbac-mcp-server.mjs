@@ -147,16 +147,41 @@ const TOOLS = [
         name: "rbac_create_invite",
         description:
             "Generate an invite token that auto-pairs new users with a specific role. " +
-            "Share the token via /start invite_TOKEN deep link. Cannot create invites for the owner role.",
+            "Share the token via /start invite_TOKEN deep link. Cannot create invites for the owner role. " +
+            "Delegation rules apply: you can only create invites for roles below your own rank.",
         inputSchema: {
             type: "object",
             properties: {
                 role: { type: "string", description: "Role to assign when invite is used (e.g., 'guest', 'member')" },
                 expiresAt: { type: "string", description: "Optional ISO 8601 timestamp — invite link expires after this time" },
                 roleExpiresAt: { type: "string", description: "Optional ISO 8601 timestamp — user's access expires after this time (even after using invite)" },
-                createdBy: { type: "string", description: "Who created this invite (for audit)" },
+                createdBy: { type: "string", description: "Who created this invite (user ID for delegation check + audit)" },
             },
             required: ["role"],
+        },
+    },
+    {
+        name: "rbac_list_invites",
+        description:
+            "List all invite tokens with their status (active, used, expired). " +
+            "Shows role, creator, creation time, expiry, and usage details.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                status: { type: "string", enum: ["active", "used", "expired"], description: "Filter by status (default: show all)" },
+            },
+        },
+    },
+    {
+        name: "rbac_revoke_invite",
+        description: "Revoke (delete) an invite by its ID prefix (first 8 chars from list) or full token.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                id: { type: "string", description: "Invite ID prefix (first 8 chars) or full token" },
+                revokedBy: { type: "string", description: "Who is revoking (user ID for audit)" },
+            },
+            required: ["id"],
         },
     },
     {
@@ -386,6 +411,34 @@ async function handleTool(name, args) {
                 if (status === 201) {
                     return ok(`🔗 Invite created for role: ${role}\n\nToken: ${data.token}\nDeep link: /start invite_${data.token}\n\n${JSON.stringify(data, null, 2)}`);
                 }
+                return err(`Error (${status}): ${data?.error || JSON.stringify(data)}`);
+            }
+
+            case "rbac_list_invites": {
+                const { status: filterStatus } = args || {};
+                const qs = new URLSearchParams();
+                if (filterStatus) qs.set("status", filterStatus);
+                const qStr = qs.toString();
+                const path = "/api/rbac/invites" + (qStr ? `?${qStr}` : "");
+                const { status, data } = await apiCall("GET", path);
+                if (status === 200) {
+                    if (!Array.isArray(data) || data.length === 0) {
+                        return ok("No invites found.");
+                    }
+                    const summary = data.map(i =>
+                        `• [${i.status}] role: ${i.role}, created: ${i.createdAt || "?"}, id: ${i.id}`
+                    ).join("\n");
+                    return ok(`${data.length} invite(s):\n\n${summary}\n\nFull data:\n${JSON.stringify(data, null, 2)}`);
+                }
+                return err(`API error (${status}): ${data?.error || JSON.stringify(data)}`);
+            }
+
+            case "rbac_revoke_invite": {
+                const { id, revokedBy } = args || {};
+                if (!id) return err("id is required");
+                const { status, data } = await apiCall("DELETE", "/api/rbac/invites", { id, revokedBy });
+                if (status === 204) return ok(`🗑️ Invite revoked: ${id}`);
+                if (status === 404) return err("Invite not found");
                 return err(`Error (${status}): ${data?.error || JSON.stringify(data)}`);
             }
 

@@ -806,12 +806,22 @@ export class RBACManager {
         if (!this.#roles[role]) throw new Error(`Unknown role: ${role}`);
         if (role === "owner") throw new Error("Cannot create invites for owner role");
 
+        // Enforce delegation boundary if creator specified
+        if (createdBy && createdBy !== "system") {
+            const creatorId = Number(createdBy);
+            if (!Number.isNaN(creatorId) && !this.canGrantRole(creatorId, role)) {
+                throw new Error(`Insufficient rank to create invite for role: ${role}`);
+            }
+        }
+
         const token = randomBytes(16).toString("hex");
+        // Default invite expiry: 7 days if not specified
+        const defaultExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
         this.#invites[token] = {
             role,
             createdBy: createdBy || "system",
             createdAt: new Date().toISOString(),
-            expiresAt: expiresAt || null,
+            expiresAt: expiresAt || defaultExpiry,
             roleExpiresAt: roleExpiresAt || null,
             usedBy: null,
         };
@@ -836,6 +846,36 @@ export class RBACManager {
     /** Get invite info (without consuming). */
     getInvite(token) {
         return this.#invites[token] || null;
+    }
+
+    /** List all invites (optionally filter by status). Tokens are masked for security. */
+    listInvites({ status } = {}) {
+        const now = new Date();
+        return Object.entries(this.#invites).map(([token, inv]) => {
+            const expired = inv.expiresAt && new Date(inv.expiresAt) < now;
+            const used = !!inv.usedBy;
+            const invStatus = used ? "used" : expired ? "expired" : "active";
+            return { id: token.slice(0, 8), ...inv, status: invStatus };
+        }).filter(inv => !status || inv.status === status);
+    }
+
+    /** Revoke (delete) an invite token by ID prefix or full token. */
+    revokeInvite(tokenOrPrefix, { revokedBy = "system" } = {}) {
+        // Try exact match first
+        let fullToken = tokenOrPrefix;
+        if (!this.#invites[fullToken]) {
+            // Try prefix match
+            const matches = Object.keys(this.#invites).filter(t => t.startsWith(tokenOrPrefix));
+            if (matches.length === 0) return false;
+            if (matches.length > 1) throw new Error("Ambiguous token prefix — be more specific");
+            fullToken = matches[0];
+        }
+        const invite = this.#invites[fullToken];
+        delete this.#invites[fullToken];
+        this.#save();
+        this.audit("INVITE_REVOKE", String(revokedBy), invite.role, { token: fullToken.slice(0, 8) + "..." });
+        log.info(`Invite revoked by ${revokedBy}: ${fullToken.slice(0, 8)}... (role: ${invite.role})`);
+        return true;
     }
 
     // ==============================

@@ -91,6 +91,14 @@ export class PermissionHandler {
                     const rejectId = options.find(o => o.kind === "reject_once")?.optionId || "reject_once";
                     acp.respondPermission(requestId, rejectId);
                     log.info(`Permission DENIED (RBAC): ${tool} for user ${userId} — ${rbacResult.reason} (cap: ${rbacResult.capability})`);
+                    // Audit the denial
+                    if (this.#rbac.audit) {
+                        this.#rbac.audit("TOOL_DENY", String(userId), rbacTool, {
+                            reason: rbacResult.reason,
+                            capability: rbacResult.capability,
+                            entity_id: entityId || undefined,
+                        });
+                    }
                     return;
                 }
             }

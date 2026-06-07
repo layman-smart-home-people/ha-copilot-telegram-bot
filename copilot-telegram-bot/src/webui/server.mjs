@@ -328,6 +328,17 @@ export class WebUIServer {
             return this.#apiRbacCreateInvite(res, body);
         }
 
+        // GET /api/rbac/invites — list invites
+        if (pathname === "/api/rbac/invites" && method === "GET") {
+            return this.#apiRbacListInvites(res, params);
+        }
+
+        // DELETE /api/rbac/invites — revoke invite
+        if (pathname === "/api/rbac/invites" && method === "DELETE") {
+            const body = await this.#readBody(req);
+            return this.#apiRbacRevokeInvite(res, body);
+        }
+
         // GET /api/rbac/overrides — list overrides
         if (pathname === "/api/rbac/overrides" && method === "GET") {
             return this.#apiRbacListOverrides(res, params);
@@ -1302,6 +1313,31 @@ export class WebUIServer {
 
             const token = rbac.createInvite(role, { createdBy, expiresAt, roleExpiresAt });
             return this.#json(res, 201, { token, role, expiresAt, roleExpiresAt });
+        } catch (err) {
+            return this.#json(res, 400, { error: err.message });
+        }
+    }
+
+    #apiRbacListInvites(res, params) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const status = params.status || undefined;
+        return this.#json(res, 200, rbac.listInvites({ status }));
+    }
+
+    #apiRbacRevokeInvite(res, body) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const { token, id, revokedBy } = body || {};
+        const tokenOrPrefix = token || id;
+        if (!tokenOrPrefix) return this.#json(res, 400, { error: "token or id is required" });
+
+        try {
+            const revoked = rbac.revokeInvite(tokenOrPrefix, { revokedBy });
+            if (!revoked) return this.#json(res, 404, { error: "Invite not found" });
+            return this.#json(res, 204, null);
         } catch (err) {
             return this.#json(res, 400, { error: err.message });
         }
