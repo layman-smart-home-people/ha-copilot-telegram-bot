@@ -31,9 +31,7 @@ const TYPING_DEBOUNCE_MS = 60000;
 const PHOTO_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 
-// Prompt watchdog: auto-cancel hung prompts
-const SI_PROMPT_TIMEOUT_MS = 10 * 60 * 1000;   // 10 minutes for SI-triggered prompts
-const USER_PROMPT_TIMEOUT_MS = 30 * 60 * 1000;  // 30 minutes for user-interactive prompts
+// Prompt monitoring (no timeout — prompts run until completion or manual /stop)
 const CANCEL_GRACE_MS = 15_000;                  // 15s after cancel before force-kill
 const HEARTBEAT_INTERVAL_MS = 60_000;            // log heartbeat every 60s during active prompt
 
@@ -87,8 +85,7 @@ export class Orchestrator {
     static #BACKGROUND_QUEUE_MAX = 5;
     static #BACKGROUND_WATCHDOG_MS = 5 * 60 * 1000; // 5 minutes
 
-    // Prompt watchdog (auto-cancel hung prompts)
-    #watchdogTimer = null;
+    // Prompt heartbeat + stall detection
     #heartbeatTimer = null;
     #promptStartedAt = 0;
     #promptGeneration = 0;  // incremented on each prompt; prevents stale force-cancel
@@ -150,6 +147,7 @@ export class Orchestrator {
             pinnedInstructions: this.#pinnedInstructions,
             getActiveScope: () => this.#activeScope,
             getActiveRef: () => this.#activeRef,
+            getRbac: () => this.#pairing,
         });
 
         this.#statusMenu = new StatusMenu({
@@ -602,45 +600,16 @@ export class Orchestrator {
         }
     }
 
-    /** Start watchdog and heartbeat timers for the active prompt. */
+    /** Start heartbeat timer for the active prompt (no timeout — runs until completion or /stop). */
     #startPromptWatchdog(scopeKey) {
         this.#promptStartedAt = Date.now();
         this.#stallWarned = false;
-        const generation = this.#promptGeneration;
         const isStanding = scopeKey?.startsWith("standing:");
-        const timeoutMs = isStanding ? SI_PROMPT_TIMEOUT_MS : USER_PROMPT_TIMEOUT_MS;
 
         // Emit event + metrics
-        eventLog.emit("prompt.started", { scopeKey, isStanding, timeoutMs });
+        eventLog.emit("prompt.started", { scopeKey, isStanding });
         metrics.increment("prompts_total");
         metrics.gauge("prompt_active", 1);
-
-        // Watchdog: force-cancel after timeout
-        this.#watchdogTimer = setTimeout(() => {
-            const elapsed = ((Date.now() - this.#promptStartedAt) / 60000).toFixed(1);
-            const lastSeen = this.#acp.lastMessageAt
-                ? `${((Date.now() - this.#acp.lastMessageAt) / 1000).toFixed(0)}s ago (${this.#acp.lastMessageType})`
-                : "never";
-            const msg = `Prompt timeout after ${elapsed}min — scope=${scopeKey}, ACP last seen: ${lastSeen}, pending RPCs: ${this.#acp.pendingCount}`;
-            log.error(`⏰ ${msg}`);
-
-            eventLog.emit("prompt.timeout", {
-                scopeKey,
-                elapsedMs: Date.now() - this.#promptStartedAt,
-                lastMessageAge: this.#acp.lastMessageAt ? Date.now() - this.#acp.lastMessageAt : null,
-                lastMessageType: this.#acp.lastMessageType,
-                pendingRPCs: this.#acp.pendingCount,
-            });
-            metrics.increment("prompt_timeouts");
-
-            // Notify user
-            this.#broadcastAdmin(`⏰ Prompt watchdog triggered\n${msg}\nForce-cancelling...`);
-
-            this.#forceCancel(`watchdog timeout (${elapsed}min)`, generation).catch(err => {
-                log.error(`Force cancel from watchdog failed: ${err.message}`);
-            });
-        }, timeoutMs);
-        this.#watchdogTimer.unref?.();
 
         // Heartbeat: periodic health check + stall detection during active prompts
         this.#heartbeatTimer = setInterval(() => {
@@ -702,12 +671,8 @@ export class Orchestrator {
         this.#heartbeatTimer.unref?.();
     }
 
-    /** Clear watchdog and heartbeat timers. */
+    /** Clear heartbeat timer. */
     #clearPromptWatchdog() {
-        if (this.#watchdogTimer) {
-            clearTimeout(this.#watchdogTimer);
-            this.#watchdogTimer = null;
-        }
         if (this.#heartbeatTimer) {
             clearInterval(this.#heartbeatTimer);
             this.#heartbeatTimer = null;

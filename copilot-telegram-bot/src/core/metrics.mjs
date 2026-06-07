@@ -17,7 +17,6 @@ const COUNTER_NAMES = [
     "acp_restarts",
     "prompts_total",
     "prompt_errors",
-    "prompt_timeouts",
     "prompt_cancels",
     "tool_calls_total",
     "tool_errors_total",

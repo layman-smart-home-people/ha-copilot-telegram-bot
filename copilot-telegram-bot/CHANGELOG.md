@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.55.1] — 2026-06-07
+
+### Removed
+- **Prompt watchdog timeout** — Removed the 10-min (SI) and 30-min (user) auto-cancel watchdog. Prompts now run until completion or manual `/stop`. Heartbeat logging and stall detection remain active for observability.
+
 ## [0.54.1] — 2026-06-07
 
 ### Fixed

@@ -10,7 +10,7 @@ import { ACPClient } from "./ai/copilot/acp-client.mjs";
 import { ACPManager } from "./ai/copilot/acp-manager.mjs";
 import { TelegramClient } from "./transport/telegram/client.mjs";
 import { Orchestrator } from "./core/orchestrator.mjs";
-import { PairingManager } from "./core/pairing.mjs";
+import { RBACManager } from "./core/rbac.mjs";
 import { ScopeManager } from "./core/scope-manager.mjs";
 import { SessionManager } from "./core/sessions.mjs";
 import { loadConfig } from "./config.mjs";
@@ -212,9 +212,9 @@ async function main() {
     });
     const acp = acpMgr.createPrimary();
 
-    // Create pairing manager
-    const pairing = new PairingManager({
-        persistPath: "/data/paired_users.json",
+    // Create RBAC manager (replaces PairingManager, backward-compatible API)
+    const pairing = new RBACManager({
+        persistPath: "/data/rbac.json",
         preApprovedIds: config.allowedChatIds || [],
     });
 

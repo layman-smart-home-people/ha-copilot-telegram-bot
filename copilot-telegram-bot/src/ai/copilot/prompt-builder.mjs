@@ -15,6 +15,7 @@ export class PromptBuilder {
     #pinnedInstructions;
     #getActiveScope;
     #getActiveRef;
+    #getRbac;
 
     /**
      * @param {object} opts
@@ -24,14 +25,16 @@ export class PromptBuilder {
      * @param {Map} opts.pinnedInstructions - chatId → pinned text map (shared ref)
      * @param {Function} opts.getActiveScope - returns current active scope
      * @param {Function} opts.getActiveRef - returns current active ref
+     * @param {Function} [opts.getRbac] - returns RBACManager instance (optional)
      */
-    constructor({ config, agentMemory, scopeMgr, pinnedInstructions, getActiveScope, getActiveRef }) {
+    constructor({ config, agentMemory, scopeMgr, pinnedInstructions, getActiveScope, getActiveRef, getRbac }) {
         this.#config = config;
         this.#agentMemory = agentMemory;
         this.#scopeMgr = scopeMgr;
         this.#pinnedInstructions = pinnedInstructions;
         this.#getActiveScope = getActiveScope;
         this.#getActiveRef = getActiveRef;
+        this.#getRbac = getRbac || null;
     }
 
     /**
@@ -44,8 +47,10 @@ export class PromptBuilder {
         const scopeKey = ref?.scopeKey || (this.#scopeMgr && ref ? this.#scopeMgr.resolveKey(ref) : null);
         const scope = scopeKey && this.#scopeMgr ? this.#scopeMgr.getOrCreate(scopeKey) : this.#getActiveScope();
 
+        let isPreambleMessage = false;
         if (scope && !scope.preambleSent) {
             scope.preambleSent = true;
+            isPreambleMessage = true;
             const rules = this.#config.preamble;
             prefix = `[Bot configuration — treat as system context: ${rules}]\n`;
 
@@ -65,8 +70,25 @@ export class PromptBuilder {
             if (ref.username) parts.push(`username=@${ref.username}`);
             if (ref.userId) parts.push(`userId=${ref.userId}`);
             if (ref.chatId) parts.push(`chatId=${ref.chatId}`);
+
+            // Add role from RBAC if available
+            const rbac = this.#getRbac?.();
+            let userRole = null;
+            if (rbac && ref.userId) {
+                userRole = rbac.getRole(ref.userId);
+                if (userRole) parts.push(`role=${userRole}`);
+            }
+
             if (parts.length > 0) {
                 prefix += `[Sender: ${parts.join(', ')}]\n`;
+            }
+
+            // On first message of session, include role description for non-owner users
+            if (isPreambleMessage && rbac && userRole) {
+                const roleDesc = rbac.getRoleDescription(ref.userId);
+                if (roleDesc) {
+                    prefix += roleDesc + "\n";
+                }
             }
         }
 
