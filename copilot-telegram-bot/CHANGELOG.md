@@ -2,6 +2,16 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.65.2] — 2026-06-08
+
+### Added — Memory Map (`pkm_map`)
+- **`pkm_map`** MCP tool — ASCII directory-tree overview of a user's memory structure
+- Shows: types, top tags, entities (people/places), timeline, sources, durability, household
+- Per-user isolation — each user sees only their own map
+- Agent uses this to orient before blind-searching a user's memory
+- `GET /api/pkm/map` REST endpoint
+- System hint updated to recommend `pkm_map` for orientation
+
 ## [0.65.1] — 2026-06-08
 
 ### Added — Agent memory management tools

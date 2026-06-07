@@ -697,6 +697,94 @@ export class PkmStore {
         };
     }
 
+    // ── Memory map ────────────────────────────────────────────
+
+    /**
+     * Get a structured overview of a user's memory topology.
+     * Returns aggregated data for rendering as an ASCII tree.
+     * @param {string} userId
+     * @returns {object} { total, byType, byTag, bySource, byDurability, byMonth, entities, household }
+     */
+    getMemoryMap(userId) {
+        const total = this.getNoteCount(userId);
+
+        const byType = this.#db.prepare(
+            "SELECT type, COUNT(*) as cnt FROM notes WHERE user_id = ? AND valid_to IS NULL GROUP BY type ORDER BY cnt DESC"
+        ).all(userId);
+
+        // Top tags — tags stored as JSON array, need to unpack
+        const tagRows = this.#db.prepare(
+            "SELECT tags FROM notes WHERE user_id = ? AND valid_to IS NULL AND tags IS NOT NULL AND tags != '[]'"
+        ).all(userId);
+        const tagCounts = {};
+        for (const row of tagRows) {
+            try {
+                const parsed = JSON.parse(row.tags);
+                if (Array.isArray(parsed)) {
+                    for (const t of parsed) {
+                        const tag = String(t).toLowerCase().trim();
+                        if (tag) tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+                    }
+                }
+            } catch { /* skip malformed */ }
+        }
+        const byTag = Object.entries(tagCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 15)
+            .map(([tag, cnt]) => ({ tag, cnt }));
+
+        const bySource = this.#db.prepare(
+            "SELECT source_type, COUNT(*) as cnt FROM notes WHERE user_id = ? AND valid_to IS NULL GROUP BY source_type ORDER BY cnt DESC"
+        ).all(userId);
+
+        const byDurability = this.#db.prepare(
+            "SELECT durability, COUNT(*) as cnt FROM notes WHERE user_id = ? AND valid_to IS NULL GROUP BY durability ORDER BY cnt DESC"
+        ).all(userId);
+
+        const byMonth = this.#db.prepare(
+            `SELECT substr(created_at, 1, 7) as month, COUNT(*) as cnt
+             FROM notes WHERE user_id = ? AND valid_to IS NULL
+             GROUP BY month ORDER BY month DESC LIMIT 12`
+        ).all(userId);
+
+        // Entities linked to this user (only count active/non-archived notes)
+        const entities = this.#db.prepare(`
+            SELECT e.name, e.type, COUNT(n.id) as note_count
+            FROM entities e
+            LEFT JOIN entity_notes en ON en.entity_id = e.id
+            LEFT JOIN notes n ON n.id = en.note_id AND n.valid_to IS NULL
+            WHERE e.user_id = ?
+            GROUP BY e.id
+            ORDER BY note_count DESC
+            LIMIT 15
+        `).all(userId);
+
+        // Household info
+        const settings = this.getSettings(userId);
+        let household = null;
+        if (settings?.household_id) {
+            const hh = this.#db.prepare("SELECT name FROM households WHERE id = ?").get(settings.household_id);
+            const memberCount = this.#db.prepare(
+                "SELECT COUNT(*) as cnt FROM household_members WHERE household_id = ?"
+            ).get(settings.household_id);
+            const sharedCount = this.#db.prepare(
+                "SELECT COUNT(*) as cnt FROM notes WHERE scope = 'household' AND scope_id = ? AND valid_to IS NULL"
+            ).get(settings.household_id);
+            household = {
+                name: hh?.name || "Unknown",
+                members: memberCount?.cnt || 0,
+                sharedMemories: sharedCount?.cnt || 0,
+            };
+        }
+
+        // Archived count
+        const archived = this.#db.prepare(
+            "SELECT COUNT(*) as cnt FROM notes WHERE user_id = ? AND valid_to IS NOT NULL"
+        ).get(userId)?.cnt || 0;
+
+        return { total, archived, byType, byTag, bySource, byDurability, byMonth, entities, household };
+    }
+
     // ── Conversation windows ───────────────────────────────
 
     getOpenWindow(userId, chatId) {

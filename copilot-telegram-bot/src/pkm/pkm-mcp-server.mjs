@@ -201,6 +201,18 @@ const TOOLS = [
             required: ["query"],
         },
     },
+    {
+        name: "pkm_map",
+        description:
+            "Get an ASCII overview map of this user's memory structure — like a directory tree. " +
+            "Shows memory types, top tags, entities (people/places), timeline, sources, and durability breakdown. " +
+            "Use this FIRST when you need to orient yourself in a user's memory space before searching. " +
+            "Each user has their own isolated map. Results are scoped to the calling user only.",
+        inputSchema: {
+            type: "object",
+            properties: {},
+        },
+    },
 ];
 
 // ── API call helper ─────────────────────────────────────────
@@ -252,6 +264,114 @@ function ok(text) {
 
 function err(text) {
     return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
+}
+
+/**
+ * Render structured memory data as an ASCII directory tree.
+ * @param {object} data — from getMemoryMap()
+ * @returns {string}
+ */
+function renderMemoryMap(data) {
+    const pad = (label, count, width = 24) => {
+        const dots = Math.max(2, width - label.length - String(count).length);
+        return `${label} ${"·".repeat(dots)} ${count}`;
+    };
+
+    const lines = [];
+    const total = data.total || 0;
+    const archived = data.archived || 0;
+
+    lines.push(`📚 Memory Map  (${total} active, ${archived} archived)`);
+    lines.push("│");
+
+    // Types
+    const types = data.byType || [];
+    if (types.length) {
+        lines.push("├── 📂 By Type");
+        types.forEach((t, i) => {
+            const branch = i < types.length - 1 ? "├──" : "└──";
+            lines.push(`│   ${branch} ${pad(t.type || "unknown", t.cnt)}`);
+        });
+    } else {
+        lines.push("├── 📂 By Type (empty)");
+    }
+    lines.push("│");
+
+    // Tags
+    const tags = data.byTag || [];
+    if (tags.length) {
+        lines.push("├── 🏷️  Top Tags");
+        tags.forEach((t, i) => {
+            const branch = i < tags.length - 1 ? "├──" : "└──";
+            lines.push(`│   ${branch} ${pad("#" + t.tag, t.cnt)}`);
+        });
+    } else {
+        lines.push("├── 🏷️  Tags (none yet)");
+    }
+    lines.push("│");
+
+    // Entities
+    const entities = data.entities || [];
+    if (entities.length) {
+        lines.push(`├── 👤 Entities (${entities.length})`);
+        entities.forEach((e, i) => {
+            const branch = i < entities.length - 1 ? "├──" : "└──";
+            const typeLabel = e.type ? ` [${e.type}]` : "";
+            lines.push(`│   ${branch} ${pad(e.name + typeLabel, e.note_count + " linked")}`);
+        });
+    } else {
+        lines.push("├── 👤 Entities (none yet)");
+    }
+    lines.push("│");
+
+    // Timeline
+    const months = data.byMonth || [];
+    if (months.length) {
+        lines.push("├── 📅 Timeline");
+        months.forEach((m, i) => {
+            const branch = i < months.length - 1 ? "├──" : "└──";
+            lines.push(`│   ${branch} ${pad(m.month, m.cnt)}`);
+        });
+    } else {
+        lines.push("├── 📅 Timeline (empty)");
+    }
+    lines.push("│");
+
+    // Sources
+    const sources = data.bySource || [];
+    if (sources.length) {
+        lines.push("├── 🔍 Sources");
+        sources.forEach((s, i) => {
+            const branch = i < sources.length - 1 ? "├──" : "└──";
+            lines.push(`│   ${branch} ${pad(s.source_type || "unknown", s.cnt)}`);
+        });
+    } else {
+        lines.push("├── 🔍 Sources (none)");
+    }
+    lines.push("│");
+
+    // Durability
+    const dur = data.byDurability || [];
+    if (dur.length) {
+        const isLast = !data.household;
+        const mainBranch = isLast ? "└──" : "├──";
+        lines.push(`${mainBranch} 💎 Durability`);
+        dur.forEach((d, i) => {
+            const prefix = isLast ? "    " : "│   ";
+            const branch = i < dur.length - 1 ? "├──" : "└──";
+            lines.push(`${prefix}${branch} ${pad(d.durability || "normal", d.cnt)}`);
+        });
+    }
+
+    // Household
+    if (data.household) {
+        lines.push("│");
+        lines.push(`└── 🏠 Household: ${data.household.name}`);
+        lines.push(`    ├── ${pad("members", data.household.members)}`);
+        lines.push(`    └── ${pad("shared memories", data.household.sharedMemories)}`);
+    }
+
+    return lines.join("\n");
 }
 
 async function handleTool(name, args) {
@@ -403,6 +523,14 @@ async function handleTool(name, args) {
                 return err(data?.error || `API error (${status})`);
             }
 
+            case "pkm_map": {
+                const { status, data } = await apiCall("GET", "/api/pkm/map");
+                if (status === 200) {
+                    return ok(renderMemoryMap(data));
+                }
+                return err(data?.error || `API error (${status})`);
+            }
+
             default:
                 return err(`Unknown tool: ${name}`);
         }
@@ -428,7 +556,7 @@ function handleInitialize(id, params) {
     if (params?.protocolVersion) clientProtocolVersion = params.protocolVersion;
     send(id, {
         protocolVersion: clientProtocolVersion,
-        serverInfo: { name: "pkm-tools", version: "1.0.0" },
+        serverInfo: { name: "pkm-tools", version: "1.1.0" },
         capabilities: { tools: {} },
     });
 }

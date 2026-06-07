@@ -97,7 +97,8 @@ export class PkmManager {
     getSystemHint(userId) {
         if (!this.#store?.isEnabled(userId)) return null;
         const count = this.#store.getNoteCount(userId);
-        return `PKM: ${count} memories stored. Use pkm_search when the user asks about past events, preferences, or personal facts. ` +
+        return `PKM: ${count} memories stored. Use pkm_map to get an overview of the user's memory structure before searching blindly. ` +
+            `Use pkm_search when the user asks about past events, preferences, or personal facts. ` +
             `Use pkm_write when they ask you to remember something or when you learn something worth keeping. ` +
             `Proactively remember important preferences, decisions, and facts — don't wait to be asked.`;
     }
@@ -238,6 +239,13 @@ export class PkmManager {
                 if (!this.#store.isEnabled(userId)) return { status: 403, data: { error: "PKM not enabled" } };
                 const stats = this.#store.getStats(userId);
                 return { status: 200, data: stats };
+            }
+
+            if (pathname === "/api/pkm/map" && method === "GET") {
+                if (!userId) return { status: 401, data: { error: "No user context" } };
+                if (!this.#store.isEnabled(userId)) return { status: 403, data: { error: "PKM not enabled" } };
+                const map = this.#store.getMemoryMap(userId);
+                return { status: 200, data: map };
             }
 
             if (pathname === "/api/pkm/settings" && method === "GET") {
