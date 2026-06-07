@@ -157,6 +157,37 @@ const TOOLS = [
         },
     },
     {
+        name: "pkm_agent_update",
+        description:
+            "Update or archive one of YOUR OWN (agent) private memories. " +
+            "Use to correct outdated info, refine notes, or archive stale entries. " +
+            "Set archive=true to retire a note without deleting it.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                id: { type: "string", description: "Memory note ID to update" },
+                title: { type: "string", description: "New title" },
+                content: { type: "string", description: "New content" },
+                tags: { type: "array", items: { type: "string" }, description: "New tags" },
+                archive: { type: "boolean", description: "Set to true to archive (soft-retire, not delete)" },
+            },
+            required: ["id"],
+        },
+    },
+    {
+        name: "pkm_agent_delete",
+        description:
+            "Securely delete one of YOUR OWN (agent) private memories. " +
+            "Data is forensically unrecoverable. Use for truly obsolete or incorrect information.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                id: { type: "string", description: "Memory note ID to delete" },
+            },
+            required: ["id"],
+        },
+    },
+    {
         name: "pkm_entity_search",
         description:
             "Search memories by person, place, or entity name. Use when the user asks about a specific person " +
@@ -336,6 +367,24 @@ async function handleTool(name, args) {
                 if (status === 201 || status === 200) {
                     return ok(`📝 Noted in your memory: ${data?.title || "(stored)"}\nID: ${data?.id}`);
                 }
+                return err(data?.error || `API error (${status})`);
+            }
+
+            case "pkm_agent_update": {
+                const { id, ...updates } = args || {};
+                if (!id) return err("id is required");
+                const { status, data } = await apiCall("PUT", `/api/pkm/agent/notes/${encodeURIComponent(id)}`, updates);
+                if (status === 200) return ok(`✅ Agent memory updated: ${id}`);
+                if (status === 404) return err("Memory not found (or not an agent note)");
+                return err(data?.error || `API error (${status})`);
+            }
+
+            case "pkm_agent_delete": {
+                const { id } = args || {};
+                if (!id) return err("id is required");
+                const { status, data } = await apiCall("DELETE", `/api/pkm/agent/notes/${encodeURIComponent(id)}`);
+                if (status === 200) return ok(`🗑️ Agent memory securely deleted: ${id}`);
+                if (status === 404) return err("Memory not found (or not an agent note)");
                 return err(data?.error || `API error (${status})`);
             }
 

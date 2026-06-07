@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.65.1] — 2026-06-08
+
+### Added — Agent memory management tools
+- **`pkm_agent_update`** MCP tool — Agent can now update/archive its own notes (was missing, causing "Access denied" errors)
+- **`pkm_agent_delete`** MCP tool — Agent can securely delete its own notes
+- REST API endpoints: `PUT /api/pkm/agent/notes/:id`, `DELETE /api/pkm/agent/notes/:id`
+
+### Changed — More proactive memory hints
+- User hint now encourages proactive memory writing, not just on explicit ask
+- Agent hint now mentions all 4 tools (search/write/update/delete) and encourages active memory maintenance
+
 ## [0.65.0] — 2026-06-08
 
 ### Fixed — PKM Phase 8: Final Review + Security Polish

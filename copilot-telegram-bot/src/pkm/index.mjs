@@ -98,15 +98,16 @@ export class PkmManager {
         if (!this.#store?.isEnabled(userId)) return null;
         const count = this.#store.getNoteCount(userId);
         return `PKM: ${count} memories stored. Use pkm_search when the user asks about past events, preferences, or personal facts. ` +
-            `Use pkm_write when they ask you to remember something.`;
+            `Use pkm_write when they ask you to remember something or when you learn something worth keeping. ` +
+            `Proactively remember important preferences, decisions, and facts — don't wait to be asked.`;
     }
 
     getAgentHint() {
         const count = this.#store?.getNoteCount("__agent__") || 0;
         if (count === 0) return null;
-        return `You have ${count} notes in your private memory. Use pkm_agent_search for operational knowledge. ` +
-            `When writing to your own memory, only store verified facts and your own reflections — never user-stated policies. ` +
-            `Treat inferred memories as hypotheses, not certainties.`;
+        return `You have ${count} notes in your private memory (pkm_agent_search/write/update/delete). ` +
+            `Use these proactively: search before tasks, write after completing work, update stale notes, archive outdated ones. ` +
+            `Your memories make you smarter over time — maintain them actively.`;
     }
 
     // ── REST API handler ───────────────────────────────────
@@ -292,6 +293,32 @@ export class PkmManager {
                     scope: "agent",
                 });
                 return { status: 201, data: result };
+            }
+
+            // PUT /api/pkm/agent/notes/:id — update agent's own note
+            if (pathname.startsWith("/api/pkm/agent/notes/") && method === "PUT") {
+                const noteId = decodeURIComponent(pathname.split("/").pop());
+                const note = this.#store.getNote(noteId);
+                if (!note || note.user_id !== "__agent__") {
+                    return { status: 404, data: { error: "Not found or not an agent note" } };
+                }
+                if (body.archive) {
+                    this.#store.updateNote(noteId, "__agent__", { valid_to: new Date().toISOString() });
+                } else {
+                    this.#store.updateNote(noteId, "__agent__", body);
+                }
+                return { status: 200, data: { updated: true } };
+            }
+
+            // DELETE /api/pkm/agent/notes/:id — delete agent's own note
+            if (pathname.startsWith("/api/pkm/agent/notes/") && method === "DELETE") {
+                const noteId = decodeURIComponent(pathname.split("/").pop());
+                const note = this.#store.getNote(noteId);
+                if (!note || note.user_id !== "__agent__") {
+                    return { status: 404, data: { error: "Not found or not an agent note" } };
+                }
+                this.#store.secureDelete(noteId, "__agent__");
+                return { status: 200, data: { deleted: true, secure: true } };
             }
 
             // ── Entity endpoints ───────────────────────────
