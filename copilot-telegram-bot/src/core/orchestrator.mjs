@@ -761,12 +761,21 @@ export class Orchestrator {
             if (!scope) return;
             this.#resetTypingDebounce();
 
-            // Add newline separator when text resumes after tool calls
-            if (scope._toolJustEnded && scope.messageBuffer && !scope.messageBuffer.endsWith("\n")) {
-                scope.messageBuffer += "\n";
-                if (scope.composer?.active) scope.composer.appendText("\n");
+            // When text resumes after tool calls → new agent turn detected.
+            // (ACP doesn't send agent_message_start/end, so we infer boundaries here.)
+            if (scope._toolJustEnded) {
+                if (scope.messageBuffer?.trim() && scope.composer?.active) {
+                    // Commit previous turn's text as an intermediate message
+                    scope.composer.commitTurn();
+                    scope.messageBuffer = "";
+                    log.debug(`Committed intermediate turn [${tag}]`);
+                } else if (scope.messageBuffer && !scope.messageBuffer.endsWith("\n")) {
+                    // No substantive text to commit — just add newline separator
+                    scope.messageBuffer += "\n";
+                    if (scope.composer?.active) scope.composer.appendText("\n");
+                }
+                scope._toolJustEnded = false;
             }
-            scope._toolJustEnded = false;
 
             scope.messageBuffer += text;
             if (scope.composer?.active) {
@@ -796,7 +805,9 @@ export class Orchestrator {
             }
         });
 
-        // Message boundaries
+        // Message boundaries — ACP v1.0.60 does NOT send these events.
+        // Turn boundaries are inferred in text_chunk handler above via _toolJustEnded.
+        // Kept for forward compatibility if a future ACP version adds them.
         acp.on("message_start", () => {
             log.info(`Agent message_start [${tag}]`);
             if (getSwitching()) return;

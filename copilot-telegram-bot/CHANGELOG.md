@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.49.1] — 2026-06-07
+
+### Fixed
+- **Multi-turn intermediates not working** — Copilot ACP v1.0.60 does not send `agent_message_start`/`agent_message_end` events, so `commitTurn()` was never called. Turn boundaries are now inferred from the `_toolJustEnded` flag: when text resumes after tool completion, the previous turn's text is committed as an intermediate message.
+
 ## [0.49.0] — 2026-06-07
 
 ### Added
