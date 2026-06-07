@@ -156,6 +156,20 @@ const TOOLS = [
             required: ["content"],
         },
     },
+    {
+        name: "pkm_entity_search",
+        description:
+            "Search memories by person, place, or entity name. Use when the user asks about a specific person " +
+            "(e.g. 'what do you know about Daniel?') or place. Returns entity info and linked memories.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                query: { type: "string", description: "Entity name to search for (person, place, company)" },
+                limit: { type: "number", description: "Max results (default: 10)" },
+            },
+            required: ["query"],
+        },
+    },
 ];
 
 // ── API call helper ─────────────────────────────────────────
@@ -321,6 +335,21 @@ async function handleTool(name, args) {
                 const { status, data } = await apiCall("POST", "/api/pkm/agent/write", { content, ...opts });
                 if (status === 201 || status === 200) {
                     return ok(`📝 Noted in your memory: ${data?.title || "(stored)"}\nID: ${data?.id}`);
+                }
+                return err(data?.error || `API error (${status})`);
+            }
+
+            case "pkm_entity_search": {
+                const { query, limit } = args || {};
+                if (!query) return err("query is required");
+                const { status, data } = await apiCall("POST", "/api/pkm/entities", { query, limit });
+                if (status === 200) {
+                    if (!data?.results?.length) return ok("No entities found matching that name.");
+                    const lines = [];
+                    for (const e of data.results) {
+                        lines.push(`👤 **${e.name}** (${e.type || "unknown"}) — ${e.note_count} linked memories\n   ID: ${e.id}`);
+                    }
+                    return ok(`Found ${data.results.length} entities:\n\n${lines.join("\n\n")}`);
                 }
                 return err(data?.error || `API error (${status})`);
             }

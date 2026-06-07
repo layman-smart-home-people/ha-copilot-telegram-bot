@@ -248,6 +248,18 @@ export class PkmExtractor {
                     conversationId: window.id,
                 });
                 noteIds.push(result.id);
+
+                // Entity linking
+                if (note.entities?.length) {
+                    this.#store.processEntities(result.id, window.user_id, note.entities);
+                }
+
+                // Contradiction detection
+                this.#store.detectContradictions(result.id, window.user_id, {
+                    type: note.type || "fact",
+                    title: note.title,
+                    content: note.content,
+                });
             } catch (e) {
                 log.warn(`Failed to store extracted note: ${e.message}`);
             }
@@ -298,6 +310,14 @@ export class PkmExtractor {
                         ).run(sdId, noteResult.id, window.user_id, data.dataType, data.value,
                             data.unit || null, new Date().toISOString(),
                             data.metadata ? JSON.stringify(data.metadata) : null);
+
+                        // Contradiction detection — supersede older readings of same type
+                        this.#store.detectContradictions(noteResult.id, window.user_id, {
+                            type: "health",
+                            title: `${data.dataType}: ${data.value}${data.unit || ""}`,
+                            content: `Recorded ${data.dataType}: ${data.value} ${data.unit || ""}`,
+                            dataType: data.dataType,
+                        });
 
                         results.push(noteResult);
                         log.info(`Extracted structured data: ${data.dataType}=${data.value}`);

@@ -820,6 +820,172 @@ export class PkmStore {
         }
         return notes;
     }
+
+    // ── Entity processing ──────────────────────────────────
+
+    /**
+     * Find or create an entity and link it to a note.
+     * @param {string} userId - Owner of the entity
+     * @param {string} noteId - Note to link
+     * @param {{ name: string, type?: string }} entityDef - Entity definition from LLM
+     * @returns {string} Entity ID
+     */
+    findOrCreateEntity(userId, noteId, entityDef) {
+        const name = entityDef.name?.trim();
+        if (!name) return null;
+        const type = entityDef.type || "unknown";
+        const nameLower = name.toLowerCase();
+
+        // Find existing entity by name or alias (case-insensitive)
+        let entity = this.#db.prepare(
+            `SELECT * FROM entities WHERE user_id = ? AND (LOWER(name) = ? OR LOWER(aliases) LIKE ?)`
+        ).get(userId, nameLower, `%${nameLower}%`);
+
+        if (!entity) {
+            // Create new entity
+            const id = randomUUID();
+            const now = new Date().toISOString();
+            this.#db.prepare(
+                `INSERT INTO entities (id, user_id, name, type, aliases, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`
+            ).run(id, userId, name, type, JSON.stringify([nameLower]), now, now);
+            entity = { id };
+        }
+
+        // Link entity to note (ignore duplicate)
+        try {
+            this.#db.prepare(
+                `INSERT OR IGNORE INTO entity_notes (entity_id, note_id) VALUES (?, ?)`
+            ).run(entity.id, noteId);
+        } catch { /* ignore duplicates */ }
+
+        return entity.id;
+    }
+
+    /**
+     * Process entities from an extracted note.
+     * Called after note creation to populate entities + entity_notes tables.
+     * @param {string} noteId - The note ID
+     * @param {string} userId - The note's owner
+     * @param {Array<{name: string, type?: string}>} entities - Entities from LLM
+     */
+    processEntities(noteId, userId, entities) {
+        if (!Array.isArray(entities) || entities.length === 0) return;
+        for (const ent of entities.slice(0, 10)) {
+            try {
+                this.findOrCreateEntity(userId, noteId, ent);
+            } catch (e) {
+                log.warn(`Entity processing failed for "${ent.name}": ${e.message}`);
+            }
+        }
+    }
+
+    /**
+     * Search entities by name (partial match).
+     * @returns {Array} Matching entities with linked note count
+     */
+    searchEntities(userId, query, { limit = 10 } = {}) {
+        const pattern = `%${query}%`;
+        return this.#db.prepare(`
+            SELECT e.*, COUNT(en.note_id) as note_count
+            FROM entities e
+            LEFT JOIN entity_notes en ON en.entity_id = e.id
+            WHERE e.user_id = ? AND (e.name LIKE ? OR e.aliases LIKE ?)
+            GROUP BY e.id
+            ORDER BY note_count DESC
+            LIMIT ?
+        `).all(userId, pattern, pattern, limit);
+    }
+
+    /**
+     * Get all notes linked to a specific entity.
+     */
+    getNotesForEntity(entityId, { userId, limit = 20 } = {}) {
+        let sql = `
+            SELECT n.*
+            FROM notes n
+            JOIN entity_notes en ON en.note_id = n.id
+            WHERE en.entity_id = ? AND n.valid_to IS NULL
+        `;
+        const params = [entityId];
+        if (userId) {
+            sql += " AND n.user_id = ?";
+            params.push(userId);
+        }
+        sql += " ORDER BY n.created_at DESC LIMIT ?";
+        params.push(limit);
+        return this.#db.prepare(sql).all(...params);
+    }
+
+    // ── Contradiction detection ────────────────────────────
+
+    /**
+     * Detect and handle contradictions for a newly created note.
+     * Searches existing active notes of similar type/entities for conflicts.
+     * If found, marks the old note as superseded.
+     * @param {string} noteId - The newly created note
+     * @param {string} userId - Note owner
+     * @param {{ type: string, title?: string, content: string, dataType?: string }} noteData
+     * @returns {{ superseded: string[] }} IDs of superseded notes
+     */
+    detectContradictions(noteId, userId, noteData) {
+        const superseded = [];
+
+        // Strategy 1: Structured data — same data_type supersedes older readings
+        if (noteData.dataType) {
+            const older = this.#db.prepare(`
+                SELECT n.id FROM notes n
+                JOIN structured_data sd ON sd.note_id = n.id
+                WHERE sd.user_id = ? AND sd.data_type = ? AND n.id != ? AND n.valid_to IS NULL
+                ORDER BY sd.measured_at DESC
+            `).all(userId, noteData.dataType, noteId);
+
+            for (const old of older) {
+                this.#supersedeNote(old.id, noteId, userId);
+                superseded.push(old.id);
+            }
+            return { superseded };
+        }
+
+        // Strategy 2: Preference/fact notes with similar title — newer supersedes older
+        if (noteData.type === "preference" || noteData.type === "fact") {
+            const titleWords = (noteData.title || "")
+                .toLowerCase()
+                .split(/\s+/)
+                .filter(w => w.length > 3);
+
+            if (titleWords.length >= 2) {
+                // Find notes with similar titles (same type, same user, still active)
+                const candidates = this.#db.prepare(`
+                    SELECT id, title, content FROM notes
+                    WHERE user_id = ? AND type = ? AND id != ? AND valid_to IS NULL
+                    ORDER BY created_at DESC LIMIT 20
+                `).all(userId, noteData.type, noteId);
+
+                for (const cand of candidates) {
+                    const candTitleLower = (cand.title || "").toLowerCase();
+                    const matchCount = titleWords.filter(w => candTitleLower.includes(w)).length;
+                    // If >60% of title words match, it's likely a contradiction
+                    if (matchCount >= Math.ceil(titleWords.length * 0.6)) {
+                        this.#supersedeNote(cand.id, noteId, userId);
+                        superseded.push(cand.id);
+                    }
+                }
+            }
+        }
+
+        return { superseded };
+    }
+
+    /** Mark a note as superseded by another */
+    #supersedeNote(oldNoteId, newNoteId, userId) {
+        const now = new Date().toISOString();
+        this.#db.prepare(
+            `UPDATE notes SET valid_to = ?, superseded_by = ?, updated_at = ? WHERE id = ?`
+        ).run(now, newNoteId, now, oldNoteId);
+        this.logEvent(oldNoteId, userId, "superseded", { superseded_by: newNoteId });
+        log.info(`Note ${oldNoteId} superseded by ${newNoteId}`);
+    }
 }
 
 export default PkmStore;

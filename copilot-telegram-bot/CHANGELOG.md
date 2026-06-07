@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.63.0] — 2026-06-08
+
+### Added — PKM Phase 6: Entity + Structured Data + Contradiction Detection
+- **Entity extraction & linking** — Named entities (people, places, companies) from LLM extraction are stored in `entities` table and linked to notes via `entity_notes`
+- **Entity search MCP tool** (`pkm_entity_search`) — Search memories by person/place name, returns entity info and linked memory count
+- **Contradiction detection** — New notes automatically supersede older conflicting notes:
+  - Health/structured data: newer reading supersedes all older readings of same type (e.g. weight)
+  - Preferences/facts: title similarity matching (>60% word overlap) marks older as superseded
+- **Entity REST API** — `POST /api/pkm/entities` (search) + `GET /api/pkm/entities/:id` (get linked notes)
+- Access control enforced on entity endpoints (user isolation)
+
 ## [0.62.0] — 2026-06-08
 
 ### Added — PKM Phase 5: LLM Extraction Wiring

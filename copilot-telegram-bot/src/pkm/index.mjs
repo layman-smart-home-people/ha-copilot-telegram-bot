@@ -271,6 +271,25 @@ export class PkmManager {
                 return { status: 201, data: result };
             }
 
+            // ── Entity endpoints ───────────────────────────
+
+            if (pathname === "/api/pkm/entities" && method === "POST") {
+                if (!userId) return { status: 401, data: { error: "No user context" } };
+                if (!this.#store.isEnabled(userId)) return { status: 403, data: { error: "PKM not enabled" } };
+                const results = this.#store.searchEntities(userId, body.query || "", {
+                    limit: body.limit || 10,
+                });
+                return { status: 200, data: { results } };
+            }
+
+            if (pathname.startsWith("/api/pkm/entities/") && method === "GET") {
+                if (!userId) return { status: 401, data: { error: "No user context" } };
+                if (!this.#store.isEnabled(userId)) return { status: 403, data: { error: "PKM not enabled" } };
+                const entityId = decodeURIComponent(pathname.split("/").pop());
+                const notes = this.#store.getNotesForEntity(entityId, { userId, limit: 20 });
+                return { status: 200, data: { notes } };
+            }
+
             return { status: 404, data: { error: "Unknown PKM endpoint" } };
 
         } catch (e) {
