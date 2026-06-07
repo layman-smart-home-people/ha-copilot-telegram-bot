@@ -129,8 +129,19 @@ export class PkmManager {
                 if (!userId) return { status: 401, data: { error: "No user context" } };
                 if (!this.#store.isEnabled(userId)) return { status: 403, data: { error: "PKM not enabled" } };
 
-                const scope = (chatType === "group" || chatType === "supergroup") ? "group" : "user";
-                const scopeId = scope === "group" ? context.chatId : undefined;
+                let scope = body.scope || "user";
+                let scopeId;
+
+                // In group context, search household memories if user is a member
+                if (chatType === "group" || chatType === "supergroup") {
+                    const settings = this.#store.getSettings(userId);
+                    if (settings?.household_id && this.#store.isHouseholdMember(userId, settings.household_id)) {
+                        scope = "household";
+                        scopeId = settings.household_id;
+                    } else {
+                        scope = "user"; // fall back to own memories
+                    }
+                }
 
                 const { results } = this.#search.search(body.query, {
                     userId, scope, scopeId,
@@ -149,6 +160,16 @@ export class PkmManager {
                     return { status: 400, data: { error: "Invalid scope" } };
                 }
 
+                // Household write requires membership verification
+                let scopeId;
+                if (scope === "household") {
+                    const settings = this.#store.getSettings(userId);
+                    if (!settings?.household_id || !this.#store.isHouseholdMember(userId, settings.household_id)) {
+                        return { status: 403, data: { error: "Not a household member" } };
+                    }
+                    scopeId = settings.household_id;
+                }
+
                 const result = this.#store.createNote({
                     userId,
                     chatId: context.chatId,
@@ -161,7 +182,7 @@ export class PkmManager {
                     confidence: 0.95,
                     importance: 0.6,
                     scope,
-                    scopeId: scope === "household" ? this.#store.getSettings(userId)?.household_id : undefined,
+                    scopeId,
                 });
                 return { status: 201, data: result };
             }
@@ -172,9 +193,11 @@ export class PkmManager {
                 const noteId = decodeURIComponent(pathname.split("/").pop());
                 const note = this.#store.getNote(noteId);
                 if (!note) return { status: 404, data: { error: "Not found" } };
-                // Access control: user can only get their own notes or household notes
-                if (note.user_id !== userId && note.scope !== "household") {
-                    return { status: 403, data: { error: "Access denied" } };
+                // Access control: own notes + household notes (with membership check)
+                if (note.user_id !== userId) {
+                    if (note.scope !== "household" || !this.#store.isHouseholdMember(userId, note.scope_id)) {
+                        return { status: 403, data: { error: "Access denied" } };
+                    }
                 }
                 return { status: 200, data: note };
             }
@@ -288,6 +311,50 @@ export class PkmManager {
                 const entityId = decodeURIComponent(pathname.split("/").pop());
                 const notes = this.#store.getNotesForEntity(entityId, { userId, limit: 20 });
                 return { status: 200, data: { notes } };
+            }
+
+            // ── Export endpoint ─────────────────────────────
+
+            if (pathname === "/api/pkm/export" && method === "GET") {
+                if (!userId) return { status: 401, data: { error: "No user context" } };
+                if (!this.#store.isEnabled(userId)) return { status: 403, data: { error: "PKM not enabled" } };
+                const exportData = this.#store.exportUserData(userId);
+                return { status: 200, data: exportData };
+            }
+
+            // ── Household endpoints ────────────────────────
+
+            if (pathname === "/api/pkm/household/create" && method === "POST") {
+                if (!userId) return { status: 401, data: { error: "No user context" } };
+                if (!this.#store.isEnabled(userId)) return { status: 403, data: { error: "PKM not enabled" } };
+                const name = body.name || "My Household";
+                const result = this.#store.createHousehold(userId, name);
+                return { status: 201, data: result };
+            }
+
+            if (pathname === "/api/pkm/household/join" && method === "POST") {
+                if (!userId) return { status: 401, data: { error: "No user context" } };
+                if (!this.#store.isEnabled(userId)) return { status: 403, data: { error: "PKM not enabled" } };
+                if (!body.household_id) return { status: 400, data: { error: "household_id required" } };
+                this.#store.joinHousehold(userId, body.household_id);
+                return { status: 200, data: { joined: true } };
+            }
+
+            if (pathname === "/api/pkm/household/leave" && method === "POST") {
+                if (!userId) return { status: 401, data: { error: "No user context" } };
+                this.#store.leaveHousehold(userId);
+                return { status: 200, data: { left: true } };
+            }
+
+            if (pathname === "/api/pkm/household" && method === "GET") {
+                if (!userId) return { status: 401, data: { error: "No user context" } };
+                const settings = this.#store.getSettings(userId);
+                if (!settings?.household_id) {
+                    return { status: 200, data: { household: null, members: [] } };
+                }
+                const household = this.#store.getHousehold(settings.household_id);
+                const members = this.#store.getHouseholdMembers(settings.household_id);
+                return { status: 200, data: { household, members } };
             }
 
             return { status: 404, data: { error: "Unknown PKM endpoint" } };

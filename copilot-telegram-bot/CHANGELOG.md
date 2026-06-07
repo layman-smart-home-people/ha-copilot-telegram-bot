@@ -2,6 +2,16 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.64.0] — 2026-06-08
+
+### Added — PKM Phase 7: Household + Group + Export
+- **Household management** — Create, join, leave households for shared memories (`/memory household` commands)
+- **Household access control** — Membership verification enforced on note read/write, household notes visible to all members
+- **Group chat context** — In group chats, searches automatically target household memories (if user is a household member)
+- **Data export** — `/memory export` generates full JSON export (notes, entities, structured data, audit log) downloadable via URL
+- **Household search fix** — FTS5 search uses `scope_id` for household scope (any member can find any member's shared notes)
+- **Updated /memory help** — Shows export + household commands
+
 ## [0.63.0] — 2026-06-08
 
 ### Added — PKM Phase 6: Entity + Structured Data + Contradiction Detection

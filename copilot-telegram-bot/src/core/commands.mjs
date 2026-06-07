@@ -752,7 +752,13 @@ export async function handleSlashCommand(ctx, command, args) {
                 if (sub === "stats") {
                     const count = pkm.store.getNoteCount(userId);
                     const enabled = pkm.store.isEnabled(userId);
-                    reply(`🧠 **Memory Stats**\n• Status: ${enabled ? "✅ Enabled" : "❌ Disabled"}\n• Memories: ${count}`);
+                    const settings = pkm.store.getSettings(userId);
+                    let text = `🧠 **Memory Stats**\n• Status: ${enabled ? "✅ Enabled" : "❌ Disabled"}\n• Memories: ${count}`;
+                    if (settings?.household_id) {
+                        const hh = pkm.store.getHousehold(settings.household_id);
+                        text += `\n• Household: ${hh?.name || "Unknown"}`;
+                    }
+                    reply(text);
                     return true;
                 }
                 if (sub === "delete") {
@@ -762,6 +768,56 @@ export async function handleSlashCommand(ctx, command, args) {
                         reply("🧠 🗑️ All your memories have been securely deleted.");
                     } else {
                         reply("🧠 Usage: /memory delete all\n\n⚠️ This permanently deletes all your stored memories.");
+                    }
+                    return true;
+                }
+                if (sub === "export") {
+                    const exportData = pkm.store.exportUserData(userId);
+                    const json = JSON.stringify(exportData, null, 2);
+                    // Save to www for download
+                    const { writeFileSync } = await import("node:fs");
+                    const filename = `pkm-export-${userId}-${Date.now()}.json`;
+                    writeFileSync(`/config/www/${filename}`, json);
+                    reply(`🧠 📦 Export ready!\n\n${exportData.summary.totalNotes} notes exported.\n\n📥 Download: https://nuach.thng.sg/local/${filename}\n\n⚠️ File will be available until manually removed.`);
+                    return true;
+                }
+                if (sub === "household") {
+                    const subArg = args.split(/\s+/)[1]?.toLowerCase();
+                    if (subArg === "create") {
+                        const name = args.split(/\s+/).slice(2).join(" ") || "Nuach";
+                        const result = pkm.store.createHousehold(userId, name);
+                        reply(`🧠 🏠 Household "${name}" created!\n\nID: \`${result.id}\`\nShare this ID with family members so they can join.`);
+                        return true;
+                    }
+                    if (subArg === "join") {
+                        const hhId = args.split(/\s+/)[2];
+                        if (!hhId) { reply("🧠 Usage: /memory household join <household_id>"); return true; }
+                        try {
+                            pkm.store.joinHousehold(userId, hhId);
+                            reply("🧠 🏠 Joined household! Shared memories are now accessible.");
+                        } catch (e) {
+                            reply(`🧠 ❌ ${e.message}`);
+                        }
+                        return true;
+                    }
+                    if (subArg === "leave") {
+                        try {
+                            pkm.store.leaveHousehold(userId);
+                            reply("🧠 🏠 Left household. Shared memories are no longer accessible.");
+                        } catch (e) {
+                            reply(`🧠 ❌ ${e.message}`);
+                        }
+                        return true;
+                    }
+                    // Show household info
+                    const settings = pkm.store.getSettings(userId);
+                    if (!settings?.household_id) {
+                        reply("🧠 🏠 Not in a household.\n\n• /memory household create <name>\n• /memory household join <id>");
+                    } else {
+                        const hh = pkm.store.getHousehold(settings.household_id);
+                        const members = pkm.store.getHouseholdMembers(settings.household_id);
+                        const memberList = members.map(m => `  • ${m.user_id} (${m.role})`).join("\n");
+                        reply(`🧠 🏠 **${hh?.name || "Household"}**\nID: \`${settings.household_id}\`\nMembers:\n${memberList}\n\n• /memory household leave`);
                     }
                     return true;
                 }
@@ -775,6 +831,8 @@ export async function handleSlashCommand(ctx, command, args) {
                     `• /memory enable — start learning\n` +
                     `• /memory disable — stop learning\n` +
                     `• /memory stats — show stats\n` +
+                    `• /memory export — download all data\n` +
+                    `• /memory household — manage shared memories\n` +
                     `• /memory delete all — erase all memories`
                 );
                 return true;

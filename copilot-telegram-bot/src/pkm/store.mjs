@@ -425,6 +425,133 @@ export class PkmStore {
         return notes.length;
     }
 
+    // ── Household management ───────────────────────────────
+
+    /**
+     * Create a new household and add the creator as owner.
+     * @returns {{ id: string }}
+     */
+    createHousehold(userId, name) {
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        this.#db.prepare(
+            `INSERT INTO households (id, name, created_by, created_at) VALUES (?, ?, ?, ?)`
+        ).run(id, name, userId, now);
+        this.#db.prepare(
+            `INSERT INTO household_members (household_id, user_id, role, joined_at) VALUES (?, ?, 'owner', ?)`
+        ).run(id, userId, now);
+        // Link household to user settings
+        this.#db.prepare(
+            `UPDATE pkm_settings SET household_id = ?, updated_at = ? WHERE user_id = ?`
+        ).run(id, now, userId);
+        this.logEvent(null, userId, "household_created", { household_id: id, name });
+        return { id };
+    }
+
+    /**
+     * Join an existing household.
+     */
+    joinHousehold(userId, householdId) {
+        const hh = this.#db.prepare("SELECT * FROM households WHERE id = ?").get(householdId);
+        if (!hh) throw new Error("Household not found");
+        // Check not already a member
+        const existing = this.#db.prepare(
+            "SELECT * FROM household_members WHERE household_id = ? AND user_id = ?"
+        ).get(householdId, userId);
+        if (existing) throw new Error("Already a member");
+
+        const now = new Date().toISOString();
+        this.#db.prepare(
+            `INSERT INTO household_members (household_id, user_id, role, joined_at) VALUES (?, ?, 'member', ?)`
+        ).run(householdId, userId, now);
+        this.#db.prepare(
+            `UPDATE pkm_settings SET household_id = ?, updated_at = ? WHERE user_id = ?`
+        ).run(householdId, now, userId);
+        this.logEvent(null, userId, "household_joined", { household_id: householdId });
+    }
+
+    /**
+     * Leave a household.
+     */
+    leaveHousehold(userId) {
+        const settings = this.getSettings(userId);
+        if (!settings?.household_id) throw new Error("Not in a household");
+        const now = new Date().toISOString();
+        this.#db.prepare(
+            "DELETE FROM household_members WHERE household_id = ? AND user_id = ?"
+        ).run(settings.household_id, userId);
+        this.#db.prepare(
+            `UPDATE pkm_settings SET household_id = NULL, updated_at = ? WHERE user_id = ?`
+        ).run(now, userId);
+        this.logEvent(null, userId, "household_left", { household_id: settings.household_id });
+    }
+
+    /**
+     * Check if a user is a member of a given household.
+     */
+    isHouseholdMember(userId, householdId) {
+        if (!householdId) return false;
+        const row = this.#db.prepare(
+            "SELECT 1 FROM household_members WHERE household_id = ? AND user_id = ?"
+        ).get(householdId, userId);
+        return !!row;
+    }
+
+    /**
+     * Get all members of a household.
+     */
+    getHouseholdMembers(householdId) {
+        return this.#db.prepare(
+            "SELECT * FROM household_members WHERE household_id = ? ORDER BY joined_at"
+        ).all(householdId);
+    }
+
+    /**
+     * Get household info.
+     */
+    getHousehold(householdId) {
+        return this.#db.prepare("SELECT * FROM households WHERE id = ?").get(householdId) || null;
+    }
+
+    // ── Data export ────────────────────────────────────────
+
+    /**
+     * Export all user data as a structured JSON object.
+     * Includes notes, entities, structured data, settings.
+     */
+    exportUserData(userId) {
+        const notes = this.#db.prepare(
+            "SELECT * FROM notes WHERE user_id = ? ORDER BY created_at"
+        ).all(userId);
+        const entities = this.#db.prepare(
+            "SELECT * FROM entities WHERE user_id = ? ORDER BY name"
+        ).all(userId);
+        const structuredData = this.#db.prepare(
+            "SELECT * FROM structured_data WHERE user_id = ? ORDER BY measured_at"
+        ).all(userId);
+        const settings = this.getSettings(userId);
+        const auditLog = this.#db.prepare(
+            "SELECT * FROM memory_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 500"
+        ).all(userId);
+
+        return {
+            exportedAt: new Date().toISOString(),
+            userId,
+            settings: settings || {},
+            notes,
+            entities,
+            structuredData,
+            auditLog,
+            summary: {
+                totalNotes: notes.length,
+                activeNotes: notes.filter(n => !n.valid_to).length,
+                supersededNotes: notes.filter(n => n.valid_to).length,
+                entityCount: entities.length,
+                structuredDataPoints: structuredData.length,
+            },
+        };
+    }
+
     // ── Search (FTS5) ──────────────────────────────────────
 
     /**
@@ -445,15 +572,19 @@ export class PkmStore {
             FROM notes n
             JOIN notes_fts ON notes_fts.rowid = n.rowid
             WHERE notes_fts MATCH ?
-              AND n.user_id = ?
               AND n.scope = ?
               AND n.valid_to IS NULL
         `;
-        const params = [sanitized, userId, scope];
+        const params = [sanitized, scope];
 
-        if (scopeId) {
+        // For household scope, match by scope_id (all members can read)
+        // For user/agent scope, match by user_id (private)
+        if (scope === "household" && scopeId) {
             sql += " AND n.scope_id = ?";
             params.push(scopeId);
+        } else {
+            sql += " AND n.user_id = ?";
+            params.push(userId);
         }
         if (type) {
             sql += " AND n.type = ?";
