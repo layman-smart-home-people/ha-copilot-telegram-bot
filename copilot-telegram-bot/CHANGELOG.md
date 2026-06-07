@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.69.0] — 2026-06-08
+
+### Changed — PKM v2 Phase 4: MCP Tool Consolidation + REST API
+- **14 tools → 5 mega-tools**: `pkm_memory` (write/update/delete/get/link), `pkm_navigate` (map/browse/context/timeline), `pkm_search` (with entity + scope support), `pkm_collection` (create/add/query/update/remove/list), `pkm_manage` (stats/settings/topic_create/topic_move/topic_merge/maintain)
+- **Agent scope unification** — `scope: "agent"` parameter replaces 4 separate `pkm_agent_*` tools
+- **REST API refactor** — `handleApi` refactored from if/else chain to route table (Map + prefix routes)
+- **New REST endpoints** — `/api/pkm/navigate/*`, `/api/pkm/collection/*`, `/api/pkm/topics/*`, `/api/pkm/link`, `/api/pkm/maintain`
+- **Enhanced memory map renderer** — topic tree with bridges + collections + uncategorized count
+- **Updated system/agent hints** — reference new v2 tool names and action syntax
+- **Rollback safety** — old v1 tool definitions kept as comment block in MCP server
+- **MCP server version** bumped to 2.0.0
+
 ## [0.68.0] — 2026-06-08
 
 ### Added — PKM v2 Phase 3: Collections + Navigation + Enhanced Map
