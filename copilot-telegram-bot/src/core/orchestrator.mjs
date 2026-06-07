@@ -79,6 +79,12 @@ export class Orchestrator {
     #lastProcessedScope = null;
     #lastProcessedAt = 0;
 
+    // Pending approval requests (userId → { chatId, username, text, requestedAt })
+    #pendingApprovals = new Map();
+
+    // Guest expiry check timer
+    #expiryCheckTimer = null;
+
     // --- Background task queue (overflow ACP) ---
     #backgroundQueue = [];
     #backgroundActive = false;
@@ -1135,6 +1141,12 @@ export class Orchestrator {
         this.#telegram.on("poll_error", (err) => {
             log.warn(`Telegram poll error: ${err.message}`);
         });
+
+        // Guest expiry check — every 5 minutes
+        if (this.#pairing) {
+            this.#expiryCheckTimer = setInterval(() => this.#checkExpiredUsers(), 5 * 60 * 1000);
+            if (this.#expiryCheckTimer.unref) this.#expiryCheckTimer.unref();
+        }
     }
 
     // --- Build command context (public — used by TelegramAdapter) ---
@@ -1327,34 +1339,34 @@ export class Orchestrator {
             if (this.#pairing.isPaired(userId)) {
                 this.#pairing.updateUsername(userId, username);
             } else {
-                // Check if user has a pending code — they might be entering it
+                // Check for invite link: /start invite_TOKEN or /start guest_TOKEN
+                const startPayload = text.startsWith("/start ") ? text.slice(7).trim() : null;
+                if (startPayload && (startPayload.startsWith("invite_") || startPayload.startsWith("guest_"))) {
+                    const token = startPayload.replace(/^(invite_|guest_)/, "");
+                    await this.#handleInviteLink(userId, username, chatId, token);
+                    return;
+                }
+
+                // Check if user has a pending pairing code (backward compat)
                 if (this.#pairing.hasPendingCode(userId)) {
                     const verified = this.#pairing.verifyCode(userId, text);
                     if (verified) {
+                        const role = this.#pairing.getRole(userId);
+                        const welcome = this.#pairing.getWelcomeMessage(role);
                         this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(chatId, "✅ Paired successfully! You can now use the bot.")
+                            this.#telegram.sendMessage(chatId, welcome)
                         );
-                        // Notify admin
                         this.#notifyAdminPairing(userId, username, chatId);
                     } else {
                         this.#telegram.enqueue(() =>
-                            this.#telegram.sendMessage(chatId, "❌ Invalid or expired code. Check HA logs for a fresh code.")
+                            this.#telegram.sendMessage(chatId, "❌ Invalid or expired code. Contact an admin for access.")
                         );
                     }
                     return;
                 }
 
-                // Not paired — start pairing flow (works in DMs and groups)
-                const code = this.#pairing.generateCode(userId, username);
-                const isGroup = message.chat.type !== "private";
-                const prompt = isGroup
-                    ? `🔐 Hi ${username || "there"}! Pairing required.\n\nA code has been generated — check HA add-on logs or ask the admin.\nReply here or DM me with the code.\n\n⏳ Expires in 15 minutes.`
-                    : `🔐 Pairing required\n\nA pairing code has been generated.\nCheck your Home Assistant add-on logs and enter the code here.\n\n⏳ Code expires in 15 minutes.`;
-                this.#telegram.enqueue(() =>
-                    this.#telegram.sendMessage(chatId, prompt)
-                );
-                // Notify admin about new pairing request (include code so admin doesn't need logs)
-                this.#notifyAdminPairingRequest(userId, username, isGroup, chatId, code);
+                // Not paired — request admin approval
+                await this.#requestApproval(userId, username, chatId, text, message.chat.type);
                 return;
             }
         } else {
@@ -2273,6 +2285,225 @@ export class Orchestrator {
         this.#adapter.notifyAdminPairing(userId, username, sourceChatId);
     }
 
+    // --- Onboarding flows ---
+
+    /** Handle /start invite_TOKEN deep link. */
+    async #handleInviteLink(userId, username, chatId, token) {
+        if (!this.#pairing) return;
+
+        const result = this.#pairing.consumeInvite(token, userId);
+        if (!result) {
+            this.#telegram.enqueue(() =>
+                this.#telegram.sendMessage(chatId, "❌ Invalid or expired invite link. Contact an admin for access.")
+            );
+            return;
+        }
+
+        // Pair user with the invite's role
+        this.#pairing.setUserRole(userId, result.role, {
+            username,
+            pairedBy: "invite",
+            expiresAt: result.roleExpiresAt || null,
+        });
+
+        const welcome = this.#pairing.getWelcomeMessage(result.role);
+        this.#telegram.enqueue(() =>
+            this.#telegram.sendMessage(chatId, welcome)
+        );
+
+        // Notify admins
+        const who = username ? `@${username}` : `User ${userId}`;
+        this.#broadcastAdmin(`🔗 ${who} joined via invite link (role: ${result.role})`);
+        log.info(`User ${userId} paired via invite link as ${result.role}`);
+    }
+
+    /** Request admin approval for a new user. */
+    async #requestApproval(userId, username, userChatId, originalText, chatType = "private") {
+        if (!this.#pairing) return;
+
+        // Already pending — don't spam admins
+        if (this.#pendingApprovals.has(userId)) {
+            this.#telegram.enqueue(() =>
+                this.#telegram.sendMessage(userChatId, "⏳ Your access request is being reviewed. Please wait for admin approval.")
+            );
+            return;
+        }
+
+        // Store pending state
+        this.#pendingApprovals.set(userId, {
+            chatId: userChatId,
+            chatType,
+            username,
+            text: originalText,
+            requestedAt: Date.now(),
+        });
+
+        // Tell user we're waiting
+        this.#telegram.enqueue(() =>
+            this.#telegram.sendMessage(userChatId,
+                "🔐 Access request sent to admins.\n\nPlease wait for approval — you'll be notified when an admin responds."
+            )
+        );
+
+        // Send approval buttons to all users with user:manage capability
+        const adminIds = this.#pairing.getUsersWithCapability("user:manage");
+        if (adminIds.length === 0) {
+            // Fallback: send to allowed_chat_ids (owner)
+            adminIds.push(...this.#allowedChatIds);
+        }
+
+        const who = username ? `@${username}` : `User ${userId}`;
+        const preview = originalText ? `\n💬 "${originalText.slice(0, 100)}${originalText.length > 100 ? "…" : ""}"` : "";
+
+        for (const adminId of adminIds) {
+            if (adminId === userId) continue;
+
+            const grantableRoles = this.#pairing.getGrantableRoles(adminId);
+            if (grantableRoles.length === 0) continue;
+
+            // Build role buttons (one per row) + deny
+            const rows = grantableRoles.map(r => [{
+                text: `${r.icon || "👤"} ${r.name}`,
+                value: `approve:${userId}:${r.name}`,
+            }]);
+            rows.push([{
+                text: "❌ Deny",
+                value: `approve:${userId}:deny`,
+            }]);
+
+            // Fire-and-forget — each admin's response handled independently
+            this.#buttons.prompt(
+                adminId,
+                `🔐 New access request\n\n👤 ${who} (ID: ${userId})${preview}`,
+                rows,
+                { timeoutMs: 0 }
+            ).then((result) => {
+                if (!result?.value) {
+                    // Prompt expired or cancelled — clean up stale pending
+                    this.#cleanStalePendingApprovals();
+                    return;
+                }
+                this.#handleApprovalResponse(result.value, adminId, result.messageId);
+            }).catch(() => {
+                // Button expired or error — clean up
+                this.#cleanStalePendingApprovals();
+            });
+        }
+
+        log.info(`Approval requested for user ${userId} — sent to ${adminIds.length} admin(s)`);
+    }
+
+    /** Handle an admin's response to an approval request. */
+    async #handleApprovalResponse(value, adminChatId, adminMsgId) {
+        const parts = value.split(":");
+        if (parts[0] !== "approve" || parts.length < 3) return;
+
+        const userId = Number(parts[1]);
+        const roleOrDeny = parts.slice(2).join(":");
+
+        const pending = this.#pendingApprovals.get(userId);
+        if (!pending) {
+            // Already handled by another admin
+            try {
+                await this.#buttons.finalize(adminChatId, adminMsgId, "⚠️ Already handled by another admin");
+            } catch {}
+            return;
+        }
+
+        this.#pendingApprovals.delete(userId);
+
+        if (roleOrDeny === "deny") {
+            this.#telegram.enqueue(() =>
+                this.#telegram.sendMessage(pending.chatId, "❌ Your access request was denied by an admin.")
+            );
+            try {
+                const who = pending.username ? `@${pending.username}` : `User ${userId}`;
+                await this.#buttons.finalize(adminChatId, adminMsgId, `❌ Denied: ${who}`);
+            } catch {}
+            log.info(`User ${userId} denied by admin ${adminChatId}`);
+            return;
+        }
+
+        // Approved — assign role
+        try {
+            this.#pairing.setUserRole(userId, roleOrDeny, {
+                username: pending.username,
+                pairedBy: "approval",
+            });
+        } catch (err) {
+            log.error(`Failed to set role for ${userId}: ${err.message}`);
+            this.#telegram.enqueue(() =>
+                this.#telegram.sendMessage(pending.chatId,
+                    "⚠️ Something went wrong with your approval. Please message again or contact an admin."
+                ).catch(() => {})
+            );
+            try {
+                await this.#buttons.finalize(adminChatId, adminMsgId, `⚠️ Error: ${err.message}`);
+            } catch {}
+            return;
+        }
+
+        // Send welcome to user
+        const welcome = this.#pairing.getWelcomeMessage(roleOrDeny);
+        this.#telegram.enqueue(() =>
+            this.#telegram.sendMessage(pending.chatId, welcome)
+        );
+
+        // Finalize admin message
+        try {
+            const who = pending.username ? `@${pending.username}` : `User ${userId}`;
+            await this.#buttons.finalize(adminChatId, adminMsgId, `✅ ${who} → ${roleOrDeny}`);
+        } catch {}
+
+        log.info(`User ${userId} approved as ${roleOrDeny} by admin ${adminChatId}`);
+
+        // Replay the user's original message
+        if (pending.text?.trim() && !pending.text.startsWith("/start")) {
+            const ref = makeRef(pending.chatId, null, null, pending.chatType || "private");
+            ref.userId = userId;
+            ref.username = pending.username;
+            if (this.#scopeMgr) ref.scopeKey = this.#scopeMgr.resolveKey(ref);
+            const prefix = this.#promptBuilder.getPrefix(ref);
+            this.#queuePrompt(prefix + pending.text, {}, ref, null).catch(err => {
+                log.error(`Error replaying message for ${userId}: ${err.message}`);
+            });
+        }
+    }
+
+    /** Check for expired users and send notifications. */
+    #checkExpiredUsers() {
+        if (!this.#pairing?.getNewlyExpiredUsers) return;
+        const expired = this.#pairing.getNewlyExpiredUsers();
+        for (const user of expired) {
+            // Notify user (may fail if no DM chat)
+            this.#telegram.enqueue(() =>
+                this.#telegram.sendMessage(user.userId,
+                    "⏳ Your access has expired. Contact an admin to renew."
+                ).catch(() => {})
+            );
+
+            // Notify admins
+            const who = user.username ? `@${user.username}` : `User ${user.userId}`;
+            this.#broadcastAdmin(`⏳ ${who}'s access expired (was: ${user.role})`);
+            log.info(`User ${user.userId} access expired (role: ${user.role})`);
+        }
+
+        // Also clean stale pending approvals
+        this.#cleanStalePendingApprovals();
+    }
+
+    /** Remove pending approvals older than 15 minutes. */
+    #cleanStalePendingApprovals() {
+        const MAX_AGE_MS = 15 * 60 * 1000;
+        const now = Date.now();
+        for (const [userId, pending] of this.#pendingApprovals) {
+            if (now - pending.requestedAt > MAX_AGE_MS) {
+                this.#pendingApprovals.delete(userId);
+                log.info(`Cleaned stale pending approval for user ${userId}`);
+            }
+        }
+    }
+
     // --- Cleanup ---
 
     cleanup() {
@@ -2282,5 +2513,6 @@ export class Orchestrator {
         if (scope) scope.activeTools.clear();
         if (scope?.messageFlushTimer) clearTimeout(scope.messageFlushTimer);
         if (this.#scopeMgr) this.#scopeMgr.shutdown();
+        if (this.#expiryCheckTimer) { clearInterval(this.#expiryCheckTimer); this.#expiryCheckTimer = null; }
     }
 }

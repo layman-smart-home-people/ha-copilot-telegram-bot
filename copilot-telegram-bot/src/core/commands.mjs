@@ -506,10 +506,11 @@ export async function handleSlashCommand(ctx, command, args) {
                     if (users.length === 0) {
                         reply("👥 No paired users.");
                     } else {
-                        const lines = ["👥 Paired users:\n"];
+                        const lines = ["👥 Users:\n"];
                         for (const u of users) {
-                            const admin = u.isAdmin ? " 👑" : "";
-                            lines.push(`• ${u.username || u.userId}${admin} (${new Date(u.pairedAt).toLocaleDateString()})`);
+                            const roleIcon = pairing.getRoleConfig?.(u.role)?.icon || "";
+                            const expired = u.expiresAt && new Date(u.expiresAt) < new Date() ? " ⚠️expired" : "";
+                            lines.push(`• ${u.username || u.userId} — ${roleIcon} ${u.role}${expired}`);
                         }
                         reply(lines.join("\n"));
                     }
@@ -517,10 +518,9 @@ export async function handleSlashCommand(ctx, command, args) {
                 }
 
                 reply(
-                    "🔐 Pairing info:\n" +
-                    "To pair a new device, message the bot from that device.\n" +
-                    "A pairing code will be sent to you here.\n\n" +
-                    "/pair list — show paired users\n" +
+                    "🔐 User management:\n\n" +
+                    "New users who message the bot will trigger an approval request with role buttons.\n\n" +
+                    "/pair list — show all users & roles\n" +
                     "/unpair <userId> — revoke access"
                 );
                 return true;

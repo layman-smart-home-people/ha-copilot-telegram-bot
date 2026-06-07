@@ -2,6 +2,21 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.58.0] — 2026-06-07
+
+### Added
+- **Admin approval flow** — New users trigger inline button prompts to all admins with `user:manage` capability. First admin to respond wins; role assignment is immediate with welcome message and original message replay.
+- **Invite link onboarding** — Users can join via `/start invite_TOKEN` or `/start guest_TOKEN` deep links. Auto-assigns role from invite config, supports usage limits and expiry.
+- **Expiry notifications** — 5-minute background check notifies users and admins when access expires. Expiry flag resets on role reassignment so re-approved users get future notifications.
+- **Stale approval cleanup** — Pending approvals older than 15 minutes are automatically cleaned up, preventing permanent "being reviewed" stuck state.
+- **`/pair list` shows roles** — Updated to display role name + icon instead of just admin badge.
+- **RBACManager utility methods** — `getUsersWithCapability()`, `getGrantableRoles()`, `getWelcomeMessage()`, `getNewlyExpiredUsers()`.
+
+### Fixed
+- **Pending approval null-destructure** — ButtonManager prompt expiry no longer crashes the approval handler (guards against null result).
+- **Message replay chat type** — Stores actual chat type instead of hardcoding "private", fixing group-originated approval replays.
+- **User notified on approval failure** — If `setUserRole` throws during approval (e.g., deleted role), user now gets an error message instead of silence.
+
 ## [0.57.0] — 2026-06-07
 
 ### Added

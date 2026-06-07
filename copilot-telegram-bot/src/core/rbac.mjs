@@ -194,6 +194,7 @@ export class RBACManager {
     #pendingCodes = new Map(); // code → { userId, username, expiresAt }
     #adminIds;             // Set of pre-approved admin IDs (from allowed_chat_ids)
     #capabilityCache = new Map(); // roleName → Set<capability>
+    #expiryNotified = new Set(); // userIds already notified of expiry (in-memory only)
 
     constructor({ persistPath, preApprovedIds = [] }) {
         this.#persistPath = persistPath;
@@ -596,6 +597,9 @@ export class RBACManager {
             expiresAt: opts.expiresAt !== undefined ? opts.expiresAt : (existing?.expiresAt || null),
         });
 
+        // Clear expiry notification flag so new expiry triggers notification
+        this.#expiryNotified.delete(userId);
+
         this.#invalidateCapabilityCache();
         this.#save();
         log.info(`User ${userId} assigned role: ${role}`);
@@ -850,6 +854,74 @@ export class RBACManager {
         const escalation = "If asked for something outside permissions, explain and offer to escalate to admin.";
 
         return `[User role: ${role} (${roleConfig.icon || ""} ${roleConfig.description || ""}) — ${canStr} ${cannotStr} ${escalation}]`;
+    }
+
+    // ==============================
+    // Onboarding & delegation
+    // ==============================
+
+    /** Get all user IDs that have a specific capability. */
+    getUsersWithCapability(capability) {
+        const result = [];
+        for (const [userId, user] of this.#users) {
+            if (user.expiresAt && new Date(user.expiresAt) < new Date()) continue;
+            if (this.isOwner(userId)) {
+                result.push(userId);
+                continue;
+            }
+            const caps = this.getEffectiveCapabilities(user.role);
+            if (caps.has(capability)) result.push(userId);
+        }
+        return result;
+    }
+
+    /** Get roles that a user can grant (delegation boundary). Sorted by rank descending. */
+    getGrantableRoles(grantingUserId) {
+        grantingUserId = Number(grantingUserId);
+        const result = [];
+        for (const [name, role] of Object.entries(this.#roles)) {
+            if (name === "owner") continue;
+            if (this.canGrantRole(grantingUserId, name)) {
+                result.push({ name, ...role });
+            }
+        }
+        return result.sort((a, b) => b.rank - a.rank);
+    }
+
+    /** Get a welcome message for a given role. */
+    getWelcomeMessage(roleName) {
+        const role = this.#roles[roleName];
+        if (!role) return "✅ Welcome! You can now use the bot.";
+
+        const icon = role.icon || "👤";
+        const caps = this.getEffectiveCapabilities(roleName);
+        const abilities = [];
+
+        if (caps.has("entity:read")) abilities.push("view device states");
+        if (caps.has("entity:control:safe")) abilities.push("control lights, climate & switches");
+        if (caps.has("entity:control:sensitive")) abilities.push("control locks & alarms");
+        if (caps.has("automation:read")) abilities.push("view automations");
+        if (caps.has("automation:write")) abilities.push("manage automations");
+        if (caps.has("si:manage:own")) abilities.push("create standing instructions");
+        if (caps.has("dev:tools")) abilities.push("use developer tools");
+
+        const abilityStr = abilities.length > 0
+            ? `\n\n🔑 You can: ${abilities.join(", ")}`
+            : "";
+        return `${icon} Welcome! You've been assigned the *${roleName}* role.${abilityStr}\n\nSend a message to get started!`;
+    }
+
+    /** Check for newly expired users (for notification purposes). Returns expired users not yet notified. */
+    getNewlyExpiredUsers() {
+        const expired = [];
+        const now = new Date();
+        for (const [userId, user] of this.#users) {
+            if (user.expiresAt && new Date(user.expiresAt) < now && !this.#expiryNotified.has(userId)) {
+                expired.push({ userId, username: user.username, displayName: user.displayName, role: user.role });
+                this.#expiryNotified.add(userId);
+            }
+        }
+        return expired;
     }
 
     // ==============================
