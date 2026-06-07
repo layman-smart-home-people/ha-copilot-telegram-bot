@@ -21,6 +21,7 @@ import { WebUIServer } from "./webui/server.mjs";
 import { createLogger, setLogLevel } from "./logger.mjs";
 import { eventLog } from "./core/event-log.mjs";
 import { metrics } from "./core/metrics.mjs";
+import { ensureCopilotBinary, ensureCopilotConfigDir } from "./copilot-bootstrap.mjs";
 
 // --- Set timezone from HA system before any Date operations ---
 if (!process.env.TZ || process.env.TZ === "UTC" || process.env.TZ === "Etc/UTC") {
@@ -58,14 +59,23 @@ async function validate(config) {
         log.warn("Add your Telegram chat ID to the add-on configuration.");
     }
 
-    // Validate copilot binary
+    // Validate copilot binary — auto-download if missing
     if (!existsSync(config.copilotBinary)) {
-        log.warn(`Copilot binary not found at ${config.copilotBinary}`);
-        log.warn("If copilot_binary is set to 'auto', the bootstrap script should have installed it.");
-        log.warn("Check the add-on logs for init-copilot bootstrap errors.");
-        log.warn("The bot will start but Copilot won't work until the binary is available.");
-        return; // Don't exit — let the bot start anyway
+        log.info(`Copilot binary not found at ${config.copilotBinary}`);
+        try {
+            const downloaded = await ensureCopilotBinary(config.copilotBinary);
+            config.copilotBinary = downloaded;
+            log.info(`Copilot CLI auto-installed to ${downloaded}`);
+        } catch (err) {
+            log.error(`Failed to auto-download Copilot CLI: ${err.message}`);
+            log.warn("The bot will start but Copilot won't work until the binary is available.");
+            log.warn("Check internet connectivity and try restarting the add-on.");
+            return;
+        }
     }
+
+    // Ensure copilot config directory exists
+    ensureCopilotConfigDir(config.copilotConfigDir);
 
     // Quick ACP handshake test
     log.info("Testing Copilot ACP connection...");

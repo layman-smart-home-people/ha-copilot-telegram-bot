@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.51.0] — 2026-06-07
+
+### Added
+- **Copilot CLI auto-bootstrap** — On first start, the add-on automatically downloads the Copilot CLI binary from GitHub releases if not present. Supports aarch64 and x86_64 architectures with SHA256 checksum verification. Binary is installed to `/data/copilot/bin/copilot` and persists across add-on updates.
+- **Standing instructions file seeding** — Creates an empty `standing_instructions.json` on fresh installs so the file watcher doesn't fail with ENOENT.
+- **Timeline windowing in final details** — Long timelines (16+ items) in the collapsed details block are now windowed: first 3 + last 10 items with "…N more" separator, preventing Telegram's 4096 char limit from being exceeded.
+
+### Fixed
+- **Empty timeline guard in progress message** — When all timeline entries resolve to null (orphaned references), the progress message now falls through to summary counts instead of rendering an empty blockquote.
+- **ENOENT error message** — Copilot spawn failures now show actionable guidance ("check internet connectivity", "restart the add-on") instead of the cryptic "spawn ... ENOENT" message.
+- **Config directory creation** — The `run` script now creates the copilot config directory before symlinking, preventing broken symlinks on fresh installs.
+
 ## [0.50.0] — 2026-06-07
 
 ### Added

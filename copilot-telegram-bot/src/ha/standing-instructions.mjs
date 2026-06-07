@@ -626,7 +626,12 @@ export class StandingInstructionManager {
     }
 
     #load() {
-        if (!existsSync(this.#persistPath)) return;
+        if (!existsSync(this.#persistPath)) {
+            // Seed empty file so the file watcher has a valid target on fresh installs
+            mkdirSync(dirname(this.#persistPath), { recursive: true });
+            writeFileSync(this.#persistPath, "[]", "utf-8");
+            return;
+        }
 
         try {
             const raw = JSON.parse(readFileSync(this.#persistPath, "utf-8"));

@@ -65,7 +65,15 @@ export class CopilotLifecycle {
         try {
             await this.#acp.start();
         } catch (err) {
-            throw new Error(`Failed to start copilot binary: ${err.message}. Check copilot_binary path in config.`);
+            const isENOENT = err.message?.includes("ENOENT") || err.code === "ENOENT";
+            if (isENOENT) {
+                throw new Error(
+                    "Copilot CLI binary not found. Auto-download may have failed — " +
+                    "check internet connectivity and restart the add-on. " +
+                    "You can also manually set copilot_binary in the add-on configuration."
+                );
+            }
+            throw new Error(`Failed to start Copilot CLI: ${err.message}`);
         }
 
         // Authenticate — required by ACP protocol before session/new

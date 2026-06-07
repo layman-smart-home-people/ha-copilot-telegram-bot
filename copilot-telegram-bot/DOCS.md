@@ -596,7 +596,7 @@ Maximum allowed group size before the bot leaves or refuses the group.
 → Edit `IDENTITY.md` in `agent_dir`, then start a **new session** so the updated context is injected.
 
 **"Copilot binary not found"**
-→ If `copilot_binary` is `auto`, check internet connectivity and bootstrap logs. If you set a custom path, make sure that binary exists.
+→ On first start, the add-on auto-downloads the Copilot CLI from GitHub. If this fails, check internet connectivity and restart the add-on. To force a re-download, delete `/data/copilot/bin/copilot` inside the add-on container. If you set a custom `copilot_binary` path, make sure that binary exists and is executable.
 
 **"ACP test failed" or authentication errors**
 → Copilot still needs GitHub authentication. Complete the device flow when prompted.
@@ -618,8 +618,9 @@ Maximum allowed group size before the bot leaves or refuses the group.
 - a GitHub account with Copilot access
 - a Telegram bot token from @BotFather
 - Home Assistant with this add-on installed
+- Internet access on first start (to auto-download the Copilot CLI binary)
 
-The add-on can automatically download and manage Copilot CLI on first start.
+The add-on automatically downloads and manages the Copilot CLI on first start. The binary is stored in `/data/copilot/bin/` and persists across add-on updates. To force a re-download (e.g. to update the CLI), delete the binary and restart the add-on.
 
 ## More Info
 

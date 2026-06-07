@@ -25,18 +25,25 @@ fi
 
 # Set up copilot config symlink
 COPILOT_CONFIG_DIR="$(jq -r '.copilot_config_dir // "/share/copilot-tools/.copilot"' ${OPTIONS})"
+# Ensure config dir exists before symlinking (fresh install)
+if [ "${COPILOT_CONFIG_DIR}" != "auto" ] && [ ! -d "${COPILOT_CONFIG_DIR}" ]; then
+    mkdir -p "${COPILOT_CONFIG_DIR}"
+    echo "[$(date -Iseconds)] INFO: Created copilot config dir ${COPILOT_CONFIG_DIR}"
+fi
 if [ -d "${COPILOT_CONFIG_DIR}" ]; then
     ln -sfn "${COPILOT_CONFIG_DIR}" "${HOME}/.copilot"
     echo "[$(date -Iseconds)] INFO: Copilot config linked from ${COPILOT_CONFIG_DIR}"
 fi
 
-# Validate copilot binary
-COPILOT_BINARY="$(jq -r '.copilot_binary // "/share/copilot-tools/copilot"' ${OPTIONS})"
-if [ ! -x "${COPILOT_BINARY}" ]; then
-    echo "[$(date -Iseconds)] WARNING: Copilot binary not found or not executable: ${COPILOT_BINARY}"
+# Validate copilot binary (auto-download handled by Node.js bootstrap)
+COPILOT_BINARY="$(jq -r '.copilot_binary // "auto"' ${OPTIONS})"
+if [ "${COPILOT_BINARY}" != "auto" ] && [ ! -x "${COPILOT_BINARY}" ]; then
+    echo "[$(date -Iseconds)] WARNING: Copilot binary not found: ${COPILOT_BINARY}"
 fi
 
-# Quick version check
-${COPILOT_BINARY} version 2>/dev/null || echo "[$(date -Iseconds)] WARNING: Could not verify copilot version"
+# Quick version check (skip if auto — Node.js bootstrap handles it)
+if [ "${COPILOT_BINARY}" != "auto" ]; then
+    ${COPILOT_BINARY} version 2>/dev/null || echo "[$(date -Iseconds)] WARNING: Could not verify copilot version"
+fi
 
 exec node /app/src/index.mjs

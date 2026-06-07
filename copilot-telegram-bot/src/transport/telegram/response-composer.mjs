@@ -492,6 +492,26 @@ export class ResponseComposer {
             }
         }).filter(Boolean);
 
+        // Guard: if all timeline entries resolved to null, fall through to summary
+        if (allItems.length === 0) {
+            const completedCount = this.#toolSteps.filter(s => s.status === "completed").length;
+            const failedCount = this.#toolSteps.filter(s => s.status === "failed").length;
+            const parts = [];
+            if (intermediateCount > 0) parts.push(`💬 ${intermediateCount}`);
+            if (stepCount > 0) {
+                const runningCount = stepCount - completedCount - failedCount;
+                const statusParts = [`${completedCount} done`];
+                if (runningCount > 0) statusParts.push(`${runningCount} running`);
+                if (failedCount > 0) statusParts.push(`${failedCount} failed`);
+                parts.push(`🔧 ${stepCount} (${statusParts.join(", ")})`);
+            }
+            const summary = parts.length > 0
+                ? `<blockquote>${parts.join(" · ")}</blockquote>`
+                : "";
+            const progress = [planHtml, summary].filter(Boolean).join("\n");
+            return `${header}\n${progress}`;
+        }
+
         // Try progressively smaller windows
         for (let tailSize = 12; tailSize >= 3; tailSize -= 3) {
             let lines;
@@ -612,7 +632,7 @@ export class ResponseComposer {
             if (hasThought) parts.push("");
 
             if (this.#progressTimeline.length > 0) {
-                const timelineLines = this.#progressTimeline.map(entry => {
+                let timelineLines = this.#progressTimeline.map(entry => {
                     if (entry.type === "intermediate") {
                         const msg = this.#intermediateMessages[entry.index];
                         if (!msg) return null;
@@ -627,6 +647,13 @@ export class ResponseComposer {
                         return `${icon} ${escapeHtml(step.description || step.id)}`;
                     }
                 }).filter(Boolean);
+                // Window long timelines: first 3 + last 10
+                if (timelineLines.length > 16) {
+                    const head = timelineLines.slice(0, 3);
+                    const skipped = timelineLines.length - 13;
+                    const tail = timelineLines.slice(-10);
+                    timelineLines = [...head, `<i>⏳ …${skipped} more</i>`, ...tail];
+                }
                 parts.push(timelineLines.join("\n"));
             } else {
                 // Fallback: legacy separate rendering (no timeline data)
