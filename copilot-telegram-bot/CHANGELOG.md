@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.68.0] — 2026-06-08
+
+### Added — PKM v2 Phase 3: Collections + Navigation + Enhanced Map
+- **Collection CRUD** — `createCollection`, `addCollectionItem`, `queryCollection` (JSON field filter), `updateCollectionItem`, `removeCollectionItem`, `deleteCollection`
+- **Topic browsing** — `browseTopicNotes` with sort by activation/date/title, optional secondary topic inclusion
+- **Context expansion** — `getNeighbors` returns related notes via shared entities + topics + explicit links (UNION query, max 10)
+- **Timeline** — `getTimeline` groups notes by week/month/year with type breakdown
+- **Cross-topic bridges** — `getCrossTopicBridges` finds top 3 topic pairs with ≥ 2 shared notes
+- **Enhanced memory map** — `getMemoryMap` replaced with topic-tree version: topic hierarchy, collections summary, bridges, progressive detail
+- **Map caching** — 5-min TTL in `pkm_cache` table, auto-invalidated on note/topic/collection mutations
+
 ## [0.67.0] — 2026-06-08
 
 ### Added — PKM v2 Phase 2: Note-Topic Assignment + Activation + Entity Dedup

@@ -481,6 +481,7 @@ export class PkmStore {
             }
         }
 
+        this.invalidateMapCache(userId);
         return { id, createdAt: now };
     }
 
@@ -518,6 +519,7 @@ export class PkmStore {
         vals.push(noteId);
         this.#db.prepare(`UPDATE notes SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
         this.logEvent(noteId, userId, "update");
+        this.invalidateMapCache(note.user_id);
         return true;
     }
 
@@ -554,6 +556,7 @@ export class PkmStore {
         }
 
         this.logEvent(noteId, userId, "secure_delete");
+        this.invalidateMapCache(note.user_id);
         return true;
     }
 
@@ -862,55 +865,67 @@ export class PkmStore {
 
     // ── Memory map ────────────────────────────────────────────
 
-    /**
-     * Get a structured overview of a user's memory topology.
-     * Returns aggregated data for rendering as an ASCII tree.
-     * @param {string} userId
-     * @returns {object} { total, byType, byTag, bySource, byDurability, byMonth, entities, household }
-     */
+    #getFromCache(key) {
+        try {
+            const row = this.#db.prepare(
+                "SELECT value, expires_at FROM pkm_cache WHERE key = ?"
+            ).get(key);
+            if (!row) return null;
+            if (new Date(row.expires_at) < new Date()) {
+                this.#db.prepare("DELETE FROM pkm_cache WHERE key = ?").run(key);
+                return null;
+            }
+            return JSON.parse(row.value);
+        } catch {
+            return null;
+        }
+    }
+
+    #setCache(key, value, ttlMs) {
+        const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+        this.#db.prepare(
+            `INSERT OR REPLACE INTO pkm_cache (key, value, expires_at) VALUES (?, ?, ?)`
+        ).run(key, JSON.stringify(value), expiresAt);
+    }
+
+    invalidateMapCache(userId) {
+        try {
+            this.#db.prepare("DELETE FROM pkm_cache WHERE key = ?").run(`map:${userId}`);
+        } catch { /* ignore */ }
+    }
+
     getMemoryMap(userId) {
+        const cached = this.#getFromCache(`map:${userId}`);
+        if (cached) return cached;
+
         const total = this.getNoteCount(userId);
+
+        const allTopics = this.#db.prepare(
+            "SELECT * FROM topics WHERE user_id = ? ORDER BY sort_order, name COLLATE NOCASE"
+        ).all(userId);
+
+        const topicTree = [];
+        const topicMap = new Map(allTopics.map(topic => [topic.id, { ...topic, children: [] }]));
+
+        for (const topic of topicMap.values()) {
+            if (topic.parent_id && topicMap.has(topic.parent_id)) {
+                topicMap.get(topic.parent_id).children.push(topic);
+            } else if (!topic.parent_id) {
+                topicTree.push(topic);
+            }
+        }
+
+        const topicCount = allTopics.length;
+        const detailLevel = topicCount <= 20 ? "full" : topicCount <= 50 ? "summary" : "collapsed";
+
+        const uncategorized = this.#db.prepare(
+            "SELECT COUNT(*) as cnt FROM notes WHERE user_id = ? AND valid_to IS NULL AND primary_topic_id IS NULL"
+        ).get(userId)?.cnt || 0;
 
         const byType = this.#db.prepare(
             "SELECT type, COUNT(*) as cnt FROM notes WHERE user_id = ? AND valid_to IS NULL GROUP BY type ORDER BY cnt DESC"
         ).all(userId);
 
-        // Top tags — tags stored as JSON array, need to unpack
-        const tagRows = this.#db.prepare(
-            "SELECT tags FROM notes WHERE user_id = ? AND valid_to IS NULL AND tags IS NOT NULL AND tags != '[]'"
-        ).all(userId);
-        const tagCounts = {};
-        for (const row of tagRows) {
-            try {
-                const parsed = JSON.parse(row.tags);
-                if (Array.isArray(parsed)) {
-                    for (const t of parsed) {
-                        const tag = String(t).toLowerCase().trim();
-                        if (tag) tagCounts[tag] = (tagCounts[tag] || 0) + 1;
-                    }
-                }
-            } catch { /* skip malformed */ }
-        }
-        const byTag = Object.entries(tagCounts)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 15)
-            .map(([tag, cnt]) => ({ tag, cnt }));
-
-        const bySource = this.#db.prepare(
-            "SELECT source_type, COUNT(*) as cnt FROM notes WHERE user_id = ? AND valid_to IS NULL GROUP BY source_type ORDER BY cnt DESC"
-        ).all(userId);
-
-        const byDurability = this.#db.prepare(
-            "SELECT durability, COUNT(*) as cnt FROM notes WHERE user_id = ? AND valid_to IS NULL GROUP BY durability ORDER BY cnt DESC"
-        ).all(userId);
-
-        const byMonth = this.#db.prepare(
-            `SELECT substr(created_at, 1, 7) as month, COUNT(*) as cnt
-             FROM notes WHERE user_id = ? AND valid_to IS NULL
-             GROUP BY month ORDER BY month DESC LIMIT 12`
-        ).all(userId);
-
-        // Entities linked to this user (only count active/non-archived notes)
         const entities = this.#db.prepare(`
             SELECT e.name, e.type, COUNT(n.id) as note_count
             FROM entities e
@@ -919,10 +934,26 @@ export class PkmStore {
             WHERE e.user_id = ?
             GROUP BY e.id
             ORDER BY note_count DESC
-            LIMIT 15
+            LIMIT 10
         `).all(userId);
 
-        // Household info
+        const collections = this.#db.prepare(
+            "SELECT id, name, item_count FROM collections WHERE user_id = ? ORDER BY name"
+        ).all(userId);
+
+        let bridges = [];
+        try {
+            bridges = this.getCrossTopicBridges(userId);
+        } catch {
+            // ignore if no bridges
+        }
+
+        const byMonth = this.#db.prepare(
+            `SELECT substr(created_at, 1, 7) as month, COUNT(*) as cnt
+             FROM notes WHERE user_id = ? AND valid_to IS NULL
+             GROUP BY month ORDER BY month DESC LIMIT 6`
+        ).all(userId);
+
         const settings = this.getSettings(userId);
         let household = null;
         if (settings?.household_id) {
@@ -940,12 +971,28 @@ export class PkmStore {
             };
         }
 
-        // Archived count
         const archived = this.#db.prepare(
             "SELECT COUNT(*) as cnt FROM notes WHERE user_id = ? AND valid_to IS NOT NULL"
         ).get(userId)?.cnt || 0;
 
-        return { total, archived, byType, byTag, bySource, byDurability, byMonth, entities, household };
+        const result = {
+            total,
+            archived,
+            uncategorized,
+            topicTree,
+            topicCount,
+            detailLevel,
+            byType,
+            entities,
+            collections,
+            bridges,
+            byMonth,
+            household,
+        };
+
+        this.#setCache(`map:${userId}`, result, 5 * 60 * 1000);
+
+        return result;
     }
 
     // ── Conversation windows ───────────────────────────────
@@ -1427,6 +1474,7 @@ export class PkmStore {
             `INSERT INTO topics (id, user_id, parent_id, name, icon, description, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(id, userId, parentId, trimmedName, icon, description, now, now);
+        this.invalidateMapCache(userId);
         log.info(`Created topic ${id} (${trimmedName}) for user ${userId}`);
         return { id, name: trimmedName };
     }
@@ -1493,6 +1541,7 @@ export class PkmStore {
 
         values.push(topicId);
         this.#db.prepare(`UPDATE topics SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+        this.invalidateMapCache(userId);
         return this.getTopic(topicId);
     }
 
@@ -1531,6 +1580,7 @@ export class PkmStore {
         }
 
         log.info(`Deleted topic ${topicId} for user ${userId}`);
+        this.invalidateMapCache(userId);
         return reassigned;
     }
 
@@ -1595,6 +1645,7 @@ export class PkmStore {
         this.#db.prepare(
             "UPDATE topics SET parent_id = ?, updated_at = ? WHERE id = ?"
         ).run(newParentId, now, topicId);
+        this.invalidateMapCache(userId);
         return this.getTopic(topicId);
     }
 
@@ -1653,6 +1704,7 @@ export class PkmStore {
         ).run(noteCount, now, targetId);
 
         log.info(`Merged topic ${sourceId} into ${targetId} for user ${userId}`);
+        this.invalidateMapCache(userId);
         return movedNotes;
     }
 
@@ -1728,6 +1780,7 @@ export class PkmStore {
 
         this.#refreshTopicNoteCount(topicId);
         this.logEvent(noteId, note.user_id, "topic_assigned", { topic_id: topicId, is_primary: !!isPrimary });
+        this.invalidateMapCache(note.user_id);
         return true;
     }
 
@@ -1762,6 +1815,7 @@ export class PkmStore {
 
         this.#refreshTopicNoteCount(topicId);
         this.logEvent(noteId, note.user_id, "topic_removed", { topic_id: topicId, next_primary_topic_id: nextPrimaryId });
+        this.invalidateMapCache(note.user_id);
         return true;
     }
 
@@ -1888,6 +1942,289 @@ export class PkmStore {
             "UPDATE topics SET note_count = ?, updated_at = ? WHERE id = ?"
         ).run(noteCount, new Date().toISOString(), topicId);
         return noteCount;
+    }
+
+    // ── Collections ─────────────────────────────────────
+
+    createCollection(userId, { name, schema, topicId, description } = {}) {
+        const trimmedName = String(name || "").trim();
+        if (!trimmedName) throw new Error("Collection name is required");
+        if (!schema || typeof schema !== "object" || Array.isArray(schema) || Object.keys(schema).length === 0) {
+            throw new Error("Collection schema is required");
+        }
+
+        if (topicId) {
+            const topic = this.getTopic(topicId);
+            if (!topic || topic.user_id !== userId) {
+                throw new Error("Topic not found");
+            }
+        }
+
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        this.#db.prepare(
+            `INSERT INTO collections (id, user_id, topic_id, name, description, schema_json, item_count, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`
+        ).run(id, userId, topicId || null, trimmedName, description || null, JSON.stringify(schema), now, now);
+        this.invalidateMapCache(userId);
+        return { id, name: trimmedName };
+    }
+
+    getCollections(userId) {
+        return this.#db.prepare(
+            "SELECT * FROM collections WHERE user_id = ? ORDER BY name COLLATE NOCASE"
+        ).all(userId);
+    }
+
+    getCollection(collectionId) {
+        return this.#db.prepare("SELECT * FROM collections WHERE id = ?").get(collectionId) || null;
+    }
+
+    addCollectionItem(userId, collectionId, data, title) {
+        const collection = this.getCollection(collectionId);
+        if (!collection || collection.user_id !== userId) {
+            throw new Error("Collection not found");
+        }
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+            throw new Error("Collection item data must be an object");
+        }
+
+        const generatedTitle = String(title || "").trim() || (() => {
+            const preferred = [data.title, data.name, data.label, data.id]
+                .find(value => typeof value === "string" && value.trim());
+            if (preferred) return preferred.trim();
+            const summary = Object.entries(data)
+                .slice(0, 2)
+                .map(([key, value]) => `${key}: ${value}`)
+                .join(" · ")
+                .trim();
+            return summary || "Collection item";
+        })();
+
+        const result = this.createNote({
+            userId,
+            type: "collection_item",
+            title: generatedTitle.slice(0, 200),
+            content: JSON.stringify(data),
+            metadata: JSON.stringify(data),
+            scope: "user",
+        });
+
+        const now = new Date().toISOString();
+        this.#db.prepare(
+            "UPDATE notes SET collection_id = ?, updated_at = ? WHERE id = ?"
+        ).run(collectionId, now, result.id);
+        this.#db.prepare(
+            "UPDATE collections SET item_count = item_count + 1, updated_at = ? WHERE id = ?"
+        ).run(now, collectionId);
+        this.invalidateMapCache(userId);
+        return result;
+    }
+
+    queryCollection(collectionId, userId, { filter, sortBy, limit = 20 } = {}) {
+        const collection = this.getCollection(collectionId);
+        if (!collection || collection.user_id !== userId) {
+            throw new Error("Collection not found");
+        }
+
+        const params = [collectionId, userId];
+        let sql = "SELECT * FROM notes WHERE collection_id = ? AND user_id = ? AND valid_to IS NULL";
+
+        if (filter && typeof filter === "object" && !Array.isArray(filter)) {
+            for (const [key, value] of Object.entries(filter)) {
+                if (!/^[A-Za-z0-9_]+$/.test(key)) {
+                    throw new Error(`Invalid filter field: ${key}`);
+                }
+                sql += ` AND json_extract(metadata, '$.${key}') = ?`;
+                params.push(value);
+            }
+        }
+
+        if (sortBy) {
+            if (!/^[A-Za-z0-9_]+$/.test(sortBy)) {
+                throw new Error(`Invalid sort field: ${sortBy}`);
+            }
+            sql += ` ORDER BY json_extract(metadata, '$.${sortBy}')`;
+        } else {
+            sql += " ORDER BY created_at DESC";
+        }
+
+        params.push(Number(limit) || 20);
+        sql += " LIMIT ?";
+        return this.#db.prepare(sql).all(...params);
+    }
+
+    updateCollectionItem(itemId, userId, data) {
+        const note = this.getNote(itemId);
+        if (!note) throw new Error("Note not found");
+        if (note.user_id !== userId) throw new Error("Access denied");
+        if (note.type !== "collection_item") throw new Error("Note is not a collection item");
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+            throw new Error("Collection item data must be an object");
+        }
+
+        this.#db.prepare(
+            "UPDATE notes SET content = ?, metadata = ?, updated_at = ? WHERE id = ?"
+        ).run(JSON.stringify(data), JSON.stringify(data), new Date().toISOString(), itemId);
+        return true;
+    }
+
+    removeCollectionItem(itemId, userId) {
+        const note = this.getNote(itemId);
+        if (!note) throw new Error("Note not found");
+        if (note.user_id !== userId) throw new Error("Access denied");
+        if (note.type !== "collection_item") throw new Error("Note is not a collection item");
+
+        const collectionId = note.collection_id;
+        this.secureDelete(itemId, userId);
+
+        if (collectionId) {
+            this.#db.prepare(
+                "UPDATE collections SET item_count = CASE WHEN item_count > 0 THEN item_count - 1 ELSE 0 END, updated_at = ? WHERE id = ?"
+            ).run(new Date().toISOString(), collectionId);
+        }
+
+        this.invalidateMapCache(userId);
+        return true;
+    }
+
+    deleteCollection(collectionId, userId) {
+        const collection = this.getCollection(collectionId);
+        if (!collection || collection.user_id !== userId) {
+            throw new Error("Collection not found");
+        }
+
+        const items = this.#db.prepare(
+            "SELECT id FROM notes WHERE collection_id = ? AND user_id = ?"
+        ).all(collectionId, userId);
+        for (const item of items) {
+            this.secureDelete(item.id, userId);
+        }
+
+        this.#db.prepare("DELETE FROM collections WHERE id = ?").run(collectionId);
+        this.invalidateMapCache(userId);
+        return items.length;
+    }
+
+    // ── Navigation + Map ────────────────────────────────
+
+    browseTopicNotes(topicId, userId, { sort = "activation", limit = 20, includeSecondary = true } = {}) {
+        const topic = this.getTopic(topicId);
+        if (!topic || topic.user_id !== userId) {
+            throw new Error("Topic not found");
+        }
+
+        const orderBy = sort === "date"
+            ? "n.created_at DESC"
+            : sort === "title"
+                ? "n.title COLLATE NOCASE"
+                : "COALESCE(n.activation, 0) DESC, n.created_at DESC";
+        const safeLimit = Number(limit) || 20;
+
+        if (!includeSecondary) {
+            return this.#db.prepare(
+                `SELECT n.* FROM notes n
+                 WHERE n.primary_topic_id = ? AND n.user_id = ? AND n.valid_to IS NULL
+                 ORDER BY ${orderBy}
+                 LIMIT ?`
+            ).all(topicId, userId, safeLimit);
+        }
+
+        return this.#db.prepare(
+            `SELECT n.*
+             FROM notes n
+             JOIN (
+                 SELECT id FROM notes WHERE primary_topic_id = ?
+                 UNION
+                 SELECT note_id AS id FROM note_topics WHERE topic_id = ?
+             ) matches ON matches.id = n.id
+             WHERE n.user_id = ? AND n.valid_to IS NULL
+             ORDER BY ${orderBy}
+             LIMIT ?`
+        ).all(topicId, topicId, userId, safeLimit);
+    }
+
+    getNeighbors(noteId, userId, { limit = 10 } = {}) {
+        const note = this.getNote(noteId);
+        if (!note) throw new Error("Note not found");
+        if (note.user_id !== userId) throw new Error("Access denied");
+
+        const rows = this.#db.prepare(`
+            SELECT DISTINCT n.id, n.title, n.type, n.activation, 'entity' AS relation_source
+            FROM notes n
+            JOIN entity_notes en1 ON en1.note_id = n.id
+            WHERE en1.entity_id IN (SELECT entity_id FROM entity_notes WHERE note_id = ?)
+              AND n.id != ? AND n.user_id = ? AND n.valid_to IS NULL
+
+            UNION ALL
+
+            SELECT DISTINCT n.id, n.title, n.type, n.activation, 'topic' AS relation_source
+            FROM notes n
+            JOIN note_topics nt1 ON nt1.note_id = n.id
+            WHERE nt1.topic_id IN (SELECT topic_id FROM note_topics WHERE note_id = ?)
+              AND n.id != ? AND n.user_id = ? AND n.valid_to IS NULL
+
+            UNION ALL
+
+            SELECT DISTINCT n.id, n.title, n.type, n.activation, 'link' AS relation_source
+            FROM notes n
+            WHERE (n.id IN (SELECT target_id FROM note_links WHERE source_id = ?)
+               OR n.id IN (SELECT source_id FROM note_links WHERE target_id = ?))
+              AND n.user_id = ? AND n.valid_to IS NULL
+        `).all(noteId, noteId, userId, noteId, noteId, userId, noteId, noteId, userId);
+
+        const deduped = [];
+        const seen = new Set();
+        for (const row of rows) {
+            if (seen.has(row.id)) continue;
+            seen.add(row.id);
+            deduped.push(row);
+        }
+
+        return deduped
+            .sort((a, b) => (Number(b.activation) || 0) - (Number(a.activation) || 0))
+            .slice(0, Number(limit) || 10);
+    }
+
+    getTimeline(userId, { period = "week", limit = 12 } = {}) {
+        const periodExpr = period === "month"
+            ? "substr(created_at, 1, 7)"
+            : period === "year"
+                ? "substr(created_at, 1, 4)"
+                : "strftime('%Y-W%W', created_at)";
+
+        const rows = this.#db.prepare(
+            `SELECT ${periodExpr} AS period_key, COUNT(*) as note_count, GROUP_CONCAT(type) as types
+             FROM notes
+             WHERE user_id = ? AND valid_to IS NULL
+             GROUP BY period_key
+             ORDER BY period_key DESC
+             LIMIT ?`
+        ).all(userId, Number(limit) || 12);
+
+        return rows.map(row => ({
+            period: row.period_key,
+            noteCount: row.note_count,
+            types: [...new Set(String(row.types || "").split(",").map(type => type.trim()).filter(Boolean))],
+        }));
+    }
+
+    getCrossTopicBridges(userId) {
+        return this.#db.prepare(`
+            SELECT
+                t1.id AS topic1_id, t1.name AS topic1_name,
+                t2.id AS topic2_id, t2.name AS topic2_name,
+                COUNT(DISTINCT nt1.note_id) AS shared_count
+            FROM note_topics nt1
+            JOIN note_topics nt2 ON nt1.note_id = nt2.note_id AND nt1.topic_id < nt2.topic_id
+            JOIN topics t1 ON t1.id = nt1.topic_id
+            JOIN topics t2 ON t2.id = nt2.topic_id
+            WHERE t1.user_id = ?
+            GROUP BY nt1.topic_id, nt2.topic_id
+            HAVING shared_count >= 2
+            ORDER BY shared_count DESC
+            LIMIT 3
+        `).all(userId);
     }
 
     // ── Contradiction detection ────────────────────────────
