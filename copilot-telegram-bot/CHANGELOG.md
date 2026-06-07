@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.50.0] — 2026-06-07
+
+### Added
+- **Interleaved progress timeline** — Live progress messages and final collapsed details now show intermediate agent messages and tool steps in chronological order instead of grouping all intermediates before all steps. The display accurately reflects the actual flow: think → tools → think → tools.
+- **User notification on SI prompt failure** — When a standing instruction's `wake_agent` action triggers but the agent fails to process it, the user now receives a notification instead of silent failure.
+
+### Fixed
+- **`/standing` action type display** — Fixed bug where the `/standing` list showed "undefined" for every instruction's action type because `action` is always normalized to an array.
+- **Timeline reset on composer reuse** — `#progressTimeline` is now properly reset in `start()` alongside other state.
+- **`popLastIntermediate()` timeline corruption** — Popping an intermediate now removes the corresponding timeline entry to prevent stale index references.
+
 ## [0.49.1] — 2026-06-07
 
 ### Fixed

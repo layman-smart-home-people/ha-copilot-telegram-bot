@@ -327,6 +327,10 @@ export class Orchestrator {
         // Fire-and-forget but handle promise rejection properly
         this.#queuePrompt(prefix + text, {}, ref).catch(err => {
             log.error(`Injected prompt failed: ${err.message}`);
+            this.#telegram.enqueue(() =>
+                this.#telegram.sendMessage(targetChatId,
+                    `⚠️ Standing instruction triggered but the agent couldn't process it. Try again later.`)
+            ).catch(() => {});
         });
     }
 

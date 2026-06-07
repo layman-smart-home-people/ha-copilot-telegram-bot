@@ -719,7 +719,7 @@ export async function handleSlashCommand(ctx, command, args) {
                         ? ` | Fired: ${inst.trigger_count}${inst.max_triggers ? `/${inst.max_triggers}` : ""}`
                         : "";
                     text += `${status} ${escapeHtml(inst.description)}\n`;
-                    text += `   ${inst.action.type} | ${escapeHtml(triggerDesc)}${triggerCountInfo}${lastFired}${expiryInfo}\n`;
+                    text += `   ${inst.action.map(a => a.type).join("+")} | ${escapeHtml(triggerDesc)}${triggerCountInfo}${lastFired}${expiryInfo}\n`;
                     text += `   ID: <code>${escapeHtml(inst.id)}</code>\n\n`;
                 }
                 text += `Commands: /standing pause|resume|mute|reconnect|enable|disable|delete &lt;id|all&gt;`;

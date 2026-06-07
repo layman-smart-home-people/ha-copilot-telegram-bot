@@ -35,6 +35,7 @@ export class ResponseComposer {
     #trailingHtml = null;
     #planEntries = [];
     #intermediateMessages = [];
+    #progressTimeline = []; // chronological: { type: "intermediate"|"tool", index?, id? }
 
     constructor(telegram) {
         this.#telegram = telegram;
@@ -61,6 +62,7 @@ export class ResponseComposer {
         this.#thoughtActive = true;
         this.#planEntries = [];
         this.#intermediateMessages = [];
+        this.#progressTimeline = [];
 
         const params = {
             chat_id: ref.chatId,
@@ -119,6 +121,7 @@ export class ResponseComposer {
             existing.description = description || existing.description;
         } else {
             this.#toolSteps.push({ id: toolCallId, description, status });
+            this.#progressTimeline.push({ type: "tool", id: toolCallId });
         }
         this.#scheduleEdit();
     }
@@ -192,6 +195,7 @@ export class ResponseComposer {
         const text = this.#textBuffer.trim();
         if (text) {
             this.#intermediateMessages.push(text);
+            this.#progressTimeline.push({ type: "intermediate", index: this.#intermediateMessages.length - 1 });
         }
         this.#textBuffer = "";
         this.#lastEditedText = "";
@@ -205,7 +209,17 @@ export class ResponseComposer {
      * @returns {string} The last intermediate text, or empty string.
      */
     popLastIntermediate() {
-        return this.#intermediateMessages.pop() || "";
+        const text = this.#intermediateMessages.pop() || "";
+        if (text) {
+            // Remove corresponding timeline entry to keep indices consistent
+            for (let i = this.#progressTimeline.length - 1; i >= 0; i--) {
+                if (this.#progressTimeline[i].type === "intermediate") {
+                    this.#progressTimeline.splice(i, 1);
+                    break;
+                }
+            }
+        }
+        return text;
     }
 
     /**
@@ -312,10 +326,9 @@ export class ResponseComposer {
     #doEdit() {
         if (this.#finalized || !this.#messageId) return;
 
-        const stepsHtml = this.#buildStepsHtml(false);
         const planHtml = this.#buildPlanHtml();
-        const intermediateHtml = this.#buildIntermediateHtml();
-        const progressHtml = [planHtml, intermediateHtml, stepsHtml].filter(Boolean).join("\n");
+        const timelineHtml = this.#buildTimelineHtml();
+        const progressHtml = [planHtml, timelineHtml].filter(Boolean).join("\n");
         const elapsed = this.#startTime ? Math.round((Date.now() - this.#startTime) / 1000) : 0;
         const timer = elapsed > 0 ? ` <i>(${elapsed}s)</i>` : "";
 
@@ -363,7 +376,7 @@ export class ResponseComposer {
         if (html.length > MAX_MSG_LEN) {
             // Use only the first line (status indicator) as the header
             const actualHeader = html.split("\n")[0];
-            html = this.#fitToLimit(actualHeader, planHtml, intermediateHtml, elapsed);
+            html = this.#fitToLimit(actualHeader, planHtml, elapsed);
         }
 
         this.#editMessage(html);
@@ -415,51 +428,103 @@ export class ResponseComposer {
         return `<blockquote>${header}\n${lines.join("\n")}</blockquote>`;
     }
 
-    #fitToLimit(header, planHtml, intermediateHtml, elapsed) {
-        if (this.#toolSteps.length === 0 && !intermediateHtml) {
+    /** Build interleaved timeline of intermediates + tool steps for live display */
+    #buildTimelineHtml() {
+        // Fallback: if timeline is empty but items exist (edge case), use legacy rendering
+        if (this.#progressTimeline.length === 0) {
+            const parts = [];
+            const intermediateHtml = this.#buildIntermediateHtml();
+            const stepsHtml = this.#buildStepsHtml(false);
+            if (intermediateHtml) parts.push(intermediateHtml);
+            if (stepsHtml) parts.push(stepsHtml);
+            return parts.join("\n") || "";
+        }
+
+        const items = this.#progressTimeline.map(entry => {
+            if (entry.type === "intermediate") {
+                const msg = this.#intermediateMessages[entry.index];
+                if (!msg) return null;
+                const truncated = msg.length > 120 ? msg.slice(0, 120) + "…" : msg;
+                return `💬 <i>"${escapeHtml(truncated)}"</i>`;
+            } else {
+                const step = this.#toolSteps.find(s => s.id === entry.id);
+                if (!step) return null;
+                return this.#formatStepLine(step);
+            }
+        }).filter(Boolean);
+
+        if (items.length === 0) return "";
+
+        const MAX_VISIBLE = 15;
+        let lines;
+        if (items.length <= MAX_VISIBLE) {
+            lines = items;
+        } else {
+            const head = items.slice(0, 2);
+            const skipped = items.length - MAX_VISIBLE + 2;
+            const tail = items.slice(-(MAX_VISIBLE - 2));
+            lines = [...head, `<i>⏳ …${skipped} earlier</i>`, ...tail];
+        }
+
+        return `<blockquote>${lines.join("\n")}</blockquote>`;
+    }
+
+    #fitToLimit(header, planHtml, elapsed) {
+        const totalItems = this.#progressTimeline.length;
+        const stepCount = this.#toolSteps.length;
+        const intermediateCount = this.#intermediateMessages.length;
+
+        if (totalItems === 0 && stepCount === 0) {
             return (header + "\n").slice(0, MAX_MSG_LEN - 20) + "\n<i>…</i>";
         }
 
-        const count = this.#toolSteps.length;
-        const completedCount = this.#toolSteps.filter(s => s.status === "completed").length;
-        const failedCount = this.#toolSteps.filter(s => s.status === "failed").length;
+        // Render timeline items for truncation
+        const allItems = this.#progressTimeline.map(entry => {
+            if (entry.type === "intermediate") {
+                const msg = this.#intermediateMessages[entry.index];
+                if (!msg) return null;
+                const truncated = msg.length > 80 ? msg.slice(0, 80) + "…" : msg;
+                return `💬 <i>"${escapeHtml(truncated)}"</i>`;
+            } else {
+                const step = this.#toolSteps.find(s => s.id === entry.id);
+                if (!step) return null;
+                return this.#formatStepLine(step);
+            }
+        }).filter(Boolean);
 
-        for (let tailSize = 10; tailSize >= 3; tailSize -= 2) {
-            const headSize = Math.min(2, count);
-            const steps = this.#toolSteps;
-            let stepsBlock = "";
-
-            if (count > 0) {
-                let lines;
-                if (count <= headSize + tailSize) {
-                    lines = steps.map(s => this.#formatStepLine(s));
-                } else {
-                    const head = steps.slice(0, headSize).map(s => this.#formatStepLine(s));
-                    const skipped = count - headSize - tailSize;
-                    const tail = steps.slice(-tailSize).map(s => this.#formatStepLine(s));
-                    lines = [...head, `<i>⏳ …and ${skipped} more</i>`, ...tail];
-                }
-                stepsBlock = `<blockquote>🔧 <b>Steps:</b>\n${lines.join("\n")}</blockquote>`;
+        // Try progressively smaller windows
+        for (let tailSize = 12; tailSize >= 3; tailSize -= 3) {
+            let lines;
+            if (allItems.length <= tailSize + 2) {
+                lines = allItems;
+            } else {
+                const head = allItems.slice(0, 2);
+                const skipped = allItems.length - tailSize - 2;
+                const tail = allItems.slice(-tailSize);
+                lines = [...head, `<i>⏳ …${skipped} earlier</i>`, ...tail];
             }
 
-            const progress = [planHtml, intermediateHtml, stepsBlock].filter(Boolean).join("\n");
+            const timelineBlock = `<blockquote>${lines.join("\n")}</blockquote>`;
+            const progress = [planHtml, timelineBlock].filter(Boolean).join("\n");
             const result = `${header}\n${progress}`;
-
             if (result.length <= MAX_MSG_LEN) return result;
         }
 
-        // Drop intermediates if still too long
-        if (count > 0) {
-            const runningCount = count - completedCount - failedCount;
-            const parts = [`${completedCount} done`];
-            if (runningCount > 0) parts.push(`${runningCount} running`);
-            if (failedCount > 0) parts.push(`${failedCount} failed`);
-            const summary = `<blockquote>🔧 <b>${count} steps (${parts.join(", ")})</b></blockquote>`;
-            const progress = [planHtml, summary].filter(Boolean).join("\n");
-            return `${header}\n${progress}`;
+        // Ultra-compact: summary counts only
+        const completedCount = this.#toolSteps.filter(s => s.status === "completed").length;
+        const failedCount = this.#toolSteps.filter(s => s.status === "failed").length;
+        const parts = [];
+        if (intermediateCount > 0) parts.push(`💬 ${intermediateCount}`);
+        if (stepCount > 0) {
+            const runningCount = stepCount - completedCount - failedCount;
+            const statusParts = [`${completedCount} done`];
+            if (runningCount > 0) statusParts.push(`${runningCount} running`);
+            if (failedCount > 0) statusParts.push(`${failedCount} failed`);
+            parts.push(`🔧 ${stepCount} (${statusParts.join(", ")})`);
         }
-
-        return (header + "\n").slice(0, MAX_MSG_LEN - 20) + "\n<i>…</i>";
+        const summary = `<blockquote>${parts.join(" · ")}</blockquote>`;
+        const progress = [planHtml, summary].filter(Boolean).join("\n");
+        return `${header}\n${progress}`;
     }
 
     #buildPlanHtml() {
@@ -542,26 +607,47 @@ export class ResponseComposer {
             parts.push(display);
         }
 
-        // Intermediate messages
-        if (hasIntermediates) {
+        // Interleaved timeline (intermediates + steps in chronological order)
+        if (hasIntermediates || hasSteps) {
             if (hasThought) parts.push("");
-            const intLines = this.#intermediateMessages.map(msg => {
-                const truncated = msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
-                return `💬 "${escapeHtml(truncated)}"`;
-            });
-            parts.push(intLines.join("\n"));
-        }
 
-        // Steps list
-        if (hasSteps) {
-            const lines = this.#toolSteps.map(s => {
-                const icon = s.status === "completed" ? "✅"
-                           : s.status === "failed" ? "❌"
-                           : "🔄";
-                return `${icon} ${escapeHtml(s.description || s.id)}`;
-            });
-            if (hasThought || hasIntermediates) parts.push("");
-            parts.push(`<b>Steps:</b>\n${lines.join("\n")}`);
+            if (this.#progressTimeline.length > 0) {
+                const timelineLines = this.#progressTimeline.map(entry => {
+                    if (entry.type === "intermediate") {
+                        const msg = this.#intermediateMessages[entry.index];
+                        if (!msg) return null;
+                        const truncated = msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
+                        return `💬 "${escapeHtml(truncated)}"`;
+                    } else {
+                        const step = this.#toolSteps.find(s => s.id === entry.id);
+                        if (!step) return null;
+                        const icon = step.status === "completed" ? "✅"
+                                   : step.status === "failed" ? "❌"
+                                   : "🔄";
+                        return `${icon} ${escapeHtml(step.description || step.id)}`;
+                    }
+                }).filter(Boolean);
+                parts.push(timelineLines.join("\n"));
+            } else {
+                // Fallback: legacy separate rendering (no timeline data)
+                if (hasIntermediates) {
+                    const intLines = this.#intermediateMessages.map(msg => {
+                        const truncated = msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
+                        return `💬 "${escapeHtml(truncated)}"`;
+                    });
+                    parts.push(intLines.join("\n"));
+                }
+                if (hasSteps) {
+                    const lines = this.#toolSteps.map(s => {
+                        const icon = s.status === "completed" ? "✅"
+                                   : s.status === "failed" ? "❌"
+                                   : "🔄";
+                        return `${icon} ${escapeHtml(s.description || s.id)}`;
+                    });
+                    if (hasIntermediates) parts.push("");
+                    parts.push(lines.join("\n"));
+                }
+            }
         }
 
         let html = `<blockquote expandable>${parts.join("\n")}</blockquote>`;
