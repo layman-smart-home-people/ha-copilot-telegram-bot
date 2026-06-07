@@ -295,6 +295,47 @@ async function main() {
         }
     }
 
+    // Wire PKM extraction LLM calls through the overflow ACP
+    if (pkm && acpMgr) {
+        const pkmLlmCall = async (prompt) => {
+            if (!acpMgr.overflowEnabled) {
+                throw new Error("PKM extraction requires background mode (overflow disabled)");
+            }
+
+            const extractAcp = await acpMgr.ensureOverflow();
+            if (!extractAcp) {
+                throw new Error("Failed to spawn overflow ACP for PKM extraction");
+            }
+
+            // Check busy AFTER spawn (another task may have claimed during await)
+            if (acpMgr.isBusy("overflow")) {
+                throw new Error("Overflow ACP busy — PKM extraction deferred");
+            }
+
+            acpMgr.claim("overflow", "pkm:extraction");
+
+            try {
+                await extractAcp.newSession({ cwd: "/config" });
+
+                const chunks = [];
+                const onText = (text) => chunks.push(text);
+                extractAcp.on("text_chunk", onText);
+
+                try {
+                    await extractAcp.prompt(prompt, { timeout: 120000 });
+                } finally {
+                    extractAcp.removeListener("text_chunk", onText);
+                }
+
+                return chunks.join("");
+            } finally {
+                acpMgr.release("overflow");
+            }
+        };
+        pkm.setLlmCall(pkmLlmCall);
+        log.info("PKM extraction wired to overflow ACP");
+    }
+
     // Start standing instruction orchestrator (non-blocking)
     orchestrator.start().catch(err => {
         log.error(`Standing instruction orchestrator failed to start: ${err.message}`);

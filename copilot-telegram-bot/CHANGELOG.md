@@ -2,6 +2,14 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.62.0] — 2026-06-08
+
+### Added — PKM Phase 5: LLM Extraction Wiring
+- **LLM extraction pipeline wired** — Conversation windows now get extracted via the overflow ACP when they close
+- **`ensureOverflow()` method** on ACPManager — Public API to spawn overflow ACP on demand for background LLM calls
+- Extraction uses overflow-only policy (never primary) to avoid blocking user prompts
+- Graceful degradation: extraction deferred if overflow busy or disabled, retries on next 5-min maintenance cycle
+
 ## [0.61.0] — 2026-06-08
 
 ### Added — PKM (Personal Knowledge Management) Phase 1

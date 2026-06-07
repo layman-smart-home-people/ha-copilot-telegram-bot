@@ -314,6 +314,23 @@ export class ACPManager {
         }
     }
 
+    /**
+     * Ensure overflow ACP is alive (spawn if needed).
+     * Does NOT acquire/claim — caller must claim/release manually.
+     * @returns {ACPClient|null} The overflow ACP instance, or null if unavailable.
+     */
+    async ensureOverflow() {
+        if (!this.#overflowEnabled) return null;
+        if (this.#overflowAcp?.alive) return this.#overflowAcp;
+        try {
+            await this.#spawnOverflow();
+            return this.#overflowAcp;
+        } catch (err) {
+            log.warn(`Failed to ensure overflow: ${err.message}`);
+            return null;
+        }
+    }
+
     /** Stop the overflow process. */
     async reapOverflow() {
         this.#clearOverflowIdleTimer();
