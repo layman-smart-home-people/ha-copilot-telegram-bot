@@ -297,6 +297,9 @@ const TOOLS = [
                 date_to: { type: "string", description: "ISO date — only memories before this" },
                 tags: { type: "array", items: { type: "string" }, description: "Filter by tags" },
                 limit: { type: "number", description: "Max results (default: 7)" },
+                queries: { type: "array", items: { type: "string" }, description: "Multiple queries (1-5) — results merged and deduplicated. Use instead of query for broader recall." },
+                entity: { type: "string", description: "Filter results to notes linked to this entity name" },
+                expand_context: { type: "boolean", description: "If true, also return related notes (neighbors of top results). Default: false" },
             },
         },
     },
@@ -636,7 +639,7 @@ ID: ${data?.id}`);
             }
 
             case "pkm_search": {
-                const { entity_query, query, scope = "user", type, topic, date_from, date_to, tags, limit } = args || {};
+                const { entity_query, query, queries, entity, expand_context, scope = "user", type, topic, date_from, date_to, tags, limit } = args || {};
 
                 if (entity_query) {
                     const { status, data } = await apiCall("POST", "/api/pkm/entities", { query: entity_query, limit });
@@ -651,21 +654,31 @@ ID: ${data?.id}`);
                     return err(data?.error || `API error (${status})`);
                 }
 
-                if (!query) return err("query is required");
+                if (!query && (!queries || !queries.length)) return err("query or queries is required");
                 const path = scope === "agent" ? "/api/pkm/agent/search" : "/api/pkm/search";
                 const payload = scope === "agent"
                     ? { query, type, limit }
-                    : { query, type, date_from, date_to, tags, limit, topic, scope };
+                    : { query, queries, type, date_from, date_to, tags, limit, topic, entity, scope, expand_context };
                 const { status, data } = await apiCall("POST", path, payload);
                 if (status === 200) {
                     const results = Array.isArray(data) ? data : data?.results;
+                    const expanded = data?.expanded;
                     if (!results?.length) return ok("No memories found matching that query.");
                     const lines = results.map((note, i) =>
                         `${i + 1}. [${note.type}] ${note.title || "(untitled)"}
    ${note.content?.substring(0, 200) || ""}
    📅 ${note.created_at?.substring(0, 10)} | ID: ${note.id}`
                     );
-                    return ok(`Found ${results.length} memories:\n\n${lines.join("\n\n")}`);
+                    let text = `Found ${results.length} memories:\n\n${lines.join("\n\n")}`;
+                    if (expanded?.length) {
+                        const expLines = expanded.map((note, i) =>
+                            `${i + 1}. [${note.type}] ${note.title || "(untitled)"}
+   ${note.content?.substring(0, 200) || ""}
+   📅 ${note.created_at?.substring(0, 10)} | from: ${note._expandedFrom}`
+                        );
+                        text += `\n\n── Related (expanded context) ──\n\n${expLines.join("\n\n")}`;
+                    }
+                    return ok(text);
                 }
                 return err(data?.error || `API error (${status})`);
             }

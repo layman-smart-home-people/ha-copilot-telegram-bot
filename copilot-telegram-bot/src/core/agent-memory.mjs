@@ -89,29 +89,26 @@ Tools: \`si_create\`, \`si_list\`, \`si_get\`, \`si_update\`, \`si_delete\`, \`s
 - Default \`one_shot: true\` for reactive requests unless user says "always"
 
 ## Personal Knowledge Management — \`pkm_*\` MCP tools
-Long-term memory system with FTS5 search, automatic extraction, entity linking, and contradiction detection.
+Long-term memory system with topic tree hierarchy, activation model, collections, and graph navigation.
 
-### User memory tools
-- \`pkm_search\` — Search user memories by natural language query. Use when user asks about past events, preferences, or facts.
-- \`pkm_write\` — Explicitly save a memory. Use when user says "remember this". Supports \`scope: "household"\` for shared memories.
-- \`pkm_get\` — Get a specific memory by ID (full details + linked entities).
-- \`pkm_update\` — Update title/content/tags or archive a memory.
-- \`pkm_delete\` — Securely delete a memory (forensically unrecoverable). Always confirm first.
-- \`pkm_recent\` — List recent memories by date.
-- \`pkm_stats\` — Memory statistics (count, type breakdown, extraction health).
-- \`pkm_settings\` — Get/set PKM settings (window duration, enrichment, notifications).
-- \`pkm_entity_search\` — Search by person/place/entity name. Returns entity info + linked memories.
+### 5 consolidated tools (v2)
+- \`pkm_memory\` — **CRUD + link**: \`action\` = write | update | delete | get | link. Supports \`scope\` = user | agent | household. Write accepts \`topics\` array, \`importance\`, \`durability\`.
+- \`pkm_navigate\` — **Browse memory structure**: \`action\` = map | browse | context | timeline. \`map\` shows topic tree overview. \`browse\` lists notes in a topic. \`context\` finds neighbors. \`timeline\` groups by period.
+- \`pkm_search\` — **Full-text search**: \`query\` or \`queries\` (multi-query). Filters: \`type\`, \`topic\`, \`entity\`, \`date_from\`, \`date_to\`, \`tags\`. \`expand_context: true\` for related notes. \`entity_query\` for entity lookup. Supports \`scope\` = user | agent | household.
+- \`pkm_collection\` — **Structured data**: \`action\` = create | add | query | update | remove | list. Schema-validated items (reading lists, recipes, logs).
+- \`pkm_manage\` — **System ops**: \`action\` = stats | settings | topic_create | topic_move | topic_merge | maintain.
 
-### Agent memory tools (your private memory)
-- \`pkm_agent_search\` — Search your own operational knowledge (system facts, past issues, entity names).
-- \`pkm_agent_write\` — Write to your own memory. Store verified facts and reflections, not user-stated policies.
+### Key concepts
+- **Topics**: Hierarchical (max depth 3), notes have 1 primary + optional secondary. Fuzzy name matching.
+- **Activation**: ACT-R model — frequently accessed notes rank higher in search. \`trackAccess()\` on reads.
+- **Collections**: Items ARE notes with \`type='collection_item'\` — searchable + topicable.
+- **Context expansion**: \`expand_context: true\` in search returns neighbors of top results via shared entities/topics/links.
 
 ### Automatic features
-- **Conversation extraction**: Messages are tracked into windows, then extracted via LLM into structured memories.
-- **Entity linking**: People, places, companies are extracted and linked to memories.
-- **Contradiction detection**: New notes automatically supersede conflicting older ones.
-- **Structured data**: Health metrics (BP, weight, sleep) are regex-detected and stored.
-- **Household memories**: Shared between household members. Use \`/memory household\` commands or \`scope: "household"\` in pkm_write.
+- **Conversation extraction**: Messages tracked → LLM extracts structured memories with auto-topic assignment.
+- **Entity linking**: People/places extracted and linked. 3-step dedup (exact → alias → substring).
+- **Contradiction detection**: New notes auto-supersede conflicting older ones.
+- **Activation decay**: Runs in maintenance — permanent notes floor at 0.5, normal decay 0.05/day.
 
 ## Sub-Agents
 **NEVER use \`task(mode: "background")\`** — killed when ACP prompt completes.

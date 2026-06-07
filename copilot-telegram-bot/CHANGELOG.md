@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.71.0] — 2026-06-08
+
+### Changed — PKM v2 Phase 6: Integration + Polish + Final Review
+- **MCP pkm_search tool** — added `queries`, `entity`, `expand_context` params to schema + handler
+- **Expanded context rendering** — MCP search response now shows "Related (expanded context)" section when present
+- **SKILLS.md updated** — v2 tool docs: 5 consolidated tools, topic tree, activation model, collections, context expansion
+- **agent-memory.mjs SKILLS_DEFAULT** — updated seed template to match v2 tool documentation
+- **Code review** — syntax verified across all 6 PKM files, security check on route guards
+
 ## [0.70.0] — 2026-06-08
 
 ### Changed — PKM v2 Phase 5: Search Upgrade
