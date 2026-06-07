@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.54.1] — 2026-06-07
+
+### Fixed
+- **Rate limit detection broken** — `#sendDraft` and `#editMessage` used regex `/429|retry/i` to detect Telegram 429 errors, but the client throws `"Rate limited"` which doesn't match. Changed to `err.status === 429` (set reliably by the client). This caused transient rate limits to trigger permanent draft→edit fallback instead of adaptive backoff.
+- **`err.retryAfter` ignored** — Edit mode retry delay was regex-parsed from the error message (also broken). Now uses `err.retryAfter` set by the client. Draft mode also respects `retryAfter` as a floor for the adaptive throttle (cap raised to 5s).
+
 ## [0.54.0] — 2026-06-07
 
 ### Added

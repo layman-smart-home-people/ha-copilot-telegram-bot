@@ -926,16 +926,14 @@ export class ResponseComposer {
                         text: stripHtmlKeepStructure(html),
                     });
                 } catch {}
-            } else if (/429|retry/i.test(err?.message)) {
+            } else if (err?.status === 429) {
                 // Rate limited — retry with cap
                 if (this.#editRetries >= 3) {
                     log.warn(`rate limit retry cap reached, dropping edit`);
                     return;
                 }
                 this.#editRetries++;
-                // Parse retry_after from Telegram error: "Too Many Requests: retry after 5"
-                const match = err?.message?.match(/retry after (\d+)/i);
-                const retryMs = (match ? parseInt(match[1], 10) : 2) * 1000;
+                const retryMs = (err.retryAfter || 2) * 1000;
                 log.warn(`rate limited, retry ${this.#editRetries}/3 in ${retryMs}ms`);
                 const gen = this.#editGeneration;
                 setTimeout(() => {
@@ -967,10 +965,13 @@ export class ResponseComposer {
             await this.#telegram.call("sendMessageDraft", params);
             this.#draftFailures = 0;
         } catch (err) {
-            if (/429|retry/i.test(err?.message)) {
-                // Rate limited — adaptive backoff (C4)
-                this.#draftThrottleMs = Math.min(this.#draftThrottleMs * 2, 3000);
-                log.warn(`draft rate limited, throttle → ${this.#draftThrottleMs}ms`);
+            if (err?.status === 429) {
+                // Rate limited — adaptive backoff, respect server retry_after
+                const retryAfterMs = (err.retryAfter || 2) * 1000;
+                this.#draftThrottleMs = Math.min(
+                    Math.max(this.#draftThrottleMs * 2, retryAfterMs), 5000
+                );
+                log.warn(`draft rate limited, throttle → ${this.#draftThrottleMs}ms (retry_after=${err.retryAfter || '?'}s)`);
                 return;
             }
             if (useHtml && /can.t parse|entit/i.test(err?.message)) {
