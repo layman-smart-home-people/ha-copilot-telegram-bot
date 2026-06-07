@@ -1381,8 +1381,8 @@ export class Orchestrator {
                 this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(chatId, prompt)
                 );
-                // Notify admin about new pairing request
-                this.#notifyAdminPairingRequest(userId, username, isGroup, chatId);
+                // Notify admin about new pairing request (include code so admin doesn't need logs)
+                this.#notifyAdminPairingRequest(userId, username, isGroup, chatId, code);
                 return;
             }
         } else {
@@ -2292,8 +2292,8 @@ export class Orchestrator {
     }
 
     /** Notify first admin that someone is requesting to pair. */
-    #notifyAdminPairingRequest(userId, username, isGroup, sourceChatId) {
-        this.#adapter.notifyAdminPairingRequest(userId, username, isGroup, sourceChatId);
+    #notifyAdminPairingRequest(userId, username, isGroup, sourceChatId, code) {
+        this.#adapter.notifyAdminPairingRequest(userId, username, isGroup, sourceChatId, code);
     }
 
     /** Notify first admin that someone paired successfully. */

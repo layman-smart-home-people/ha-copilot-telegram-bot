@@ -36,13 +36,15 @@ export class ResponseComposer {
     #planEntries = [];
     #intermediateMessages = [];
     #progressTimeline = []; // chronological: { type: "intermediate"|"tool", index?, id? }
+    #draftMode = false;     // true = using sendMessageDraft (private chats)
+    #draftId = null;        // draft_id for sendMessageDraft
 
     constructor(telegram) {
         this.#telegram = telegram;
     }
 
     get active() { return this.#messageId !== null && !this.#finalized; }
-    get messageId() { return this.#messageId; }
+    get messageId() { return this.#draftMode && this.#messageId === -1 ? null : this.#messageId; }
     get trailingHtml() { return this.#trailingHtml; }
 
     /**
@@ -63,7 +65,30 @@ export class ResponseComposer {
         this.#planEntries = [];
         this.#intermediateMessages = [];
         this.#progressTimeline = [];
+        this.#draftMode = false;
+        this.#draftId = null;
 
+        // Try draft mode for private chats (ephemeral typing bubble)
+        if (ref.chatType === "private") {
+            try {
+                this.#draftId = 1;
+                await this.#telegram.call("sendMessageDraft", {
+                    chat_id: ref.chatId,
+                    draft_id: this.#draftId,
+                    text: "",
+                });
+                this.#draftMode = true;
+                this.#messageId = -1; // sentinel: active but no real message yet
+                log.debug(`draft mode started for chat=${ref.chatId}`);
+                this.#scheduleElapsedUpdate();
+                return;
+            } catch (err) {
+                log.debug(`draft mode unavailable, using edit mode: ${err.message}`);
+                this.#draftId = null;
+            }
+        }
+
+        // Fallback: send a real placeholder message (edit-based flow)
         const params = {
             chat_id: ref.chatId,
             text: "🤔 <i>Thinking...</i>",
@@ -236,6 +261,10 @@ export class ResponseComposer {
 
         this.#textBuffer = fullText || this.#textBuffer;
 
+        if (this.#draftMode) {
+            return this.#finalizeDraft();
+        }
+
         if (!this.#messageId) {
             return fullText ? chunkMessage(fullText) : [];
         }
@@ -270,6 +299,59 @@ export class ResponseComposer {
     }
 
     /**
+     * Finalize draft mode: send the final answer as a real persistent message.
+     * The draft auto-expires after 30s.
+     */
+    async #finalizeDraft() {
+        const detailsHtml = this.#buildCombinedDetailsHtml();
+        if (detailsHtml) this.#trailingHtml = detailsHtml;
+
+        const hasAnswer = this.#textBuffer.trim().length > 0;
+
+        if (hasAnswer) {
+            const chunks = chunkMessage(this.#textBuffer);
+            const firstHtml = this.#convertAnswer(chunks[0]);
+            this.#messageId = await this.#sendFinalMessage(firstHtml, "HTML");
+            return chunks.slice(1);
+        } else if (detailsHtml) {
+            this.#trailingHtml = null;
+            this.#messageId = await this.#sendFinalMessage(detailsHtml, "HTML");
+            return [];
+        } else {
+            // Nothing to show — draft auto-expires
+            this.#messageId = null;
+            return [];
+        }
+    }
+
+    /**
+     * Send a persistent message (used by draft mode finalization and abort).
+     * Returns the message_id or null.
+     */
+    async #sendFinalMessage(text, parseMode) {
+        if (!this.#ref) return null;
+        const params = { chat_id: this.#ref.chatId, text, link_preview_options: { is_disabled: true } };
+        if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+        if (parseMode) params.parse_mode = parseMode;
+        try {
+            const sent = await this.#telegram.call("sendMessage", params);
+            return sent?.message_id || null;
+        } catch (err) {
+            if (/can.t parse|entit/i.test(err?.message)) {
+                try {
+                    const sent = await this.#telegram.call("sendMessage", {
+                        chat_id: this.#ref.chatId, text: stripHtmlKeepStructure(text),
+                        link_preview_options: { is_disabled: true },
+                    });
+                    return sent?.message_id || null;
+                } catch { return null; }
+            }
+            log.warn(`sendFinalMessage failed: ${err.message}`);
+            return null;
+        }
+    }
+
+    /**
      * Cancel/reset without finalizing (e.g., on error or disconnect).
      */
     async abort(errorMsg) {
@@ -279,7 +361,14 @@ export class ResponseComposer {
         this.#editGeneration++;
 
         if (this.#messageId && errorMsg) {
-            await this.#editMessage(`⚠️ ${escapeHtml(errorMsg)}`);
+            if (this.#draftMode) {
+                // Drafts are ephemeral — send error as a real persistent message
+                this.#messageId = await this.#sendFinalMessage(
+                    `⚠️ ${escapeHtml(errorMsg)}`, "HTML"
+                );
+            } else {
+                await this.#editMessage(`⚠️ ${escapeHtml(errorMsg)}`);
+            }
         }
     }
 
@@ -287,6 +376,11 @@ export class ResponseComposer {
      * Delete the placeholder message (if nothing useful was shown).
      */
     async cleanup() {
+        if (this.#draftMode) {
+            // Drafts auto-expire after 30s, nothing to delete
+            this.#messageId = null;
+            return;
+        }
         if (this.#messageId && this.#ref) {
             try {
                 await this.#telegram.call("deleteMessage", {
@@ -725,6 +819,9 @@ export class ResponseComposer {
     }
 
     async #editMessage(html) {
+        if (this.#draftMode) {
+            return this.#sendDraft(html);
+        }
         if (!this.#messageId || !this.#ref) return;
         try {
             await this.#telegram.call("editMessageText", {
@@ -764,6 +861,34 @@ export class ResponseComposer {
                 }, retryMs);
             } else {
                 log.warn(`edit error: ${err.message}`);
+            }
+        }
+    }
+
+    /**
+     * Send a draft update (ephemeral typing bubble).
+     * Used instead of editMessageText in draft mode.
+     */
+    async #sendDraft(html) {
+        if (!this.#ref || !this.#draftId) return;
+        try {
+            await this.#telegram.call("sendMessageDraft", {
+                chat_id: this.#ref.chatId,
+                draft_id: this.#draftId,
+                text: html,
+                parse_mode: "HTML",
+            });
+        } catch (err) {
+            if (/can.t parse|entit/i.test(err?.message)) {
+                try {
+                    await this.#telegram.call("sendMessageDraft", {
+                        chat_id: this.#ref.chatId,
+                        draft_id: this.#draftId,
+                        text: stripHtmlKeepStructure(html),
+                    });
+                } catch {}
+            } else {
+                log.warn(`draft error: ${err.message}`);
             }
         }
     }

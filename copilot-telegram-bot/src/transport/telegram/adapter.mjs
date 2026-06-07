@@ -238,7 +238,7 @@ export class TelegramAdapter {
 
     // ── Pairing Notifications ──────────────────────────────────
 
-    notifyAdminPairingRequest(userId, username, isGroup, sourceChatId) {
+    notifyAdminPairingRequest(userId, username, isGroup, sourceChatId, code) {
         const adminChatId = this.#orchestrator.allowedChatIds[0];
         if (!adminChatId || adminChatId === userId) return;
         const who = username ? `@${username}` : `User ${userId}`;
@@ -247,7 +247,7 @@ export class TelegramAdapter {
             this.#telegram.sendMessage(adminChatId,
                 `🔐 Pairing request${where}\n\n` +
                 `👤 ${who} (ID: ${userId})\n` +
-                `📋 Code is in the add-on logs`
+                `📋 Pairing code: \`${code}\`\nForward this to them or tell them to enter it.`
             )
         );
     }

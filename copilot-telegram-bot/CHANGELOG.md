@@ -2,6 +2,16 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.52.0] — 2026-06-07
+
+### Added
+- **`sendMessageDraft` streaming** — In private chats, the bot now uses Telegram's ephemeral draft ("typing bubble") for progress display instead of sending a real placeholder message and editing it. Drafts auto-expire after 30s, so no orphaned "🤔 Thinking..." messages if the bot crashes. Falls back to the existing edit-based approach for groups or if the API isn't available.
+- **Pairing code in admin notification** — When a new user requests pairing, the admin now receives the pairing code directly in Telegram instead of being told to check add-on logs. The code is still also logged to stdout.
+
+### Changed
+- `/pair` help text updated to reflect that codes are now sent via Telegram.
+- `TelegramClient` gains `sendMessageDraft()` convenience method.
+
 ## [0.51.4] — 2026-06-07
 
 ### Fixed

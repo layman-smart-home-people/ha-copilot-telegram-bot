@@ -519,7 +519,7 @@ export async function handleSlashCommand(ctx, command, args) {
                 reply(
                     "🔐 Pairing info:\n" +
                     "To pair a new device, message the bot from that device.\n" +
-                    "A pairing code will appear in HA add-on logs.\n\n" +
+                    "A pairing code will be sent to you here.\n\n" +
                     "/pair list — show paired users\n" +
                     "/unpair <userId> — revoke access"
                 );

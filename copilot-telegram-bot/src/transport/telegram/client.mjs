@@ -110,6 +110,13 @@ export class TelegramClient extends EventEmitter {
         return this.call("sendChatAction", { chat_id: chatId, action });
     }
 
+    sendMessageDraft(chatId, draftId, text, parseMode) {
+        const params = { chat_id: chatId, draft_id: draftId };
+        if (text != null) params.text = text;
+        if (parseMode) params.parse_mode = parseMode;
+        return this.call("sendMessageDraft", params);
+    }
+
     setMessageReaction(chatId, messageId, emoji) {
         return this.call("setMessageReaction", {
             chat_id: chatId, message_id: messageId,
