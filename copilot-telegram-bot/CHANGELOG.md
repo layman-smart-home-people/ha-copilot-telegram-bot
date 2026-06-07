@@ -2,6 +2,21 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.56.0] — 2026-06-07
+
+### Added
+- **RBAC engine** (`src/core/rbac.mjs`) — Full role-based access control replacing the flat PairingManager. Features:
+  - **Hierarchical roles**: `viewer → user → operator → admin → owner` with capability inheritance
+  - **Granular capabilities**: 16 capability types covering entity control (safe/sensitive domain split), automations, dashboards, SI management, user/role management, system admin, dev tools, agent memory, background tasks, and reminders
+  - **Per-entity overrides**: Grant or deny specific capabilities per user, with domain wildcards (`light.*`) and exact entity matching
+  - **Custom roles**: Create roles with selective capability inheritance from built-in roles
+  - **Delegation boundaries**: Roles can only manage users at or below their own level
+  - **Invite tokens**: Time-limited pairing codes with pre-assigned roles (default: 15 min TTL)
+  - **Tool-to-capability mapping**: Automatic capability checks for 40+ MCP tools, plus domain-aware checks for `ha_call_service`/`ha_bulk_control`
+  - **Expiry support**: User access can be time-limited with automatic expiry
+  - **Backward-compatible API**: `isPaired()`, `isAdmin()`, `getAdminChatIds()`, `generateCode()` all preserved — drop-in replacement for PairingManager
+  - **Migration**: Auto-migrates existing `paired_users.json` → `rbac.json` on first load (admin users → `owner` role)
+
 ## [0.55.2] — 2026-06-07
 
 ### Fixed
