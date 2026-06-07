@@ -177,6 +177,7 @@ export class Orchestrator {
         this.#permissionHandler = new PermissionHandler({
             buttons: this.#buttons,
             getAllowedChatIds: () => this.#allowedChatIds,
+            rbac: this.#pairing,
         });
 
         this.#interactiveFlows = new InteractiveFlows({

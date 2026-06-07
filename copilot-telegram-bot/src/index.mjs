@@ -298,6 +298,7 @@ async function main() {
         acp,
         telegram,
         startedAt: Date.now(),
+        pairing,
     });
     webui.start().catch(err => {
         log.error(`Web UI server failed to start: ${err.message}`);

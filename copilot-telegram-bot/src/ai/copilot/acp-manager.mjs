@@ -51,7 +51,9 @@ export class ACPManager {
         this.#overflowIdleMs = overflowIdleMinutes * 60 * 1000;
         this.#backgroundModel = backgroundModel || "";
 
-        // Overflow MCP config: default to si-tools only (no tg-ux)
+        // Overflow MCP config: default to si-tools only (no tg-ux, no rbac-tools)
+        // RBAC tools excluded: overflow uses --allow-all, bypassing permission checks.
+        // Including rbac-tools would allow privilege escalation via background_task.
         this.#overflowMcpServers = overflowMcpServers || {
             "si-tools": {
                 type: "stdio",

@@ -102,6 +102,11 @@ export class ACPClient extends EventEmitter {
                 command: "node",
                 args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
             },
+            "rbac-tools": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/rbac-mcp-server.mjs"],
+            },
         };
         const mcpConfig = JSON.stringify({ mcpServers });
         args.push("--additional-mcp-config", mcpConfig);

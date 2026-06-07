@@ -37,15 +37,18 @@ export function unwrapPermissionSelection(value) {
 export class PermissionHandler {
     #buttons;
     #getAllowedChatIds;
+    #rbac;
 
     /**
      * @param {object} opts
      * @param {object} opts.buttons - ButtonManager instance
      * @param {Function} opts.getAllowedChatIds - returns allowed chat IDs array
+     * @param {object} [opts.rbac] - RBACManager instance for role-based permission checks
      */
-    constructor({ buttons, getAllowedChatIds }) {
+    constructor({ buttons, getAllowedChatIds, rbac }) {
         this.#buttons = buttons;
         this.#getAllowedChatIds = getAllowedChatIds;
+        this.#rbac = rbac || null;
     }
 
     /** Handle a permission_request event from ACP. */
@@ -70,6 +73,27 @@ export class PermissionHandler {
         if (toolCall.kind === "switch_mode") {
             await this.handlePlanApproval(req, acp, scope, getRef, tag);
             return;
+        }
+
+        // --- RBAC permission check (absolute barrier) ---
+        // Must come before allowAll — role denials cannot be bypassed.
+        if (this.#rbac) {
+            const ref = getRef();
+            const userId = ref?.userId;
+            if (userId) {
+                // Determine canonical tool name for RBAC lookup
+                const rbacTool = toolCall.name || (domain && service ? "ha_call_service" : req.toolName || req.tool || req.name || "unknown_tool");
+                const rbacArgs = { domain, entity_id: entityId };
+                const rbacResult = this.#rbac.checkToolPermission(userId, rbacTool, rbacArgs);
+
+                if (!rbacResult.allowed) {
+                    const options = req.options || [];
+                    const rejectId = options.find(o => o.kind === "reject_once")?.optionId || "reject_once";
+                    acp.respondPermission(requestId, rejectId);
+                    log.info(`Permission DENIED (RBAC): ${tool} for user ${userId} — ${rbacResult.reason} (cap: ${rbacResult.capability})`);
+                    return;
+                }
+            }
         }
 
         // Allow-all mode: skip all permission prompts

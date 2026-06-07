@@ -52,8 +52,8 @@ export class WebUIServer {
      * Attach bot internals so API routes can access them.
      * Call this before start().
      */
-    attach({ bridge, orchestrator, scopeMgr, config, acp, telegram, startedAt }) {
-        this.#ctx = { bridge, orchestrator, scopeMgr, config, acp, telegram, startedAt };
+    attach({ bridge, orchestrator, scopeMgr, config, acp, telegram, startedAt, pairing }) {
+        this.#ctx = { bridge, orchestrator, scopeMgr, config, acp, telegram, startedAt, pairing };
     }
 
     /**
@@ -268,6 +268,64 @@ export class WebUIServer {
         // POST /api/chat/stop — cancel the current prompt
         if (pathname === "/api/chat/stop" && method === "POST") {
             return this.#apiChatStop(res);
+        }
+
+        // ── RBAC API ────────────────────────────────────────────────
+
+        // GET /api/rbac/roles — list all roles
+        if (pathname === "/api/rbac/roles" && method === "GET") {
+            return this.#apiRbacListRoles(res);
+        }
+
+        // POST /api/rbac/roles — create custom role
+        if (pathname === "/api/rbac/roles" && method === "POST") {
+            const body = await this.#readBody(req);
+            return this.#apiRbacCreateRole(res, body);
+        }
+
+        // /api/rbac/roles/:name
+        const roleMatch = pathname.match(/^\/api\/rbac\/roles\/([^/]+)$/);
+        if (roleMatch) {
+            const name = decodeURIComponent(roleMatch[1]);
+            if (method === "GET") return this.#apiRbacGetRole(res, name);
+            if (method === "PUT") {
+                const body = await this.#readBody(req);
+                return this.#apiRbacUpdateRole(res, name, body);
+            }
+            if (method === "DELETE") return this.#apiRbacDeleteRole(res, name);
+        }
+
+        // GET /api/rbac/users — list all users
+        if (pathname === "/api/rbac/users" && method === "GET") {
+            return this.#apiRbacListUsers(res);
+        }
+
+        // /api/rbac/users/:userId
+        const userMatch = pathname.match(/^\/api\/rbac\/users\/([^/]+)$/);
+        if (userMatch) {
+            const userId = decodeURIComponent(userMatch[1]);
+            if (method === "GET") return this.#apiRbacGetUser(res, userId);
+            if (method === "DELETE") return this.#apiRbacRevokeUser(res, userId);
+        }
+
+        // PUT /api/rbac/users/:userId/role
+        const userRoleMatch = pathname.match(/^\/api\/rbac\/users\/([^/]+)\/role$/);
+        if (userRoleMatch && method === "PUT") {
+            const userId = decodeURIComponent(userRoleMatch[1]);
+            const body = await this.#readBody(req);
+            return this.#apiRbacSetUserRole(res, userId, body);
+        }
+
+        // POST /api/rbac/check — debug permission check
+        if (pathname === "/api/rbac/check" && method === "POST") {
+            const body = await this.#readBody(req);
+            return this.#apiRbacCheckPermission(res, body);
+        }
+
+        // POST /api/rbac/invites — create invite
+        if (pathname === "/api/rbac/invites" && method === "POST") {
+            const body = await this.#readBody(req);
+            return this.#apiRbacCreateInvite(res, body);
         }
 
         this.#json(res, 404, { error: "Not found" });
@@ -1050,6 +1108,171 @@ export class WebUIServer {
             });
             res.end(data);
         });
+    }
+
+    // ── RBAC API ──────────────────────────────────────────────
+
+    #apiRbacListRoles(res) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const roles = rbac.getAllRoles();
+        const result = Object.entries(roles).map(([name, role]) => ({
+            name,
+            ...role,
+            effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)],
+        }));
+        return this.#json(res, 200, result);
+    }
+
+    #apiRbacGetRole(res, name) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const role = rbac.getRoleConfig(name);
+        if (!role) return this.#json(res, 404, { error: `Role not found: ${name}` });
+
+        return this.#json(res, 200, {
+            name,
+            ...role,
+            effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)],
+        });
+    }
+
+    #apiRbacCreateRole(res, body) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        try {
+            const { name, rank, inherits, capabilities, icon, description } = body || {};
+            if (!name) return this.#json(res, 400, { error: "name is required" });
+            if (rank === undefined) return this.#json(res, 400, { error: "rank is required" });
+
+            rbac.createRole(name, { rank, inherits, capabilities, icon, description });
+            const role = rbac.getRoleConfig(name);
+            return this.#json(res, 201, {
+                name,
+                ...role,
+                effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)],
+            });
+        } catch (err) {
+            return this.#json(res, 400, { error: err.message });
+        }
+    }
+
+    #apiRbacUpdateRole(res, name, body) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        try {
+            rbac.updateRole(name, body || {});
+            const role = rbac.getRoleConfig(name);
+            return this.#json(res, 200, {
+                name,
+                ...role,
+                effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)],
+            });
+        } catch (err) {
+            return this.#json(res, 400, { error: err.message });
+        }
+    }
+
+    #apiRbacDeleteRole(res, name) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        try {
+            rbac.deleteRole(name);
+            return this.#json(res, 204, null);
+        } catch (err) {
+            return this.#json(res, 400, { error: err.message });
+        }
+    }
+
+    #apiRbacListUsers(res) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const users = rbac.getPairedUsers();
+        const result = users.map(u => ({
+            ...u,
+            effectiveCapabilities: u.role ? [...rbac.getEffectiveCapabilities(u.role)] : [],
+        }));
+        return this.#json(res, 200, result);
+    }
+
+    #apiRbacGetUser(res, userId) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const user = rbac.getUser(Number(userId));
+        if (!user) return this.#json(res, 404, { error: `User not found: ${userId}` });
+
+        return this.#json(res, 200, {
+            ...user,
+            effectiveCapabilities: user.role ? [...rbac.getEffectiveCapabilities(user.role)] : [],
+        });
+    }
+
+    #apiRbacSetUserRole(res, userId, body) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        try {
+            const { role, expiresAt, displayName } = body || {};
+            if (!role) return this.#json(res, 400, { error: "role is required" });
+
+            rbac.setUserRole(Number(userId), role, { expiresAt, displayName });
+            const user = rbac.getUser(Number(userId));
+            return this.#json(res, 200, {
+                ...user,
+                effectiveCapabilities: [...rbac.getEffectiveCapabilities(user.role)],
+            });
+        } catch (err) {
+            return this.#json(res, 400, { error: err.message });
+        }
+    }
+
+    #apiRbacRevokeUser(res, userId) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const revoked = rbac.revoke(Number(userId));
+        if (!revoked) return this.#json(res, 400, { error: "Cannot revoke this user (may be a pre-approved admin)" });
+        return this.#json(res, 204, null);
+    }
+
+    #apiRbacCheckPermission(res, body) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        const { userId, capability, entityId, toolName, toolArgs } = body || {};
+        if (!userId) return this.#json(res, 400, { error: "userId is required" });
+
+        if (toolName) {
+            const result = rbac.checkToolPermission(Number(userId), toolName, toolArgs || {});
+            return this.#json(res, 200, result);
+        }
+        if (capability) {
+            const result = rbac.canPerform(Number(userId), capability, entityId || null);
+            return this.#json(res, 200, result);
+        }
+        return this.#json(res, 400, { error: "Either capability or toolName is required" });
+    }
+
+    #apiRbacCreateInvite(res, body) {
+        const rbac = this.#ctx.pairing;
+        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
+
+        try {
+            const { role, expiresAt, roleExpiresAt, createdBy } = body || {};
+            if (!role) return this.#json(res, 400, { error: "role is required" });
+
+            const token = rbac.createInvite(role, { createdBy, expiresAt, roleExpiresAt });
+            return this.#json(res, 201, { token, role, expiresAt, roleExpiresAt });
+        } catch (err) {
+            return this.#json(res, 400, { error: err.message });
+        }
     }
 
     async #readBody(req) {

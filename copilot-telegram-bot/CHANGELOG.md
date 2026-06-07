@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.57.0] — 2026-06-07
+
+### Added
+- **RBAC permission enforcement** — Tool calls from non-owner users are now checked against role capabilities before reaching the permission prompt. RBAC denials are absolute (cannot be bypassed by allow-all mode or per-scope grants). Enforcement happens in `PermissionHandler` before any existing auto-approve logic.
+- **RBAC MCP tools** (`rbac-mcp-server.mjs`) — 11 agent-callable tools for managing roles, users, and permissions:
+  - `rbac_list_roles`, `rbac_get_role`, `rbac_create_role`, `rbac_update_role`, `rbac_delete_role` — full role lifecycle
+  - `rbac_list_users`, `rbac_get_user`, `rbac_set_user_role`, `rbac_revoke_user` — user management
+  - `rbac_check_permission` — debug tool for testing permission resolution
+  - `rbac_create_invite` — generate invite tokens for self-service onboarding
+- **RBAC REST API** — 11 endpoints under `/api/rbac/` in the WebUI server, backing the MCP tools
+- **RBAC MCP server registered** on primary ACP only (excluded from overflow/background to prevent privilege escalation via `--allow-all` bypass)
+
 ## [0.56.0] — 2026-06-07
 
 ### Added
