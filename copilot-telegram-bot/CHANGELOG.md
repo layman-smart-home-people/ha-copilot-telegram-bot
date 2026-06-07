@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.54.0] — 2026-06-07
+
+### Added
+- **Auto document migration** — On startup, the bot detects when seed default documents (IDENTITY.md, SKILLS.md) have changed between versions. If changes are found, it automatically injects a migration prompt to the agent, which intelligently merges new content into the user's existing files while preserving all customizations. Hash-based change detection ensures migration only triggers once per update.
+
 ## [0.53.1] — 2026-06-07
 
 ### Changed

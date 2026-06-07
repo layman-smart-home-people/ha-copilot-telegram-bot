@@ -337,6 +337,26 @@ async function main() {
     for (const chatId of bridge.allowedChatIds) {
         log.info(`Bot online, chat ${chatId} ready`);
     }
+
+    // Check for document migration (seed defaults changed since last version)
+    // Note: hashes are saved after prompt injection (queuing), not after agent completes.
+    // If the agent crashes mid-migration, the hashes are already saved and migration won't retry.
+    // This is acceptable — Copilot failures during normal prompts indicate bigger issues.
+    const migration = bridge.agentMemory.getMigrationPrompt();
+    if (migration && ownerChatId) {
+        log.info("Seed defaults changed — scheduling document migration");
+        setTimeout(() => {
+            bridge.injectSystemPrompt(migration.prompt, Number(ownerChatId))
+                .then(() => {
+                    bridge.agentMemory.saveSeedHashes(migration.hashes);
+                    log.info("Document migration prompt injected, seed hashes saved");
+                })
+                .catch(err => {
+                    // Don't save hashes on injection failure — retry on next startup
+                    log.error(`Document migration injection failed: ${err.message}`);
+                });
+        }, 10_000);
+    }
 }
 
 // --- Shutdown ---

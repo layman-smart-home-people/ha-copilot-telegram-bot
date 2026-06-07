@@ -223,6 +223,7 @@ export class Orchestrator {
 
     get allowedChatIds() { return this.#allowedChatIds; }
     get promptActive() { return this.#promptActive; }
+    get agentMemory() { return this.#agentMemory; }
     get acpMgr() { return this.#acpMgr; }
     standingOrchestrator = null;
     get allowAll() { return this.#activeScope?.allowAll ?? false; }

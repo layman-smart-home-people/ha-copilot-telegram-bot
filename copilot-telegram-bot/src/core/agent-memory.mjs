@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync, readdirSync, mkdirSync, cpSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { createLogger } from "../logger.mjs";
 
 const DEFAULT_AGENT_DIR = "/config/copilot-telegram-bot";
@@ -159,6 +160,104 @@ export class AgentMemory {
                     writeFileSync(path, content, "utf-8");
                 } catch {}
             }
+        }
+        // Save initial seed hashes so first startup doesn't trigger migration
+        this.saveSeedHashes(AgentMemory.getSeedHashes());
+    }
+
+    // ── Seed migration ───────────────────────────────────────────
+
+    /**
+     * Compute per-file hashes of seed defaults that are worth migrating.
+     * MEMORY.md and TASKS.md are excluded — they're user-owned templates.
+     */
+    static getSeedHashes() {
+        const tracked = { "IDENTITY.md": IDENTITY_DEFAULT, "SKILLS.md": SKILLS_DEFAULT };
+        const hashes = {};
+        for (const [name, content] of Object.entries(tracked)) {
+            hashes[name] = createHash("sha256").update(content).digest("hex").slice(0, 16);
+        }
+        return hashes;
+    }
+
+    /**
+     * Check if seed defaults have changed since last migration.
+     * Returns { prompt, hashes } if migration needed, null otherwise.
+     */
+    getMigrationPrompt() {
+        const currentHashes = AgentMemory.getSeedHashes();
+        const hashFile = join(this.#agentDir, ".seed-version.json");
+
+        let storedHashes = null;
+        try {
+            if (existsSync(hashFile)) {
+                const data = JSON.parse(readFileSync(hashFile, "utf-8"));
+                storedHashes = data.hashes || null;
+            }
+        } catch {}
+
+        // First run — save current hashes without triggering migration
+        if (!storedHashes) {
+            this.saveSeedHashes(currentHashes);
+            log.info("Seed hashes initialized (first run)");
+            return null;
+        }
+
+        // Find which files changed
+        const changed = [];
+        for (const [name, hash] of Object.entries(currentHashes)) {
+            if (storedHashes[name] !== hash) changed.push(name);
+        }
+        if (changed.length === 0) return null;
+
+        log.info(`Seed defaults changed: ${changed.join(", ")} — migration needed`);
+
+        const tracked = { "IDENTITY.md": IDENTITY_DEFAULT, "SKILLS.md": SKILLS_DEFAULT };
+
+        let prompt = "[System: Document Migration]\n\n";
+        prompt += "The bot has been updated and some default reference documents have changed. ";
+        prompt += "Your job is to merge these updates into the user's existing files.\n\n";
+        prompt += "**Rules:**\n";
+        prompt += "- Add new sections or capabilities from the new defaults\n";
+        prompt += "- Update changed reference material (tool docs, behavioral rules)\n";
+        prompt += "- **Preserve ALL user customizations** (names, preferences, entities, decisions, custom skills)\n";
+        prompt += "- Do NOT remove any user-specific content\n";
+        prompt += "- Write the updated files using the edit tool, then briefly notify the user what changed\n\n";
+
+        for (const name of changed) {
+            const defaultContent = tracked[name];
+            if (!defaultContent) continue;
+
+            prompt += `### NEW DEFAULT: ${name}\n\`\`\`\n${defaultContent.trim()}\n\`\`\`\n\n`;
+
+            const userPath = join(this.#agentDir, name);
+            try {
+                if (existsSync(userPath)) {
+                    const content = readFileSync(userPath, "utf-8").trim();
+                    prompt += `### CURRENT USER FILE: ${name}\n\`\`\`\n${content}\n\`\`\`\n\n`;
+                } else {
+                    prompt += `### CURRENT USER FILE: ${name}\n(file does not exist — create from default)\n\n`;
+                }
+            } catch {
+                prompt += `### CURRENT USER FILE: ${name}\n(could not read)\n\n`;
+            }
+        }
+
+        return { prompt, hashes: currentHashes };
+    }
+
+    /**
+     * Persist seed hashes after successful migration.
+     */
+    saveSeedHashes(hashes) {
+        const hashFile = join(this.#agentDir, ".seed-version.json");
+        try {
+            writeFileSync(hashFile, JSON.stringify({
+                hashes,
+                updatedAt: new Date().toISOString(),
+            }, null, 2), "utf-8");
+        } catch (err) {
+            log.warn(`Failed to save seed hashes: ${err.message}`);
         }
     }
 
