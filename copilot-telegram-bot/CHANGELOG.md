@@ -2,6 +2,19 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.65.0] — 2026-06-08
+
+### Fixed — PKM Phase 8: Final Review + Security Polish
+- **Security fix**: `updateNote()` and `secureDelete()` now verify household membership before allowing modification of household-scoped notes (was allowing any authenticated user)
+- **Security fix**: `leaveHousehold()` prevents the last owner from leaving (avoids orphaned households)
+- **Data fix**: `exportUserData()` now includes entity_notes linking data in export
+
+### Added
+- **Seeded default docs** updated with full PKM tool documentation — new installations get PKM skills out of the box
+- **Doc migration** — existing installations will auto-merge PKM docs into IDENTITY.md and SKILLS.md on next startup
+- **User SKILLS.md** updated with comprehensive PKM tool reference
+- **Final build report** at `/config/www/pkm-final-report.html`
+
 ## [0.64.0] — 2026-06-08
 
 ### Added — PKM Phase 7: Household + Group + Export

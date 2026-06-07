@@ -328,8 +328,10 @@ export class PkmStore {
     updateNote(noteId, userId, updates) {
         const note = this.getNote(noteId);
         if (!note) throw new Error("Note not found");
-        if (note.user_id !== userId && note.scope !== "household") {
-            throw new Error("Access denied");
+        if (note.user_id !== userId) {
+            if (note.scope !== "household" || !this.isHouseholdMember(userId, note.scope_id)) {
+                throw new Error("Access denied");
+            }
         }
 
         const allowed = ["title", "content", "search_keywords", "tags", "metadata",
@@ -360,8 +362,10 @@ export class PkmStore {
     secureDelete(noteId, userId) {
         const note = this.getNote(noteId);
         if (!note) return false;
-        if (note.user_id !== userId && note.scope !== "household") {
-            throw new Error("Access denied");
+        if (note.user_id !== userId) {
+            if (note.scope !== "household" || !this.isHouseholdMember(userId, note.scope_id)) {
+                throw new Error("Access denied");
+            }
         }
 
         // Delete linked data
@@ -476,6 +480,20 @@ export class PkmStore {
     leaveHousehold(userId) {
         const settings = this.getSettings(userId);
         if (!settings?.household_id) throw new Error("Not in a household");
+
+        // Prevent last owner from leaving — must transfer ownership or delete household
+        const member = this.#db.prepare(
+            "SELECT role FROM household_members WHERE household_id = ? AND user_id = ?"
+        ).get(settings.household_id, userId);
+        if (member?.role === "owner") {
+            const otherOwners = this.#db.prepare(
+                "SELECT 1 FROM household_members WHERE household_id = ? AND role = 'owner' AND user_id != ?"
+            ).get(settings.household_id, userId);
+            if (!otherOwners) {
+                throw new Error("Cannot leave — you are the only owner. Transfer ownership first or delete the household.");
+            }
+        }
+
         const now = new Date().toISOString();
         this.#db.prepare(
             "DELETE FROM household_members WHERE household_id = ? AND user_id = ?"
@@ -534,12 +552,19 @@ export class PkmStore {
             "SELECT * FROM memory_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 500"
         ).all(userId);
 
+        const entityLinks = this.#db.prepare(
+            `SELECT en.* FROM entity_notes en
+             JOIN entities e ON e.id = en.entity_id
+             WHERE e.user_id = ?`
+        ).all(userId);
+
         return {
             exportedAt: new Date().toISOString(),
             userId,
             settings: settings || {},
             notes,
             entities,
+            entityLinks,
             structuredData,
             auditLog,
             summary: {
