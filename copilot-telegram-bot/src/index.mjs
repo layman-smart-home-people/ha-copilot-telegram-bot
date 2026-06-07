@@ -125,11 +125,17 @@ async function main() {
     eventLog.emit("bot.started", { version: config.version || "unknown" });
 
     // Inject github_token into env BEFORE validation so the ACP test has it
+    let startupWarning = null;
     if (config.githubToken) {
         if (config.githubToken.startsWith("ghp_")) {
-            log.warn("Classic PATs (ghp_) are NOT supported by Copilot CLI.");
-            log.warn("Use a fine-grained PAT (github_pat_) with 'Copilot Requests' permission.");
-            log.warn("Ignoring configured token — will use stored credentials or device login.");
+            log.error("Classic PATs (ghp_) are NOT supported by Copilot CLI.");
+            log.error("Use a fine-grained PAT (github_pat_) with 'Copilot Requests' permission.");
+            startupWarning = "🚨 <b>Invalid GitHub Token</b>\n\n" +
+                "You configured a <b>classic PAT</b> (<code>ghp_...</code>) which is <b>not supported</b> by Copilot CLI.\n\n" +
+                "Options:\n" +
+                "1️⃣ Use a <b>fine-grained PAT</b> (<code>github_pat_...</code>) with the <b>\"Copilot Requests\"</b> permission\n" +
+                "2️⃣ Remove the token and use the <b>device login flow</b> instead (recommended)\n\n" +
+                "The configured token has been ignored.";
         } else {
             process.env.COPILOT_GITHUB_TOKEN = config.githubToken;
             log.info("Using configured GitHub token for authentication");
@@ -252,6 +258,13 @@ async function main() {
     // during login flow
     log.info("Starting Telegram polling...");
     telegram.startPolling();
+
+    // Send startup warning (e.g. invalid token) to owner chat
+    if (startupWarning && ownerChatId) {
+        telegram.enqueue(() =>
+            telegram.sendMessage(ownerChatId, startupWarning, "HTML")
+        );
+    }
 
     // Auto-start Copilot if configured
     if (config.autoStart) {

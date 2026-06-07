@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.51.1] — 2026-06-07
+
+### Fixed
+- **Classic PAT warning sent to Telegram** — When a classic PAT (`ghp_`) is configured, the bot now sends a prominent 🚨 warning to the owner's Telegram chat on startup instead of silently logging to the add-on console. Includes actionable guidance to switch to a fine-grained PAT or device login.
+
 ## [0.51.0] — 2026-06-07
 
 ### Added
