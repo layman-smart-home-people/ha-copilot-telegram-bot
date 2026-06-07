@@ -536,7 +536,12 @@ export class Orchestrator {
         this.#interactiveFlows.cancelQuestionQueue("User cancelled");
 
         if (this.#promptActive && (force || !requestedKey || this.#activeScope?.key === requestedKey)) {
-            await this.#acp.cancel();
+            if (force) {
+                // Escalating cancel: graceful RPC → 15s grace → force-kill ACP
+                await this.#forceCancel("user /stop", this.#promptGeneration);
+            } else {
+                await this.#acp.cancel();
+            }
             return true;
         }
 
@@ -1021,7 +1026,7 @@ export class Orchestrator {
         }
 
         if (tag === "primary") {
-            // Clear watchdog timers — ACP is gone
+            // Clear heartbeat timer — ACP is gone
             this.#clearPromptWatchdog();
 
             // Capture pre-cleanup state for post-mortem
@@ -1038,7 +1043,7 @@ export class Orchestrator {
                 this.#scopeMgr?.clearActive();
 
                 if (this.#intentionalKill) {
-                    // Intentional kill (watchdog/force-cancel) — preserve queue for restart
+                    // Intentional kill (user /stop force-cancel) — preserve queue for restart
                     this.#intentionalKill = false;
                     const preserved = this.#promptQueue.length;
                     if (preserved > 0) {

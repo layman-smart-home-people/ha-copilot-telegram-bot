@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.55.2] — 2026-06-07
+
+### Fixed
+- **`/stop` now force-kills stuck ACP** — Previously `/stop` only sent a graceful cancel RPC. If ACP ignored it (common with long-running agent tasks), there was no escalation. Now `/stop` uses the full force-cancel flow: graceful cancel → 15s grace period → kill ACP process. Queue is preserved across the restart.
+
 ## [0.55.1] — 2026-06-07
 
 ### Removed
