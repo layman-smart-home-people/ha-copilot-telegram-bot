@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.53.0] — 2026-06-07
+
+### Changed
+- **Draft mode answer streaming** — In private chats, the draft typing bubble now shows the actual answer text building up with a "▊" cursor instead of a truncated 120-char preview behind "✍️ Writing response...". Text is sent as plain text (no `parse_mode`) to avoid broken HTML from incomplete markdown mid-stream. Long answers use a tail-window at ~3800 chars to stay within Telegram's 4096 limit.
+- **Draft-specific render path** — New `#doDraftEdit()` method shows compact one-liner progress during thinking/tool phases ("🔧 Checking lights... ✅ 2 done (5s)") instead of the full expandable timeline used in edit mode. The full timeline still appears in the final collapsed details.
+- **Draft turn persistence** — `commitTurn()` now preserves streamed text across turn boundaries in draft mode via `#draftDisplayText`, preventing the draft bubble from going blank when the agent starts a new turn mid-conversation.
+- **Draft throttle reduced to 750ms** — Draft updates now fire at 750ms intervals (down from 1500ms), with adaptive backoff to 3000ms on rate limits. Edit mode (groups) retains the existing 1.5s–3s throttle.
+- **Draft failure fallback** — After 3 consecutive `sendMessageDraft` failures, the composer automatically switches to edit mode by sending a real placeholder message. This prevents silent failure if the draft API becomes unavailable mid-conversation.
+
 ## [0.52.0] — 2026-06-07
 
 ### Added

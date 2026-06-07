@@ -38,6 +38,10 @@ export class ResponseComposer {
     #progressTimeline = []; // chronological: { type: "intermediate"|"tool", index?, id? }
     #draftMode = false;     // true = using sendMessageDraft (private chats)
     #draftId = null;        // draft_id for sendMessageDraft
+    #draftDisplayText = ""; // persists streamed text across commitTurn() resets (C3)
+    #draftFailures = 0;     // consecutive draft API failures; fallback after 3 (C6)
+    #draftThrottleMs = 750; // adaptive throttle for draft updates (C4)
+    #draftSending = false;  // serializes draft sends to prevent concurrent failure increments
 
     constructor(telegram) {
         this.#telegram = telegram;
@@ -67,6 +71,10 @@ export class ResponseComposer {
         this.#progressTimeline = [];
         this.#draftMode = false;
         this.#draftId = null;
+        this.#draftDisplayText = "";
+        this.#draftFailures = 0;
+        this.#draftThrottleMs = 750;
+        this.#draftSending = false;
 
         // Try draft mode for private chats (ephemeral typing bubble)
         if (ref.chatType === "private") {
@@ -220,6 +228,10 @@ export class ResponseComposer {
         if (text) {
             this.#intermediateMessages.push(text);
             this.#progressTimeline.push({ type: "intermediate", index: this.#intermediateMessages.length - 1 });
+        }
+        // Draft mode: preserve committed text so draft bubble doesn't go blank (C3)
+        if (this.#draftMode && text) {
+            this.#draftDisplayText += (this.#draftDisplayText ? "\n\n" : "") + text;
         }
         this.#textBuffer = "";
         this.#lastEditedText = "";
@@ -403,9 +415,12 @@ export class ResponseComposer {
 
         // Adaptive throttling: increase interval for long-running prompts
         const promptAge = this.#startTime ? (Date.now() - this.#startTime) / 1000 : 0;
-        const interval = promptAge > 30 ? 3000 : EDIT_MIN_INTERVAL_MS;
+        const interval = this.#draftMode
+            ? this.#draftThrottleMs
+            : (promptAge > 30 ? 3000 : EDIT_MIN_INTERVAL_MS);
+        const minChars = this.#draftMode ? 20 : EDIT_MIN_CHARS;
 
-        if (elapsed >= interval && (newChars >= EDIT_MIN_CHARS || forceAfterDelay)) {
+        if (elapsed >= interval && (newChars >= minChars || forceAfterDelay)) {
             this.#doEdit();
         } else {
             const wait = Math.max(interval - elapsed, 300);
@@ -418,6 +433,7 @@ export class ResponseComposer {
 
     #doEdit() {
         if (this.#finalized || !this.#messageId) return;
+        if (this.#draftMode) return this.#doDraftEdit();
 
         const planHtml = this.#buildPlanHtml();
         const timelineHtml = this.#buildTimelineHtml();
@@ -473,6 +489,74 @@ export class ResponseComposer {
         }
 
         this.#editMessage(html);
+        this.#lastEditedText = this.#textBuffer;
+        this.#lastEditTime = Date.now();
+    }
+
+    /**
+     * Draft-specific render path — compact progress + streaming answer text.
+     * Sends plain text (no parse_mode) to avoid broken HTML from incomplete markdown (C1).
+     */
+    #doDraftEdit() {
+        if (this.#finalized || !this.#messageId) return;
+
+        const elapsed = this.#startTime ? Math.round((Date.now() - this.#startTime) / 1000) : 0;
+        const timer = elapsed > 0 ? ` (${elapsed}s)` : "";
+
+        let text;
+
+        if (this.#interactionPending) {
+            const labels = {
+                permission: "🔐 Awaiting permission...",
+                question: "❓ Awaiting your input...",
+                plan: "📋 Awaiting your decision...",
+            };
+            text = (labels[this.#interactionPending] || "⏳ Awaiting your input...") + timer;
+        } else if (this.#textBuffer.trim()) {
+            // Answer streaming — show actual text building up with cursor
+            const combined = this.#draftDisplayText
+                ? this.#draftDisplayText + "\n\n" + this.#textBuffer
+                : this.#textBuffer;
+            // Tail-window at 3800 chars to stay under 4096 limit (C2)
+            text = combined.length > 3800
+                ? "…" + combined.slice(-3800)
+                : combined;
+            text += " ▊";
+        } else if (this.#thoughtActive && this.#thoughtBuffer && elapsed >= 3) {
+            // Live reasoning — show last line of thought
+            const lines = this.#thoughtBuffer.split("\n").filter(l => l.trim());
+            const lastLine = lines.length > 0 ? lines[lines.length - 1].trim() : "";
+            const display = lastLine.length > 200 ? "…" + lastLine.slice(-200) : lastLine;
+            text = display ? `🧠 ${display}${timer}` : `🤔 Thinking...${timer}`;
+        } else {
+            // Compact progress summary (no full timeline like edit mode)
+            const parts = [];
+            const running = this.#toolSteps.filter(s => s.status === "running");
+            const completed = this.#toolSteps.filter(s => s.status === "completed").length;
+            if (running.length > 0) {
+                let desc = running[running.length - 1].description || running[running.length - 1].id;
+                if (desc.length > 60) desc = desc.slice(0, 57) + "…";
+                parts.push(`🔧 ${desc}`);
+            }
+            if (completed > 0) parts.push(`✅ ${completed} done`);
+            if (running.length > 1) parts.push(`🔄 ${running.length} running`);
+            if (this.#planEntries.length > 0) {
+                const current = this.#planEntries.find(e => e.status === "in_progress");
+                if (current) {
+                    let desc = current.content || "";
+                    if (desc.length > 60) desc = desc.slice(0, 57) + "…";
+                    parts.push(`📋 ${desc}`);
+                }
+            }
+            text = parts.length > 0
+                ? parts.join(" · ") + timer
+                : `🤔 Thinking...${timer}`;
+        }
+
+        // Serialize draft sends to prevent concurrent failure counter increments
+        if (this.#draftSending) return;
+        this.#draftSending = true;
+        this.#sendDraft(text, false).finally(() => { this.#draftSending = false; });
         this.#lastEditedText = this.#textBuffer;
         this.#lastEditTime = Date.now();
     }
@@ -820,7 +904,7 @@ export class ResponseComposer {
 
     async #editMessage(html) {
         if (this.#draftMode) {
-            return this.#sendDraft(html);
+            return this.#sendDraft(html, true);
         }
         if (!this.#messageId || !this.#ref) return;
         try {
@@ -867,29 +951,82 @@ export class ResponseComposer {
 
     /**
      * Send a draft update (ephemeral typing bubble).
-     * Used instead of editMessageText in draft mode.
+     * @param {string} text - content to display
+     * @param {boolean} useHtml - whether to apply parse_mode: "HTML"
      */
-    async #sendDraft(html) {
+    async #sendDraft(text, useHtml = false) {
         if (!this.#ref || !this.#draftId) return;
+        const params = {
+            chat_id: this.#ref.chatId,
+            draft_id: this.#draftId,
+            text: text,
+        };
+        if (useHtml) params.parse_mode = "HTML";
+
         try {
-            await this.#telegram.call("sendMessageDraft", {
-                chat_id: this.#ref.chatId,
-                draft_id: this.#draftId,
-                text: html,
-                parse_mode: "HTML",
-            });
+            await this.#telegram.call("sendMessageDraft", params);
+            this.#draftFailures = 0;
         } catch (err) {
-            if (/can.t parse|entit/i.test(err?.message)) {
+            if (/429|retry/i.test(err?.message)) {
+                // Rate limited — adaptive backoff (C4)
+                this.#draftThrottleMs = Math.min(this.#draftThrottleMs * 2, 3000);
+                log.warn(`draft rate limited, throttle → ${this.#draftThrottleMs}ms`);
+                return;
+            }
+            if (useHtml && /can.t parse|entit/i.test(err?.message)) {
                 try {
                     await this.#telegram.call("sendMessageDraft", {
                         chat_id: this.#ref.chatId,
                         draft_id: this.#draftId,
-                        text: stripHtmlKeepStructure(html),
+                        text: stripHtmlKeepStructure(text),
                     });
+                    this.#draftFailures = 0;
+                    return;
                 } catch {}
-            } else {
-                log.warn(`draft error: ${err.message}`);
             }
+
+            this.#draftFailures++;
+            log.warn(`draft error (${this.#draftFailures}/3): ${err.message}`);
+
+            // Fallback to edit mode after 3 consecutive failures (C6)
+            if (this.#draftFailures >= 3) {
+                log.warn("draft mode failed 3x, falling back to edit mode");
+                await this.#fallbackToEditMode();
+            }
+        }
+    }
+
+    /**
+     * Switch from draft mode to edit mode mid-conversation (C6).
+     * Sends a real placeholder message and switches all subsequent updates to edits.
+     */
+    async #fallbackToEditMode() {
+        if (!this.#draftMode) return;
+        this.#draftMode = false;
+        this.#draftId = null;
+        this.#messageId = null; // null out before async gap to prevent edits against -1 sentinel
+
+        const elapsed = this.#startTime ? Math.round((Date.now() - this.#startTime) / 1000) : 0;
+        const timer = elapsed > 0 ? ` <i>(${elapsed}s)</i>` : "";
+        const params = {
+            chat_id: this.#ref.chatId,
+            text: `🤔 <i>Thinking...</i>${timer}`,
+            parse_mode: "HTML",
+            disable_notification: true,
+        };
+        if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+
+        try {
+            const sent = await this.#telegram.call("sendMessage", params);
+            this.#messageId = sent?.message_id;
+            log.debug(`fallback: edit mode started (msg=${this.#messageId})`);
+            // If finalize() ran during our async gap, clean up the orphan placeholder
+            if (this.#finalized && this.#messageId) {
+                await this.cleanup();
+            }
+        } catch (err) {
+            log.warn(`fallback placeholder failed: ${err.message}`);
+            this.#messageId = null;
         }
     }
 }
