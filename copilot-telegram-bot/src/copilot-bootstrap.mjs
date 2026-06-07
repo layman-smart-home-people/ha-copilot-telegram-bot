@@ -24,7 +24,7 @@ const RELEASE_BASE = "https://github.com/github/copilot-cli/releases/latest/down
  */
 function detectArch() {
     const arch = process.arch;
-    if (arch === "x64" || arch === "ia32") return "x64";
+    if (arch === "x64") return "x64";
     if (arch === "arm64") return "arm64";
     const uname = execSync("uname -m", { encoding: "utf-8" }).trim();
     if (uname === "x86_64" || uname === "amd64") return "x64";
@@ -115,16 +115,28 @@ export async function ensureCopilotBinary(targetPath = BINARY_PATH) {
         }
 
         // Extract binary from tarball
-        execSync(`tar -xzf "${tmpTarball}" -C "${installDir}" copilot`, {
-            stdio: "pipe",
-        });
+        // First try extracting just the 'copilot' member (flat archive)
+        try {
+            execSync(`tar -xzf "${tmpTarball}" -C "${installDir}" copilot`, {
+                stdio: "pipe",
+            });
+        } catch {
+            // Member 'copilot' not at top level — extract everything
+            execSync(`tar -xzf "${tmpTarball}" -C "${installDir}"`, { stdio: "pipe" });
+        }
 
-        // The tarball extracts `copilot` directly (or in a subdirectory)
+        // Find the binary — may be at top level or in a subdirectory
         const extractedPath = `${installDir}/copilot`;
         if (!existsSync(extractedPath)) {
-            // Try extracting everything and finding the binary
-            execSync(`tar -xzf "${tmpTarball}" -C "${installDir}"`, { stdio: "pipe" });
-            if (!existsSync(extractedPath)) {
+            // Search for it in subdirectories
+            const found = execSync(
+                `find "${installDir}" -name copilot -type f -perm /111 2>/dev/null | head -1`,
+                { encoding: "utf-8" }
+            ).trim();
+            if (found) {
+                renameSync(found, extractedPath);
+                log.info(`Found binary in subdirectory, moved to ${extractedPath}`);
+            } else {
                 throw new Error("Binary not found in tarball after extraction");
             }
         }
