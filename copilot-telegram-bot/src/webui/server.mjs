@@ -1241,8 +1241,18 @@ export class WebUIServer {
         if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
 
         try {
-            const { role, expiresAt, displayName } = body || {};
+            const { role, expiresAt, displayName, actorId } = body || {};
             if (!role) return this.#json(res, 400, { error: "role is required" });
+
+            // Block owner role assignment via API — must be done via config
+            if (role === "owner") {
+                return this.#json(res, 403, { error: "Cannot assign owner role via API. Use allowed_chat_ids config." });
+            }
+
+            // If actorId provided, enforce delegation boundaries
+            if (actorId && !rbac.canGrantRole(Number(actorId), role)) {
+                return this.#json(res, 403, { error: `Insufficient rank to assign role: ${role}` });
+            }
 
             rbac.setUserRole(Number(userId), role, { expiresAt, displayName });
             const user = rbac.getUser(Number(userId));

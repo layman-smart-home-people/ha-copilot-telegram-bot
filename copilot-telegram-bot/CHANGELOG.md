@@ -2,6 +2,14 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.59.1] — 2026-06-07
+
+### Fixed (Final Review)
+- **SECURITY: `ha_eval_template` no longer bypasses RBAC** — Moved from universal tools (no permission check) to `entity:read` capability. Guests without `entity:read` can no longer use template evaluation to read all entity states.
+- **SECURITY: Owner role assignment blocked via REST API** — `PUT /api/rbac/users/:id/role` now rejects `role: "owner"` (must be set via `allowed_chat_ids` config). Also accepts optional `actorId` for delegation boundary enforcement.
+- **`ha_bulk_control` per-entity RBAC checks** — Bulk control tool now extracts all entity IDs from arguments (`entity_ids`, `entities`, `entity_id`) and checks RBAC for each individually. Per-entity deny overrides can no longer be bypassed via bulk operations.
+- **Invite link prevents role downgrade** — Expired users with higher-ranked roles who rejoin via a lower-ranked invite link keep their original role instead of being silently downgraded. Admin is notified of the re-activation.
+
 ## [0.59.0] — 2026-06-07
 
 ### Added

@@ -2299,6 +2299,30 @@ export class Orchestrator {
             return;
         }
 
+        // Prevent downgrade: if user has an existing (possibly expired) record with a higher-ranked role,
+        // warn admin and use the higher role instead
+        const existing = this.#pairing.getUser(userId);
+        if (existing) {
+            const existingRole = this.#pairing.getRoleConfig(existing.role);
+            const inviteRole = this.#pairing.getRoleConfig(result.role);
+            if (existingRole && inviteRole && existingRole.rank > inviteRole.rank) {
+                // Re-activate with their existing higher role instead
+                this.#pairing.setUserRole(userId, existing.role, {
+                    username,
+                    pairedBy: "invite_reactivation",
+                    expiresAt: result.roleExpiresAt || null,
+                });
+                const welcome = this.#pairing.getWelcomeMessage(existing.role);
+                this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(chatId, welcome)
+                );
+                const who = username ? `@${username}` : `User ${userId}`;
+                this.#broadcastAdmin(`🔗 ${who} re-joined via invite (kept higher role: ${existing.role}, invite was: ${result.role})`);
+                log.info(`User ${userId} reactivated via invite — kept ${existing.role} (invite offered ${result.role})`);
+                return;
+            }
+        }
+
         // Pair user with the invite's role
         this.#pairing.setUserRole(userId, result.role, {
             username,

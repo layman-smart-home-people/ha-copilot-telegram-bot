@@ -58,6 +58,7 @@ const CAPABILITY_TOOLS = {
     "entity:read": [
         "ha_get_state", "ha_get_entity_state", "ha_get_history",
         "ha_search_entities", "ha_get_overview", "ha_deep_search",
+        "ha_eval_template",
     ],
     "entity:search": [
         "ha_search_entities", "ha_get_overview", "ha_deep_search",
@@ -136,7 +137,7 @@ const DOMAIN_CHECKED_TOOLS = new Set([
 
 // Tools that are safe for everyone (no capability needed)
 const UNIVERSAL_TOOLS = new Set([
-    "ha_eval_template", "rbac_check_permission",
+    "rbac_check_permission",
 ]);
 
 // Default role definitions
@@ -561,6 +562,7 @@ export class RBACManager {
     /**
      * Check if a user is allowed to call a specific tool.
      * Combines getRequiredCapability + canPerform.
+     * For bulk tools, checks each entity individually.
      * @returns {{ allowed: boolean, reason: string, capability: string|null }}
      */
     checkToolPermission(userId, toolName, toolArgs = {}) {
@@ -576,6 +578,20 @@ export class RBACManager {
         // Universal tools — no capability needed
         if (capability === null) {
             return { allowed: true, reason: "universal_tool", capability: null };
+        }
+
+        // For bulk tools, check each entity individually for per-entity overrides
+        if (toolName === "ha_bulk_control") {
+            const entityIds = this.#extractBulkEntityIds(toolArgs);
+            if (entityIds.length > 0) {
+                for (const eid of entityIds) {
+                    const result = this.canPerform(userId, capability, eid);
+                    if (!result.allowed) {
+                        return { ...result, capability };
+                    }
+                }
+                return { allowed: true, reason: "all_entities_allowed", capability };
+            }
         }
 
         const result = this.canPerform(userId, capability, entityId);
@@ -1134,6 +1150,22 @@ export class RBACManager {
         for (const [code, entry] of this.#pendingCodes) {
             if (now > entry.expiresAt) this.#pendingCodes.delete(code);
         }
+    }
+
+    #extractBulkEntityIds(toolArgs) {
+        const ids = [];
+        // Support common parameter patterns for bulk entity tools
+        if (Array.isArray(toolArgs?.entity_ids)) {
+            ids.push(...toolArgs.entity_ids);
+        } else if (Array.isArray(toolArgs?.entities)) {
+            for (const e of toolArgs.entities) {
+                if (typeof e === "string") ids.push(e);
+                else if (e?.entity_id) ids.push(e.entity_id);
+            }
+        } else if (typeof toolArgs?.entity_id === "string") {
+            ids.push(toolArgs.entity_id);
+        }
+        return ids;
     }
 
     #findOverride(targetType, targetId, entityId) {
