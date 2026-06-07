@@ -428,6 +428,37 @@ export class ResponseComposer {
         return `<blockquote>${header}\n${lines.join("\n")}</blockquote>`;
     }
 
+    /**
+     * Render timeline items with intermediates outside blockquotes and
+     * consecutive tool steps grouped inside blockquotes.
+     * @param {Array<{type:string, html:string}>} items - tagged items
+     * @returns {string} HTML
+     */
+    #renderGroupedTimeline(items) {
+        if (items.length === 0) return "";
+        const parts = [];
+        let toolGroup = [];
+
+        const flushTools = () => {
+            if (toolGroup.length > 0) {
+                parts.push(`<blockquote>${toolGroup.join("\n")}</blockquote>`);
+                toolGroup = [];
+            }
+        };
+
+        for (const item of items) {
+            if (item.type === "tool") {
+                toolGroup.push(item.html);
+            } else {
+                // intermediates, skip markers, etc. — render outside blockquotes
+                flushTools();
+                parts.push(item.html);
+            }
+        }
+        flushTools();
+        return parts.join("\n");
+    }
+
     /** Build interleaved timeline of intermediates + tool steps for live display */
     #buildTimelineHtml() {
         // Fallback: if timeline is empty but items exist (edge case), use legacy rendering
@@ -445,28 +476,28 @@ export class ResponseComposer {
                 const msg = this.#intermediateMessages[entry.index];
                 if (!msg) return null;
                 const truncated = msg.length > 120 ? msg.slice(0, 120) + "…" : msg;
-                return `💬 <i>"${escapeHtml(truncated)}"</i>`;
+                return { type: "intermediate", html: `💬 <i>"${escapeHtml(truncated)}"</i>` };
             } else {
                 const step = this.#toolSteps.find(s => s.id === entry.id);
                 if (!step) return null;
-                return this.#formatStepLine(step);
+                return { type: "tool", html: this.#formatStepLine(step) };
             }
         }).filter(Boolean);
 
         if (items.length === 0) return "";
 
         const MAX_VISIBLE = 15;
-        let lines;
+        let visibleItems;
         if (items.length <= MAX_VISIBLE) {
-            lines = items;
+            visibleItems = items;
         } else {
             const head = items.slice(0, 2);
             const skipped = items.length - MAX_VISIBLE + 2;
             const tail = items.slice(-(MAX_VISIBLE - 2));
-            lines = [...head, `<i>⏳ …${skipped} earlier</i>`, ...tail];
+            visibleItems = [...head, { type: "skip", html: `<i>⏳ …${skipped} earlier</i>` }, ...tail];
         }
 
-        return `<blockquote>${lines.join("\n")}</blockquote>`;
+        return this.#renderGroupedTimeline(visibleItems);
     }
 
     #fitToLimit(header, planHtml, elapsed) {
@@ -484,11 +515,11 @@ export class ResponseComposer {
                 const msg = this.#intermediateMessages[entry.index];
                 if (!msg) return null;
                 const truncated = msg.length > 80 ? msg.slice(0, 80) + "…" : msg;
-                return `💬 <i>"${escapeHtml(truncated)}"</i>`;
+                return { type: "intermediate", html: `💬 <i>"${escapeHtml(truncated)}"</i>` };
             } else {
                 const step = this.#toolSteps.find(s => s.id === entry.id);
                 if (!step) return null;
-                return this.#formatStepLine(step);
+                return { type: "tool", html: this.#formatStepLine(step) };
             }
         }).filter(Boolean);
 
@@ -514,17 +545,17 @@ export class ResponseComposer {
 
         // Try progressively smaller windows
         for (let tailSize = 12; tailSize >= 3; tailSize -= 3) {
-            let lines;
+            let visibleItems;
             if (allItems.length <= tailSize + 2) {
-                lines = allItems;
+                visibleItems = allItems;
             } else {
                 const head = allItems.slice(0, 2);
                 const skipped = allItems.length - tailSize - 2;
                 const tail = allItems.slice(-tailSize);
-                lines = [...head, `<i>⏳ …${skipped} earlier</i>`, ...tail];
+                visibleItems = [...head, { type: "skip", html: `<i>⏳ …${skipped} earlier</i>` }, ...tail];
             }
 
-            const timelineBlock = `<blockquote>${lines.join("\n")}</blockquote>`;
+            const timelineBlock = this.#renderGroupedTimeline(visibleItems);
             const progress = [planHtml, timelineBlock].filter(Boolean).join("\n");
             const result = `${header}\n${progress}`;
             if (result.length <= MAX_MSG_LEN) return result;

@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.51.2] — 2026-06-07
+
+### Fixed
+- **Grouped timeline rendering** — Intermediate messages (💬) now render outside blockquotes with consecutive tool steps grouped inside blockquotes, creating proper visual separation during live progress. Previously all items were stuffed into a single blockquote.
+
 ## [0.51.1] — 2026-06-07
 
 ### Fixed
