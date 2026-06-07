@@ -446,7 +446,7 @@ export class TelegramAdapter {
 
         // Build ref from callback context
         const threadId = query.message?.message_thread_id || null;
-        const ref = makeRef(chatId, threadId);
+        const ref = makeRef(chatId, threadId, null, query.message?.chat?.type || null);
         ref.userId = userId;
 
         // Route callback data as slash commands

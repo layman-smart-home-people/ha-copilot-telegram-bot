@@ -24,7 +24,8 @@
  * @returns {ConversationRef}
  */
 export function makeRef(chatId, threadId = null, sessionId = null, chatType = null) {
-    return { chatId, threadId, sessionId, chatType };
+    // Private chats never support message_thread_id — strip to prevent 400 errors
+    return { chatId, threadId: chatType === "private" ? null : threadId, sessionId, chatType };
 }
 
 /**

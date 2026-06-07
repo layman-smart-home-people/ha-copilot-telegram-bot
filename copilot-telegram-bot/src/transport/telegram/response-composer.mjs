@@ -82,8 +82,22 @@ export class ResponseComposer {
             // Start periodic elapsed time updates after messageId is set
             this.#scheduleElapsedUpdate();
         } catch (err) {
-            log.warn(`placeholder failed: ${err.message}`);
-            if (this.#elapsedTimer) {
+            // Retry without thread if it's stale/invalid
+            if (/thread not found/i.test(err.message) && params.message_thread_id) {
+                log.warn(`placeholder thread ${params.message_thread_id} not found, retrying without threadId`);
+                delete params.message_thread_id;
+                try {
+                    const sent = await this.#telegram.call("sendMessage", params);
+                    this.#messageId = sent?.message_id;
+                    log.debug(`placeholder sent without threadId (msg=${this.#messageId})`);
+                    this.#scheduleElapsedUpdate();
+                } catch (retryErr) {
+                    log.warn(`placeholder retry failed: ${retryErr.message}`);
+                }
+            } else {
+                log.warn(`placeholder failed: ${err.message}`);
+            }
+            if (!this.#messageId && this.#elapsedTimer) {
                 clearTimeout(this.#elapsedTimer);
                 this.#elapsedTimer = null;
             }

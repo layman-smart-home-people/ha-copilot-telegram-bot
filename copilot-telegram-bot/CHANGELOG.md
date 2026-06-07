@@ -2,6 +2,16 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.51.3] — 2026-06-07
+
+### Fixed
+- **Crash: "message thread not found" kills process** — When Telegram sends a `message_thread_id` in private chat messages, the bot passed it through to API calls which Telegram then rejected with 400. The unhandled rejection propagated through the send queue and crashed the process. Fixed with 3 layers:
+  - `makeRef()` now strips `threadId` for private chats (root cause prevention)
+  - `#sendFormatted()` catches "thread not found" errors and retries without `threadId` (resilience for stale group threads too)
+  - `#flushMessageBuffer()` and `#relayToolImages()` enqueue calls now have `.catch()` guards (no-crash safety net)
+- **Composer placeholder fails silently on bad thread** — Placeholder now retries without `threadId` on "thread not found" instead of giving up, so progress messages still appear.
+- **Adapter callback ref missing chatType** — Generic callback query handler now passes `chatType` to `makeRef()`, enabling the private-chat threadId guard.
+
 ## [0.51.2] — 2026-06-07
 
 ### Fixed

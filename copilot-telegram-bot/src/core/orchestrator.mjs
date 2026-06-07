@@ -2169,13 +2169,17 @@ export class Orchestrator {
 
         if (ref) {
             for (const chunk of chunks) {
-                this.#telegram.enqueue(() => this.#sendFormatted(ref, chunk));
+                this.#telegram.enqueue(() => this.#sendFormatted(ref, chunk)).catch(err =>
+                    log.error(`Failed to send message chunk: ${err.message}`)
+                );
             }
         } else {
             for (const chatId of this.#allowedChatIds) {
                 const fallbackRef = makeRef(chatId);
                 for (const chunk of chunks) {
-                    this.#telegram.enqueue(() => this.#sendFormatted(fallbackRef, chunk));
+                    this.#telegram.enqueue(() => this.#sendFormatted(fallbackRef, chunk)).catch(err =>
+                        log.error(`Failed to send fallback message chunk: ${err.message}`)
+                    );
                 }
             }
         }
@@ -2190,6 +2194,19 @@ export class Orchestrator {
         } catch (err) {
             if (err.message && /can.t parse|entit/i.test(err.message)) {
                 sent = await this.#transport.send(ref, markdown);
+            } else if (err.message && /thread not found/i.test(err.message) && ref.threadId) {
+                // Stale or invalid thread — retry without message_thread_id
+                log.warn(`Thread ${ref.threadId} not found for chat ${ref.chatId}, retrying without threadId`);
+                const retryRef = { ...ref, threadId: null };
+                try {
+                    sent = await this.#transport.send(retryRef, html, "HTML");
+                } catch (retryErr) {
+                    if (retryErr.message && /can.t parse|entit/i.test(retryErr.message)) {
+                        sent = await this.#transport.send(retryRef, markdown);
+                    } else {
+                        throw retryErr;
+                    }
+                }
             } else {
                 throw err;
             }
@@ -2217,17 +2234,18 @@ export class Orchestrator {
                     if (bytes > MAX_PHOTO_BYTES) {
                         this.#telegram.enqueue(() =>
                             this.#transport.send(targetRef, "(Image too large for Telegram, >10MB)")
-                        );
+                        ).catch(err => log.error(`Failed to send image-too-large notice: ${err.message}`));
                         continue;
                     }
                     const buf = Buffer.from(block.data, "base64");
                     if (PHOTO_MIMES.has(block.mimeType)) {
-                        this.#telegram.enqueue(() => this.#transport.sendPhoto(targetRef, buf, block.mimeType));
+                        this.#telegram.enqueue(() => this.#transport.sendPhoto(targetRef, buf, block.mimeType))
+                            .catch(err => log.error(`Failed to send photo: ${err.message}`));
                     } else {
                         const ext = block.mimeType.split("/")[1] || "bin";
                         this.#telegram.enqueue(() =>
                             this.#transport.sendDocument(targetRef, buf, block.mimeType, `image.${ext}`)
-                        );
+                        ).catch(err => log.error(`Failed to send document: ${err.message}`));
                     }
                 }
             }
