@@ -22,6 +22,8 @@ import { ToolNotifications } from "./tool-notifications.mjs";
 import { TelegramAdapter } from "../transport/telegram/adapter.mjs";
 import { eventLog } from "./event-log.mjs";
 import { metrics } from "./metrics.mjs";
+import { testRegistry } from "../testing/test-registry.mjs";
+import { instrumentation } from "../testing/instrumentation.mjs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger('orchestrator');
@@ -248,6 +250,7 @@ export class Orchestrator {
                     groupSize: groupSize || undefined,
                 });
             },
+            onSelfTest: (params) => this.#handleSelfTest(params),
         });
 
         this.#toolNotify = new ToolNotifications({
@@ -306,6 +309,20 @@ export class Orchestrator {
 
     resetPreamble() {
         this.#promptBuilder.resetPreamble();
+    }
+
+    /** Handle self_test MCP tool call via UDS. */
+    async #handleSelfTest(params) {
+        const { id, phase, all } = params || {};
+        // Precedence: all > phase > id
+        if (all) {
+            return testRegistry.runAll();
+        } else if (phase && typeof phase === "string") {
+            return testRegistry.runPhase(phase);
+        } else if (id && typeof id === "string") {
+            return testRegistry.run(id);
+        }
+        return { error: "Provide {id: 'SI-1'}, {phase: 'A'}, or {all: true}" };
     }
 
     /** Best-effort notification before process exit. */
@@ -822,6 +839,7 @@ export class Orchestrator {
         eventLog.emit("prompt.started", { scopeKey, isStanding });
         metrics.increment("prompts_total");
         metrics.gauge("prompt_active", 1);
+        instrumentation.recordLlmCall();
 
         // Heartbeat: periodic health check + stall detection during active prompts
         this.#heartbeatTimer = setInterval(() => {

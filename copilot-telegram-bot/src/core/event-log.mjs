@@ -9,6 +9,7 @@
 
 import { appendFile, rename, stat } from "node:fs/promises";
 import { createLogger } from "../logger.mjs";
+import { instrumentation } from "../testing/instrumentation.mjs";
 
 const log = createLogger("event-log");
 
@@ -31,6 +32,7 @@ class EventLog {
      * @param {object} data - event-specific payload
      */
     emit(event, data = {}) {
+        instrumentation.recordEvent(event);
         const entry = {
             ts: new Date().toISOString(),
             event,

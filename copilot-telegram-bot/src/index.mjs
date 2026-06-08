@@ -21,6 +21,8 @@ import { WebUIServer } from "./webui/server.mjs";
 import { createLogger, setLogLevel } from "./logger.mjs";
 import { eventLog } from "./core/event-log.mjs";
 import { metrics } from "./core/metrics.mjs";
+import { testRegistry } from "./testing/test-registry.mjs";
+import "./testing/tests-phase-a.mjs";
 import { ensureCopilotBinary, ensureCopilotConfigDir } from "./copilot-bootstrap.mjs";
 import { PkmManager } from "./pkm/index.mjs";
 
@@ -262,6 +264,9 @@ async function main() {
     });
     bridge.standingOrchestrator = orchestrator;
     _orchestrator = orchestrator;
+
+    // --- Self-test context ---
+    testRegistry.setContext({ orchestrator: bridge, telegram, haOrchestrator: orchestrator });
 
     // --- PKM (Personal Knowledge Management) ---
     let pkm = null;

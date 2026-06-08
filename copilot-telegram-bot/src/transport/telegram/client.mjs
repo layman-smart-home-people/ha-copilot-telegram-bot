@@ -6,6 +6,7 @@
 
 import { EventEmitter } from "node:events";
 import { createLogger } from "../../logger.mjs";
+import { instrumentation } from "../../testing/instrumentation.mjs";
 
 const TELEGRAM_API = "https://api.telegram.org";
 const log = createLogger("tg-client");
@@ -79,6 +80,7 @@ export class TelegramClient extends EventEmitter {
         }
         const json = await res.json();
         if (!json.ok) throw new Error(`Telegram API ${method} returned ok=false: ${JSON.stringify(json)}`);
+        instrumentation.recordTelegramCall(method);
         return json.result;
     }
 

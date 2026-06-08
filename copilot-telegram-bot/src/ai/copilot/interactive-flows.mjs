@@ -21,6 +21,7 @@ export class InteractiveFlows {
     #getActiveRef;
     #getAllowedChatIds;
     #onBackgroundTask;
+    #onSelfTest;
 
     // UDS server for tg-ux MCP sidecar IPC
     #udsServer = null;
@@ -41,8 +42,9 @@ export class InteractiveFlows {
      * @param {Function} opts.getActiveRef - returns current active ref
      * @param {Function} opts.getAllowedChatIds - returns allowed chat IDs array
      * @param {Function} [opts.onBackgroundTask] - callback for background_task MCP tool
+     * @param {Function} [opts.onSelfTest] - callback for self_test MCP tool
      */
-    constructor({ buttons, telegram, acp, scopeMgr, getActiveScope, getOverflowScope, getActiveRef, getAllowedChatIds, onBackgroundTask }) {
+    constructor({ buttons, telegram, acp, scopeMgr, getActiveScope, getOverflowScope, getActiveRef, getAllowedChatIds, onBackgroundTask, onSelfTest }) {
         this.#buttons = buttons;
         this.#telegram = telegram;
         this.#acp = acp;
@@ -52,6 +54,7 @@ export class InteractiveFlows {
         this.#getActiveRef = getActiveRef;
         this.#getAllowedChatIds = getAllowedChatIds;
         this.#onBackgroundTask = onBackgroundTask || null;
+        this.#onSelfTest = onSelfTest || null;
     }
 
     // --- Elicitation (ACP structured questions) ---
@@ -339,6 +342,8 @@ export class InteractiveFlows {
                 return this.#handleBackgroundTask(params, scopeKey);
             case "notify_user":
                 return this.#handleNotifyUser(params);
+            case "self_test":
+                return this.#handleSelfTest(params);
             default:
                 return { error: `Unknown UDS method: ${method}` };
         }
@@ -404,6 +409,18 @@ export class InteractiveFlows {
             this.#telegram.sendMessage(chatId, message)
         ).catch(err => log.warn(`notify_user send failed: ${err.message}`));
         return Promise.resolve({ status: "sent" });
+    }
+
+    async #handleSelfTest(params) {
+        if (!this.#onSelfTest) {
+            return { error: "Self-test not available" };
+        }
+        try {
+            return await this.#onSelfTest(params);
+        } catch (err) {
+            log.warn(`self_test error: ${err.message}`);
+            return { error: err.message };
+        }
     }
 
     stopUdsServer() {

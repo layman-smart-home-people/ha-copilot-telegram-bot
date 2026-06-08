@@ -2,6 +2,24 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.74.0] — 2026-06-08
+
+### Added — Ezra v6 Phase A-ST: Self-Test Infrastructure (ST-1, ST-2, ST-5)
+
+- **`self_test` MCP tool (ST-1)** — Agents can call `self_test({id})` for one requirement, `self_test({phase})` for a phase, or `self_test({all: true})` for full regression. Returns pass/fail/skip with details.
+- **Test registry (ST-2)** — Central registry with per-requirement test functions. 8 Phase A tests registered (UX-1, UX-2, SI-1, SI-2, BG-3, ST-1, ST-2, ST-5). Results persisted to `/config/www/ezra-test-results.json`. Concurrent run mutex, 30s per-test timeout.
+- **Instrumentation hooks (ST-5)** — Resettable counters for LLM calls (+ tokens), Telegram API calls, HA service calls, HA template evaluations, and event bus events. Singleton at `src/testing/instrumentation.mjs`. Hooked into TelegramClient.call(), HA orchestrator service/template paths, core orchestrator prompt path, and EventLog.emit().
+- **Test file per phase** — `src/testing/tests-phase-a.mjs` pattern for scalable test organization.
+
+### Critique fixes applied
+- UX-1 test returns `skip` (not `pass`) — cosmetic-only finding with no code change
+- Context-null guard — tests skip gracefully if called before bot fully initializes
+- Concurrent run mutex — rejects overlapping self_test runs
+- 30s test timeout — prevents hanging tests from blocking the run
+- Event bus instrumentation — added to EventLog.emit() (was missing from ST-5 spec)
+- Consistent return shape — unknown test IDs include phase/title fields
+- Schema precedence documented — `all > phase > id`
+
 ## [0.73.0] — 2026-06-08
 
 ### Added — Ezra v6 Phase A3: Task Group Aggregation (BG-3)

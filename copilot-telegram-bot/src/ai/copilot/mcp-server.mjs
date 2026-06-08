@@ -86,6 +86,33 @@ const NOTIFY_TOOL = {
     },
 };
 
+const SELF_TEST_TOOL = {
+    name: "self_test",
+    description:
+        "Run self-tests to verify Ezra v6 requirements. " +
+        "Call with {id} for one requirement (e.g. 'SI-1'), " +
+        "{phase} for all requirements in a phase (e.g. 'A'), " +
+        "or {all: true} for full regression. " +
+        "Returns pass/fail/skip status with details for each requirement tested.",
+    inputSchema: {
+        type: "object",
+        properties: {
+            id: {
+                type: "string",
+                description: "Single requirement ID to test (e.g. 'SI-1', 'UX-2')",
+            },
+            phase: {
+                type: "string",
+                description: "Phase letter to test all requirements (e.g. 'A', 'B')",
+            },
+            all: {
+                type: "boolean",
+                description: "Set true to run all registered tests",
+            },
+        },
+    },
+};
+
 // --- JSON-RPC helpers ---
 
 function send(id, result) {
@@ -147,7 +174,7 @@ function handleInitialize(id, params) {
 }
 
 function handleToolsList(id) {
-    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL] });
+    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL, SELF_TEST_TOOL] });
 }
 
 async function handleToolsCall(id, params) {
@@ -163,6 +190,8 @@ async function handleToolsCall(id, params) {
         return handleBackgroundTask(id, args);
     } else if (name === "notify_user") {
         return handleNotifyUser(id, args);
+    } else if (name === "self_test") {
+        return handleSelfTest(id, args);
     } else {
         sendError(id, -32602, `Unknown tool: ${name}`);
     }
@@ -278,6 +307,44 @@ async function handleNotifyUser(id, args) {
         } else {
             send(id, {
                 content: [{ type: "text", text: "Notification sent" }],
+            });
+        }
+    } catch (err) {
+        send(id, {
+            content: [{ type: "text", text: `Error: ${err.message}` }],
+            isError: true,
+        });
+    } finally {
+        pendingCalls--;
+        checkExit();
+    }
+}
+
+async function handleSelfTest(id, args) {
+    if (!args || (typeof args !== "object")) {
+        send(id, {
+            content: [{ type: "text", text: "Error: provide {id}, {phase}, or {all: true}" }],
+            isError: true,
+        });
+        return;
+    }
+    const mode = args.all ? "all" : args.phase ? `phase:${args.phase}` : args.id ? `id:${args.id}` : "none";
+    log(`self_test called: ${mode}`);
+    pendingCalls++;
+    try {
+        const result = await callBot({
+            method: "self_test",
+            params: { id: args.id, phase: args.phase, all: args.all },
+            scopeKey: SCOPE_KEY,
+        });
+        if (result.error) {
+            send(id, {
+                content: [{ type: "text", text: `Error: ${result.error}` }],
+                isError: true,
+            });
+        } else {
+            send(id, {
+                content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
             });
         }
     } catch (err) {

@@ -6,6 +6,7 @@
 
 import { watch } from "node:fs";
 import { createLogger } from "../logger.mjs";
+import { instrumentation } from "../testing/instrumentation.mjs";
 
 const CRON_CHECK_INTERVAL_MS = 60_000;
 const TIMER_CHECK_INTERVAL_MS = 15_000;
@@ -448,6 +449,7 @@ export class StandingInstructionOrchestrator {
             }
 
             log.info(`HA service ${domain}.${service} called successfully`);
+            instrumentation.recordHaServiceCall(domain, service);
             if (this.#ownerChatId && message) {
                 this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(this.#ownerChatId, `🔔 ${instruction.description}\n${message}`)
@@ -521,6 +523,7 @@ export class StandingInstructionOrchestrator {
             const body = await res.text().catch(() => "");
             throw new Error(`HTTP ${res.status}: ${body || res.statusText}`);
         }
+        instrumentation.recordHaTemplateEval();
         return await res.text();
     }
 
