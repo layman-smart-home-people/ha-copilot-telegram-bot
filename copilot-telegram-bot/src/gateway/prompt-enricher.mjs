@@ -208,11 +208,11 @@ export class PromptEnricher {
         if (sections.length > 0) {
             sections.push([
                 "\n## Agent Memory Instructions",
-                `You have a persistent memory directory at ${dir}/. You MUST maintain it:`,
-                "- MEMORY.md — update when you learn important durable facts",
+                `Persistent memory at ${dir}/. Maintain it:`,
+                "- MEMORY.md — seed facts only (key entities, versions). Don't dump everything here.",
                 "- TASKS.md — update when starting, completing, or interrupted on a task",
-                `- Daily logs: \`${dir}/memory/YYYY-MM-DD/<topic>.md\` — one file per topic (e.g. bot-dev.md, home-automation.md, debug.md, decisions.md). Keep entries concise.`,
-                "- Periodically distill daily logs → MEMORY.md. Keep MEMORY.md under 200 lines.",
+                `- Daily logs: \`${dir}/memory/YYYY-MM-DD/<topic>.md\` — short-term buffer (2 days loaded). One file per topic (e.g. bot-dev.md, debug.md, decisions.md).`,
+                "- **Long-term facts → PKM**: use `pkm_memory(action=\"write\", content, topics)` for durable knowledge. Use `pkm_search` to recall past facts.",
             ].join("\n"));
         }
 

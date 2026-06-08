@@ -600,8 +600,12 @@ export class Router {
         const memDir = `${agentDir}/memory`;
         if (existsSync(memDir)) {
             try {
-                const logs = readdirSync(memDir).filter(f => f.endsWith(".md"));
-                lines.push(`📁 memory/ (${logs.length} daily logs)`);
+                const { statSync } = await import("node:fs");
+                const entries = readdirSync(memDir);
+                const dirs = entries.filter(f => { try { return statSync(`${memDir}/${f}`).isDirectory(); } catch { return false; } });
+                const flatFiles = entries.filter(f => f.endsWith(".md"));
+                if (dirs.length > 0) lines.push(`📁 memory/ (${dirs.length} day dirs)`);
+                else if (flatFiles.length > 0) lines.push(`📁 memory/ (${flatFiles.length} daily logs)`);
             } catch {}
         }
 
@@ -612,6 +616,10 @@ export class Router {
             ),
             row(
                 btn("📄 Tasks", menuCallback(scopePrefix, "memory", "view:TASKS.md")),
+                btn("📄 Skills", menuCallback(scopePrefix, "memory", "view:SKILLS.md")),
+            ),
+            row(
+                btn("🔄 Reset (keep identity)", menuCallback(scopePrefix, "memory", "reset")),
                 btn("❌ Close", menuCallback(scopePrefix, "memory", "close")),
             ),
         ];
@@ -822,6 +830,53 @@ export class Router {
     async #handleMemoryAction(action, ref) {
         if (action === "close") {
             await this.#menus.close(ref.chatId, "memory", "🧠 Memory closed.", { threadId: ref.threadId });
+            return;
+        }
+        if (action === "reset") {
+            // Show confirmation
+            const scopePrefix = this.#scopePrefix(ref);
+            const text = "⚠️ <b>Reset agent memory?</b>\n\nThis will reset MEMORY.md, SKILLS.md, and TASKS.md to defaults.\nIDENTITY.md will be preserved.\nDaily logs will be cleared.";
+            const keyboard = [
+                row(
+                    btn("✅ Yes, reset", menuCallback(scopePrefix, "memory", "confirm-reset")),
+                    btn("❌ Cancel", menuCallback(scopePrefix, "memory", "close")),
+                ),
+            ];
+            await this.#menus.show(ref.chatId, "memory", text, keyboard, { threadId: ref.threadId });
+            return;
+        }
+        if (action === "confirm-reset") {
+            const agentDir = this.#config.agentDir || "/config/.agent";
+            const { writeFileSync, rmSync, mkdirSync, existsSync: exists } = await import("node:fs");
+
+            // Reset files to defaults
+            const defaults = {
+                "MEMORY.md": "# Agent Memory\n\nSeed facts always loaded into context. Keep minimal — use PKM for long-term storage.\n\n## Key Entities\n<!-- Add frequently used entity IDs here -->\n\n## Bot Versions\n<!-- Track key version milestones here -->\n",
+                "SKILLS.md": "# Agent Skills Reference\n\n## MCP Tool Index\nUse `tool_search_tool_regex` to discover tools by pattern. Schemas are self-documenting.\n- **ha-mcp** (82+ tools) — ALL HA ops\n- **tg-ux** — `ask_user`, `notify_user`, `background_task`, `telegram_call`\n- **si-tools** — `si_create/list/get/update/delete/toggle`\n- **pkm-tools** — `pkm_memory`, `pkm_search`, `pkm_navigate`, `pkm_collection`, `pkm_manage`\n- **session-history** — cross-session history lookup\n\n## Sub-Agents\n**NEVER `task(mode: \"background\")`** — use `mode: \"sync\"` always.\n",
+                "TASKS.md": "# Active Tasks\n\nTasks the agent is working on or needs to resume.\n\n## In Progress\n\n## Pending\n\n## Recently Completed\n",
+            };
+
+            try {
+                for (const [file, content] of Object.entries(defaults)) {
+                    writeFileSync(`${agentDir}/${file}`, content, "utf-8");
+                }
+
+                // Clear daily logs
+                const memDir = `${agentDir}/memory`;
+                if (exists(memDir)) {
+                    rmSync(memDir, { recursive: true });
+                    mkdirSync(memDir, { recursive: true });
+                }
+
+                // Reload enricher cache
+                this.#enricher.reload();
+
+                await this.#menus.close(ref.chatId, "memory",
+                    "✅ Reset complete.\n📄 MEMORY.md, SKILLS.md, TASKS.md → defaults\n📁 Daily logs cleared\n🛡️ IDENTITY.md preserved",
+                    { threadId: ref.threadId });
+            } catch (err) {
+                await this.#reply(ref, `⚠️ Reset failed: ${err.message}`);
+            }
             return;
         }
         if (action.startsWith("view:")) {

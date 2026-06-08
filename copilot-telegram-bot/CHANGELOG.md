@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.14] — 2026-06-08
+
+### Added
+
+- **Memory reset command** — `/memory` menu now has "🔄 Reset (keep identity)" button. Resets MEMORY.md, SKILLS.md, TASKS.md to defaults and clears daily logs. IDENTITY.md is preserved. Includes confirmation step.
+
+### Changed
+
+- **File/PKM boundary clarified** — MEMORY.md is now for seed facts only (key entities, versions). Long-term knowledge goes to PKM via `pkm_memory`. Agent instructions updated accordingly.
+- **Default templates compressed** — MEMORY_DEFAULT and SKILLS_DEFAULT in agent-memory.mjs now match the lean format. New instances start with ~1KB defaults instead of ~4KB.
+
 ## [1.3.13] — 2026-06-08
 
 ### Changed

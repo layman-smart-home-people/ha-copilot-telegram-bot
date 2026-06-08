@@ -57,63 +57,27 @@ You are a personal AI assistant integrated with Home Assistant, communicating vi
 
 const MEMORY_DEFAULT = `# Agent Memory
 
-Long-term curated knowledge. Updated by the agent as important facts are learned.
-The agent should periodically distill key information from daily logs into this file.
-
-## Home & People
-<!-- Agent: add household member names, preferences, routines here -->
-
-## Preferences
-<!-- Agent: add user preferences as they are learned -->
+Seed facts always loaded into context. Keep minimal — use PKM for long-term storage.
 
 ## Key Entities
-<!-- Agent: add frequently used entity IDs and notes here -->
+<!-- Agent: add frequently used entity IDs here -->
 
-## Standing Decisions
-<!-- Agent: add recurring decisions or policies here -->
+## Bot Versions
+<!-- Agent: track key version milestones here -->
 `;
 
 const SKILLS_DEFAULT = `# Agent Skills Reference
 
-## MCP Tools
-Use \`tool_search_tool_regex\` to discover HA tools by pattern (e.g. \`ha_.*service\`). Schemas are self-documenting.
-
-## Telegram UX — \`tg-ux-ask_user\`
-\`{message, options: [{label, value}]}\`. Bot auto-appends "✏️ Something else" + "❌ Cancel". Keep 2–5 options with emoji. Omit \`options\` for free-text.
-
-## Standing Instructions — \`si_*\` MCP tools
-Tools: \`si_create\`, \`si_list\`, \`si_get\`, \`si_update\`, \`si_delete\`, \`si_toggle\`. NEVER edit the JSON file directly.
-- Triggers: \`state_change\`, \`cron\`, \`timer\`
-- Actions: \`wake_agent\`, \`notify\`, \`ha_service\`, \`evaluate\`
-- Key options: \`conditions\`, \`cooldown_seconds\`, \`one_shot\`, \`chain_enable\`, \`expires_at\`, \`max_triggers\`
-- Default \`one_shot: true\` for reactive requests unless user says "always"
-
-## Personal Knowledge Management — \`pkm_*\` MCP tools
-Long-term memory system with topic tree hierarchy, activation model, collections, and graph navigation.
-
-### 5 consolidated tools (v2)
-- \`pkm_memory\` — **CRUD + link**: \`action\` = write | update | delete | get | link. Supports \`scope\` = user | agent | household. Write accepts \`topics\` array, \`importance\`, \`durability\`.
-- \`pkm_navigate\` — **Browse memory structure**: \`action\` = map | browse | context | timeline. \`map\` shows topic tree overview. \`browse\` lists notes in a topic. \`context\` finds neighbors. \`timeline\` groups by period.
-- \`pkm_search\` — **Full-text search**: \`query\` or \`queries\` (multi-query). Filters: \`type\`, \`topic\`, \`entity\`, \`date_from\`, \`date_to\`, \`tags\`. \`expand_context: true\` for related notes. \`entity_query\` for entity lookup. Supports \`scope\` = user | agent | household.
-- \`pkm_collection\` — **Structured data**: \`action\` = create | add | query | update | remove | list. Schema-validated items (reading lists, recipes, logs).
-- \`pkm_manage\` — **System ops**: \`action\` = stats | settings | topic_create | topic_move | topic_merge | maintain.
-
-### Key concepts
-- **Topics**: Hierarchical (max depth 3), notes have 1 primary + optional secondary. Fuzzy name matching.
-- **Activation**: ACT-R model — frequently accessed notes rank higher in search. \`trackAccess()\` on reads.
-- **Collections**: Items ARE notes with \`type='collection_item'\` — searchable + topicable.
-- **Context expansion**: \`expand_context: true\` in search returns neighbors of top results via shared entities/topics/links.
-
-### Automatic features
-- **Conversation extraction**: Messages tracked → LLM extracts structured memories with auto-topic assignment.
-- **Entity linking**: People/places extracted and linked. 3-step dedup (exact → alias → substring).
-- **Contradiction detection**: New notes auto-supersede conflicting older ones.
-- **Activation decay**: Runs in maintenance — permanent notes floor at 0.5, normal decay 0.05/day.
+## MCP Tool Index
+Use \`tool_search_tool_regex\` to discover tools by pattern. Schemas are self-documenting.
+- **ha-mcp** (82+ tools) — ALL HA ops: entities, services, automations, dashboards, history, calendar, HACS, backups, bulk control
+- **tg-ux** — \`ask_user\` (inline buttons/prompts, auto-appends ✏️+❌), \`notify_user\`, \`background_task\` (fire-and-forget), \`telegram_call\` (any Bot API method)
+- **si-tools** — \`si_create/list/get/update/delete/toggle\`. Supports events/cron/timers, conditions, cooldown, chaining, expiry. NEVER edit JSON directly.
+- **pkm-tools** — \`pkm_memory\` (write/update/delete/get/link), \`pkm_search\` (FTS + expand_context), \`pkm_navigate\` (map/browse/timeline), \`pkm_collection\` (structured data), \`pkm_manage\` (admin). Scopes: user/agent/household.
+- **session-history** — cross-session history lookup
 
 ## Sub-Agents
-**NEVER use \`task(mode: "background")\`** — killed when ACP prompt completes.
-- Use \`mode: "sync"\` for all sub-agent work
-- Use \`background_task\` MCP tool for fire-and-forget work (survives prompt completion, results delivered via Telegram, max 5 concurrent)
+**NEVER \`task(mode: "background")\`** — killed when prompt completes. Use \`mode: "sync"\` always. For fire-and-forget: use \`background_task\` MCP tool.
 `;
 
 const TASKS_DEFAULT = `# Active Tasks
@@ -316,11 +280,11 @@ export class AgentMemory {
         const agentDir = this.#agentDir;
         const selfMaintainInstructions = [
             "\n## Agent Memory Instructions",
-            `You have a persistent memory directory at ${agentDir}/. You MUST maintain it:`,
-            `- MEMORY.md — update when you learn important durable facts`,
+            `Persistent memory at ${agentDir}/. Maintain it:`,
+            `- MEMORY.md — seed facts only (key entities, versions). Don't dump everything here.`,
             "- TASKS.md — update when starting, completing, or interrupted on a task",
-            `- Daily logs: \`${agentDir}/memory/YYYY-MM-DD/<topic>.md\` — one file per topic (e.g. bot-dev.md, home-automation.md, debug.md, decisions.md). Keep entries concise.`,
-            "- Periodically distill daily logs → MEMORY.md. Keep MEMORY.md under 200 lines.",
+            `- Daily logs: \`${agentDir}/memory/YYYY-MM-DD/<topic>.md\` — short-term buffer (2 days loaded). One file per topic (e.g. bot-dev.md, debug.md, decisions.md).`,
+            "- **Long-term facts → PKM**: use `pkm_memory(action=\"write\", content, topics)` for durable knowledge. Use `pkm_search` to recall past facts.",
         ].join("\n");
 
         return sections.join("\n\n---\n\n") + "\n\n" + selfMaintainInstructions;
