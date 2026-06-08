@@ -70,12 +70,15 @@ export class Router {
             return;
         }
 
-        // Handle pinned message — store as context for future messages
+        // Handle pinned message — store as context (only from allowed users)
         if (msg.pinned_message) {
-            const pinnedText = msg.pinned_message.text || msg.pinned_message.caption;
-            if (pinnedText) {
-                this.#enricher.setPinned(msg.chat.id, pinnedText);
-                log.debug(`Pinned instruction set for chat ${msg.chat.id}`);
+            const pinnerId = msg.from?.id;
+            if (pinnerId && this.#permissions.isAllowed(pinnerId)) {
+                const pinnedText = msg.pinned_message.text || msg.pinned_message.caption;
+                if (pinnedText) {
+                    this.#enricher.setPinned(msg.chat.id, pinnedText);
+                    log.debug(`Pinned instruction set for chat ${msg.chat.id} by ${pinnerId}`);
+                }
             }
             return;
         }
@@ -329,6 +332,17 @@ export class Router {
             await this.#telegram.call("answerCallbackQuery", {
                 callback_query_id: query.id,
                 text: "⌛ Conversation ended. Send a new message.",
+                show_alert: true,
+            }).catch(() => {});
+            return;
+        }
+
+        // Auth check: only the conversation owner or bot owner can interact
+        const convOwner = conv.ref?.userId;
+        if (convOwner && userId !== convOwner && !this.#permissions.isOwner(userId)) {
+            await this.#telegram.call("answerCallbackQuery", {
+                callback_query_id: query.id,
+                text: "⛔ Not your conversation.",
                 show_alert: true,
             }).catch(() => {});
             return;

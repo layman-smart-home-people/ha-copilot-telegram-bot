@@ -76,6 +76,12 @@ export class ResponseStreamer {
 
     /** Start streaming for a new prompt. Returns the placeholder message ID. */
     async start(ref) {
+        // Clear any pending timer from previous session
+        if (this.#renderTimer) {
+            clearTimeout(this.#renderTimer);
+            this.#renderTimer = null;
+        }
+
         this.#ref = ref;
         this.#textBuffer = "";
         this.#thoughtBuffer = "";
@@ -360,7 +366,21 @@ export class ResponseStreamer {
 
     #truncate(html) {
         if (html.length <= MAX_MSG_LEN) return html;
-        // Truncate preserving HTML safety
-        return html.substring(0, MAX_MSG_LEN - 20) + "\n…(truncated)";
+        // Find safe truncation point — avoid cutting inside HTML tags or entities
+        let cutAt = MAX_MSG_LEN - 30;
+        // Scan backwards to find a position not inside a tag
+        const lastOpenTag = html.lastIndexOf("<", cutAt);
+        const lastCloseTag = html.lastIndexOf(">", cutAt);
+        if (lastOpenTag > lastCloseTag) {
+            // We're inside a tag — cut before it
+            cutAt = lastOpenTag;
+        }
+        // Also check for partial entities (&amp; etc)
+        const lastAmp = html.lastIndexOf("&", cutAt);
+        const lastSemi = html.lastIndexOf(";", cutAt);
+        if (lastAmp > lastSemi && cutAt - lastAmp < 8) {
+            cutAt = lastAmp;
+        }
+        return html.substring(0, cutAt) + "\n…(truncated)";
     }
 }

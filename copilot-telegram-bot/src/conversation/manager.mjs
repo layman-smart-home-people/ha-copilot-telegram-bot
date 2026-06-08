@@ -174,7 +174,8 @@ export class ConversationManager {
         conv.on("needs_new_instance", async ({ scopeKey, text, opts }) => {
             try {
                 const model = conv.model || this.#config.defaultModel || "standard";
-                const newInst = await this.#pool.acquire(scopeKey, { model, mcpProfile: "owner" });
+                const mcpProfile = conv.mcpProfile || "owner";
+                const newInst = await this.#pool.acquire(scopeKey, { model, mcpProfile });
                 conv.replaceInstance(newInst);
                 log.info(`Crash recovery: ${scopeKey} got new instance ${newInst.id}`);
                 // Retry the prompt

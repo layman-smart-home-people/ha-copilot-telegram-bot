@@ -34,6 +34,7 @@ export class ACPPool extends EventEmitter {
     #waitQueue = [];           // { scopeKey, model, mcpProfile, resolve, reject, timer }
     #nextId = 0;
     #healthInterval = null;
+    #spawning = 0;             // count of in-flight spawns (guards maxSize)
 
     // Config
     #maxSize;
@@ -136,9 +137,9 @@ export class ACPPool extends EventEmitter {
     async acquire(scopeKey, { model = "standard", mcpProfile = "owner" } = {}) {
         const tier = this.#resolveModelTier(model);
 
-        // 1. STICKY — already claimed by this scope
+        // 1. STICKY — already claimed by this scope (must be alive)
         for (const inst of this.#instances.values()) {
-            if (inst.claimedBy === scopeKey && inst.state === "claimed") {
+            if (inst.claimedBy === scopeKey && inst.state === "claimed" && inst.alive) {
                 return inst;
             }
         }
@@ -151,8 +152,8 @@ export class ACPPool extends EventEmitter {
             }
         }
 
-        // 3. SPAWN — under maxSize
-        if (this.#instances.size < this.#maxSize) {
+        // 3. SPAWN — under maxSize (count in-flight spawns to prevent overrun)
+        if (this.#instances.size + this.#spawning < this.#maxSize) {
             const inst = await this.#spawn(tier, mcpProfile);
             this.#claim(inst, scopeKey);
             return inst;
@@ -236,6 +237,15 @@ export class ACPPool extends EventEmitter {
     // ── Private: Spawn & Lifecycle ───────────────────────────
 
     async #spawn(modelTier, mcpProfile) {
+        this.#spawning++;
+        try {
+            return await this.#doSpawn(modelTier, mcpProfile);
+        } finally {
+            this.#spawning--;
+        }
+    }
+
+    async #doSpawn(modelTier, mcpProfile) {
         const now = Date.now();
         if (now - this.#lastSpawnTime < this.#spawnCooldownMs) {
             await new Promise(r => setTimeout(r, this.#spawnCooldownMs - (now - this.#lastSpawnTime)));
@@ -327,16 +337,23 @@ export class ACPPool extends EventEmitter {
         inst.state = "booting";
         this.#setupSupervision(inst);
 
-        await acp.start();
-        await acp.authenticate();
-        await new Promise(r => setTimeout(r, 300));
-        await acp.newSession({ cwd: this.#config.workingDirectory || "/config" });
+        try {
+            await acp.start();
+            await acp.authenticate();
+            await new Promise(r => setTimeout(r, 300));
+            await acp.newSession({ cwd: this.#config.workingDirectory || "/config" });
 
-        inst.sessionId = acp.sessionId;
-        inst.model = newModelTier;
-        inst.state = "idle";
-        inst.lastActiveAt = Date.now();
-        log.info(`${inst.id} reconfigured: model=${newModelTier} session=${inst.sessionId}`);
+            inst.sessionId = acp.sessionId;
+            inst.model = newModelTier;
+            inst.state = "idle";
+            inst.lastActiveAt = Date.now();
+            log.info(`${inst.id} reconfigured: model=${newModelTier} session=${inst.sessionId}`);
+        } catch (err) {
+            log.error(`${inst.id} reconfigure failed: ${err.message}`);
+            inst.state = "dead";
+            await this.#stopAndCleanup(inst);
+            throw err;
+        }
     }
 
     // ── Private: Claim & Release ─────────────────────────────
@@ -411,12 +428,12 @@ export class ACPPool extends EventEmitter {
         let served = false;
         while (this.#waitQueue.length > 0) {
             const entry = this.#waitQueue[0];
-            // Find an idle instance matching the waiter's needs
+            // Find an idle instance matching the waiter's needs (exact model+profile only)
             let match = null;
             for (const inst of this.#instances.values()) {
-                if (inst.state === "idle" && inst.mcpProfile === entry.mcpProfile) {
+                if (inst.state === "idle" && inst.mcpProfile === entry.mcpProfile && inst.model === entry.model) {
                     match = inst;
-                    if (inst.model === entry.model) break; // prefer exact model match
+                    break;
                 }
             }
             if (!match) break;

@@ -24,6 +24,7 @@ export class Conversation extends EventEmitter {
     #promptCount = 0;
     #crashRetries = 0;
     #maxRetries = 2;
+    #mcpProfile;     // preserved for crash recovery
 
     // Elicitation
     #pendingElicitation = null; // { requestId, message, resolve }
@@ -31,12 +32,13 @@ export class Conversation extends EventEmitter {
     // Turn tracking
     #currentPromptText = null;
 
-    constructor({ scopeKey, poolInstance, telegram, ref }) {
+    constructor({ scopeKey, poolInstance, telegram, ref, mcpProfile }) {
         super();
         this.#scopeKey = scopeKey;
         this.#poolInstance = poolInstance;
         this.#telegram = telegram;
         this.#ref = ref;
+        this.#mcpProfile = mcpProfile || poolInstance?.mcpProfile || "owner";
         this.#streamer = new ResponseStreamer(telegram);
         this.#lastActivity = Date.now();
         this.#createdAt = Date.now();
@@ -50,6 +52,7 @@ export class Conversation extends EventEmitter {
     get state() { return this.#state; }
     get instanceId() { return this.#poolInstance?.id; }
     get model() { return this.#poolInstance?.model; }
+    get mcpProfile() { return this.#mcpProfile; }
     get ref() { return this.#ref; }
     get lastActivity() { return this.#lastActivity; }
     get createdAt() { return this.#createdAt; }
@@ -92,6 +95,12 @@ export class Conversation extends EventEmitter {
      */
     async respondElicitation(action, content = null) {
         if (this.#state !== "eliciting" || !this.#pendingElicitation) return;
+        if (!this.#poolInstance?.alive) {
+            // Instance died while waiting — kill conversation
+            this.#pendingElicitation = null;
+            this.kill();
+            return;
+        }
         const { requestId } = this.#pendingElicitation;
         this.#pendingElicitation = null;
         this.#state = "prompting";
@@ -115,8 +124,22 @@ export class Conversation extends EventEmitter {
      * Called by ConversationManager when it acquires a new instance.
      */
     replaceInstance(newPoolInstance) {
-        this.#detachAcpListeners();
+        // Detach from old instance (may be dead — use stored reference)
+        const oldAcp = this.#poolInstance?.acp;
+        if (oldAcp) {
+            for (const [event, fn] of Object.entries(this.#listeners)) {
+                if (fn) oldAcp.off(event === "textChunk" ? "text_chunk" :
+                    event === "thoughtChunk" ? "thought_chunk" :
+                    event === "toolStart" ? "tool_start" :
+                    event === "toolEnd" ? "tool_end" :
+                    event === "messageEnd" ? "message_end" :
+                    event === "elicitation" ? "elicitation_request" :
+                    event === "permission" ? "permission_request" :
+                    event, fn);
+            }
+        }
         this.#poolInstance = newPoolInstance;
+        this.#state = "idle"; // Reset state — new instance has no in-flight prompt
         this.#attachAcpListeners();
         log.info(`${this.#scopeKey} instance replaced: ${newPoolInstance.id}`);
     }
@@ -232,12 +255,11 @@ export class Conversation extends EventEmitter {
     /** Send elicitation question with accept/decline buttons. */
     async #sendElicitationButtons(message) {
         const text = `❓ ${message || "The agent needs your input."}\n\n<i>Reply with text, or tap a button:</i>`;
-        // Scope-encode the callback data so router knows which conversation to route to
-        const prefix = this.#scopeKey.replace(/:/g, ":");
+        // Scope key is used directly as callback prefix — router parses by colon delimiter
         const replyMarkup = {
             inline_keyboard: [[
-                { text: "✅ Accept", callback_data: `${prefix}:elicit:accept` },
-                { text: "❌ Decline", callback_data: `${prefix}:elicit:decline` },
+                { text: "✅ Accept", callback_data: `${this.#scopeKey}:elicit:accept` },
+                { text: "❌ Decline", callback_data: `${this.#scopeKey}:elicit:decline` },
             ]],
         };
         await this.#telegram.sendMessage(this.#ref.chatId, text, "HTML", replyMarkup);
