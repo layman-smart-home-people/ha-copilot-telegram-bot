@@ -345,7 +345,7 @@ export class InteractiveFlows {
     }
 
     #handleBackgroundTask(params, scopeKey) {
-        const { prompt, description } = params;
+        const { prompt, description, groupId, groupSize } = params;
         if (!prompt) return Promise.resolve({ error: "prompt is required" });
         if (!description) return Promise.resolve({ error: "description is required" });
 
@@ -364,7 +364,7 @@ export class InteractiveFlows {
         if (!chatId) return Promise.resolve({ error: "No active chat for result delivery" });
 
         const taskId = `bg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        log.info(`Background task dispatched: ${taskId} — "${description}"`);
+        log.info(`Background task dispatched: ${taskId} — "${description}"${groupId ? ` [group=${groupId}]` : ""}`);
 
         // Fire-and-forget: inject into background queue, return immediately
         try {
@@ -374,13 +374,20 @@ export class InteractiveFlows {
                 description,
                 chatId,
                 source: "mcp_tool",
+                groupId: groupId || null,
+                groupSize: groupSize || null,
             });
         } catch (err) {
             log.warn(`Background task injection failed: ${err.message}`);
             return Promise.resolve({ error: `Failed to queue: ${err.message}` });
         }
 
-        return Promise.resolve({ taskId, status: "queued" });
+        const result = { taskId, status: "queued" };
+        if (groupId) {
+            result.groupId = groupId;
+            result.groupSize = groupSize;
+        }
+        return Promise.resolve(result);
     }
 
     #handleNotifyUser(params) {

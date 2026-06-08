@@ -130,6 +130,10 @@ export class Orchestrator {
     static #BACKGROUND_QUEUE_MAX = 5;
     static #BACKGROUND_WATCHDOG_MS = 5 * 60 * 1000; // 5 minutes
 
+    // --- Task group aggregation (BG-3) ---
+    // Map<groupId, { chatId, totalSize, results: Map<taskId, { description, output, elapsed, status }>, createdAt }>
+    #taskGroups = new Map();
+
     // Prompt heartbeat + stall detection
     #heartbeatTimer = null;
     #promptStartedAt = 0;
@@ -235,11 +239,13 @@ export class Orchestrator {
             getOverflowScope: () => this.#overflowScope,
             getActiveRef: () => this.#activeRef,
             getAllowedChatIds: () => this.#allowedChatIds,
-            onBackgroundTask: ({ taskId, prompt, description, chatId }) => {
+            onBackgroundTask: ({ taskId, prompt, description, chatId, groupId, groupSize }) => {
                 this.injectBackgroundPrompt(prompt, chatId, {
                     priority: 2,
                     description,
                     taskId,
+                    groupId: groupId || undefined,
+                    groupSize: groupSize || undefined,
                 });
             },
         });
@@ -392,11 +398,27 @@ export class Orchestrator {
      * @param {number} [options.priority=2] - 1=high (SI), 2=normal (agent)
      * @param {string} [options.description=""] - Short description for status
      */
-    injectBackgroundPrompt(prompt, chatId, { priority = 2, description = "Background task", taskId: providedTaskId, silent = false } = {}) {
+    injectBackgroundPrompt(prompt, chatId, { priority = 2, description = "Background task", taskId: providedTaskId, silent = false, groupId, groupSize } = {}) {
+        const taskId = providedTaskId || `bg-${Date.now().toString(36)}`;
+
+        // Initialize group tracker early (before potential rejection) so we can record skips
+        if (groupId && groupSize > 0 && !this.#taskGroups.has(groupId)) {
+            this.#taskGroups.set(groupId, {
+                chatId,
+                totalSize: groupSize,
+                results: new Map(),
+                createdAt: Date.now(),
+            });
+        }
+
         if (!this.#acpMgr?.overflowEnabled) {
             if (silent) {
                 log.warn(`Silent task rejected — overflow disabled`);
                 return;
+            }
+            // Grouped task falling back to primary — record as "fallback" (won't be tracked further)
+            if (groupId && this.#taskGroups.has(groupId)) {
+                this.#recordGroupResult(groupId, taskId, description, "(ran on primary — output delivered separately)", "0", "fallback");
             }
             log.info("Background task falling back to primary queue (overflow disabled)");
             return this.injectSystemPrompt(prompt, chatId);
@@ -409,11 +431,20 @@ export class Orchestrator {
                     this.#telegram.sendMessage(chatId, `⚠️ Background queue full (${Orchestrator.#BACKGROUND_QUEUE_MAX}) — task rejected.\n${description}`)
                 ).catch(() => {});
             }
+            // Record rejection in group so it doesn't hang
+            if (groupId && this.#taskGroups.has(groupId)) {
+                this.#recordGroupResult(groupId, taskId, description, "(rejected — queue full)", "0", "error");
+            }
             return;
         }
 
-        const taskId = providedTaskId || `bg-${Date.now().toString(36)}`;
         const task = { prompt, chatId, priority, description, taskId, silent, createdAt: Date.now() };
+
+        // Attach group info if provided
+        if (groupId && groupSize > 0) {
+            task.groupId = groupId;
+            task.groupSize = groupSize;
+        }
 
         // Insert by priority (lower number = higher priority, jump ahead of lower-priority items)
         const insertIdx = this.#backgroundQueue.findIndex(t => t.priority > priority);
@@ -443,7 +474,14 @@ export class Orchestrator {
                 description: t.description,
                 priority: t.priority,
                 silent: t.silent || false,
+                groupId: t.groupId || null,
                 age: Math.floor((Date.now() - t.createdAt) / 1000),
+            })),
+            groups: [...this.#taskGroups.entries()].map(([id, g]) => ({
+                groupId: id,
+                completed: g.results.size,
+                total: g.totalSize,
+                age: Math.floor((Date.now() - g.createdAt) / 1000),
             })),
         };
     }
@@ -463,9 +501,9 @@ export class Orchestrator {
     }
 
     async #executeBackgroundTask(task) {
-        const { prompt, chatId, taskId, description, silent: isSilent } = task;
+        const { prompt, chatId, taskId, description, silent: isSilent, groupId } = task;
         const startTime = Date.now();
-        log.info(`Background task starting: ${taskId} "${description}"${isSilent ? " [SILENT]" : ""}`);
+        log.info(`Background task starting: ${taskId} "${description}"${isSilent ? " [SILENT]" : ""}${groupId ? ` [group=${groupId}]` : ""}`);
 
         try {
             // Acquire overflow ACP (spawns if needed)
@@ -476,6 +514,9 @@ export class Orchestrator {
                     return;
                 }
                 log.warn(`No overflow ACP available for ${taskId} — falling back to primary`);
+                if (groupId && this.#taskGroups.has(groupId)) {
+                    this.#recordGroupResult(groupId, taskId, description, "(ran on primary — output delivered separately)", "0", "fallback");
+                }
                 this.injectSystemPrompt(prompt, chatId);
                 return;
             }
@@ -494,6 +535,9 @@ export class Orchestrator {
                 if (isSilent) {
                     log.warn(`Silent task ${taskId} abandoned — session creation failed`);
                     return;
+                }
+                if (groupId && this.#taskGroups.has(groupId)) {
+                    this.#recordGroupResult(groupId, taskId, description, `(session failed: ${err.message})`, "0", "error");
                 }
                 this.injectSystemPrompt(prompt, chatId);
                 return;
@@ -538,9 +582,12 @@ export class Orchestrator {
             // Deliver results
             const fullText = textChunks.join("");
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-            log.info(`Background task completed: ${taskId} in ${elapsed}s (${fullText.length} chars)${isSilent ? " [SILENT]" : ""}`);
+            log.info(`Background task completed: ${taskId} in ${elapsed}s (${fullText.length} chars)${isSilent ? " [SILENT]" : ""}${groupId ? ` [group=${groupId}]` : ""}`);
 
-            if (isSilent) {
+            // Group recording takes priority (even for silent tasks — output counts toward aggregation)
+            if (groupId && this.#taskGroups.has(groupId)) {
+                this.#recordGroupResult(groupId, taskId, description, fullText, elapsed, "success");
+            } else if (isSilent) {
                 log.info(`Silent task ${taskId} output suppressed (${fullText.length} chars)`);
             } else if (fullText.trim() && chatId) {
                 const header = `📋 *Background Task* (${elapsed}s)\n_${description}_\n\n`;
@@ -559,7 +606,11 @@ export class Orchestrator {
         } catch (err) {
             // Errors ALWAYS deliver, even for silent tasks — errors are actionable info (per R3 design)
             log.error(`Background task ${taskId} failed: ${err.message}`);
-            if (chatId) {
+            if (groupId && this.#taskGroups.has(groupId)) {
+                // Record error in group — will appear in aggregated report (no immediate notification)
+                this.#recordGroupResult(groupId, taskId, description, err.message, "0", "error");
+            } else if (chatId) {
+                // Only send immediate error for non-grouped tasks
                 this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(chatId, `❌ Background task failed\n_${description}_\n\n${err.message}`)
                 ).catch(() => {});
@@ -594,6 +645,80 @@ export class Orchestrator {
             parts.push("---\nAgent context:\n" + agentContext);
         }
         return parts.join("\n\n");
+    }
+
+    // --- Task Group Aggregation (BG-3) ---
+
+    #recordGroupResult(groupId, taskId, description, output, elapsed, status) {
+        const group = this.#taskGroups.get(groupId);
+        if (!group) return;
+
+        group.results.set(taskId, { description, output, elapsed, status });
+        log.info(`Group ${groupId}: ${group.results.size}/${group.totalSize} tasks complete`);
+
+        if (group.results.size >= group.totalSize) {
+            this.#triggerGroupAggregation(groupId, group);
+        } else {
+            // Schedule stale group cleanup (10 min timeout)
+            this.#scheduleGroupTimeout(groupId);
+        }
+    }
+
+    #scheduleGroupTimeout(groupId) {
+        const group = this.#taskGroups.get(groupId);
+        if (!group || group._timeout) return; // already scheduled
+        const STALE_MS = 10 * 60 * 1000; // 10 minutes
+        group._timeout = setTimeout(() => {
+            const g = this.#taskGroups.get(groupId);
+            if (g && g.results.size < g.totalSize) {
+                log.warn(`Group ${groupId} timed out — triggering partial aggregation (${g.results.size}/${g.totalSize})`);
+                this.#triggerGroupAggregation(groupId, g);
+            }
+        }, STALE_MS);
+        group._timeout.unref?.();
+    }
+
+    #triggerGroupAggregation(groupId, group) {
+        log.info(`Group ${groupId} complete — triggering aggregation (${group.results.size}/${group.totalSize} tasks)`);
+        if (group._timeout) clearTimeout(group._timeout);
+        this.#taskGroups.delete(groupId);
+
+        // Build aggregation prompt with all results
+        const resultSections = [];
+        let successCount = 0;
+        let errorCount = 0;
+        for (const [taskId, result] of group.results) {
+            const icon = result.status === "error" ? "❌" : "✅";
+            if (result.status === "error") errorCount++;
+            else successCount++;
+            resultSections.push(
+                `### ${icon} ${result.description}\n` +
+                `Task ID: ${taskId} | Elapsed: ${result.elapsed}s | Status: ${result.status}\n\n` +
+                `${result.output || "(no output)"}`
+            );
+        }
+
+        const totalElapsed = ((Date.now() - group.createdAt) / 1000).toFixed(1);
+        const aggregationPrompt =
+            `[Background Task Group Complete]\n` +
+            `Group: ${groupId} | Tasks: ${group.totalSize} (${successCount} success, ${errorCount} error) | Total time: ${totalElapsed}s\n\n` +
+            `The following background tasks have all completed. Synthesize their results into a clear, unified report for the user. ` +
+            `For substantial data, save a detailed HTML report to /config/www/ and share the URL. Always provide a concise Telegram summary.\n\n` +
+            resultSections.join("\n\n---\n\n");
+
+        // Re-trigger primary ACP with aggregated results
+        this.injectSystemPrompt(aggregationPrompt, group.chatId).catch(err => {
+            log.error(`Group aggregation injection failed for ${groupId}: ${err.message}`);
+            // Fallback: deliver raw results directly to Telegram
+            if (group.chatId) {
+                const fallbackMsg = `📋 *Background Tasks Complete* (${totalElapsed}s)\n` +
+                    `Group: ${groupId} | ${successCount}✅ ${errorCount}❌\n\n` +
+                    resultSections.map(s => s.substring(0, 500)).join("\n---\n");
+                this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(group.chatId, markdownToTelegramHtml(fallbackMsg), "HTML")
+                ).catch(() => {});
+            }
+        });
     }
 
     #resolveScopeKey(scope, ref = null) {

@@ -43,7 +43,9 @@ const BACKGROUND_TASK_TOOL = {
         "Dispatch a task to run in the background on a separate agent. " +
         "Returns immediately with a task ID. Results are delivered to the user via Telegram when complete. " +
         "Use for fire-and-forget work that doesn't need to be in your response. " +
-        "Provide ALL necessary context in the prompt — the background agent has no access to your conversation history.",
+        "Provide ALL necessary context in the prompt — the background agent has no access to your conversation history. " +
+        "For multi-task research: use group_id + group_size to aggregate results. " +
+        "When all tasks in a group complete, their results are synthesized into a unified report.",
     inputSchema: {
         type: "object",
         properties: {
@@ -54,6 +56,14 @@ const BACKGROUND_TASK_TOOL = {
             description: {
                 type: "string",
                 description: "Short description for status tracking (e.g., 'Check sensor trends')",
+            },
+            group_id: {
+                type: "string",
+                description: "Optional group ID for multi-task aggregation. Tasks with the same group_id are collected and synthesized when all complete.",
+            },
+            group_size: {
+                type: "integer",
+                description: "Total number of tasks in this group. Required when group_id is provided. Aggregation triggers when this many tasks complete.",
             },
         },
         required: ["prompt", "description"],
@@ -206,12 +216,24 @@ async function handleBackgroundTask(id, args) {
         });
         return;
     }
-    log(`background_task called: "${args.description}"`);
+    if (args.group_id && (!args.group_size || typeof args.group_size !== "number" || args.group_size < 1)) {
+        send(id, {
+            content: [{ type: "text", text: "Error: group_size (positive integer) is required when group_id is provided" }],
+            isError: true,
+        });
+        return;
+    }
+    log(`background_task called: "${args.description}"${args.group_id ? ` [group=${args.group_id}, size=${args.group_size}]` : ""}`);
     pendingCalls++;
     try {
+        const params = { prompt: args.prompt, description: args.description };
+        if (args.group_id) {
+            params.groupId = args.group_id;
+            params.groupSize = args.group_size;
+        }
         const result = await callBot({
             method: "background_task",
-            params: { prompt: args.prompt, description: args.description },
+            params,
             scopeKey: SCOPE_KEY,
         });
         if (result.error) {
@@ -220,8 +242,9 @@ async function handleBackgroundTask(id, args) {
                 isError: true,
             });
         } else {
+            const groupInfo = result.groupId ? `\nGroup: ${result.groupId} (${result.groupSize} tasks)` : "";
             send(id, {
-                content: [{ type: "text", text: `Task dispatched: ${result.taskId}\nStatus: ${result.status}\nResults will be delivered via Telegram when complete.` }],
+                content: [{ type: "text", text: `Task dispatched: ${result.taskId}\nStatus: ${result.status}${groupInfo}\nResults will be delivered via Telegram when complete.` }],
             });
         }
     } catch (err) {

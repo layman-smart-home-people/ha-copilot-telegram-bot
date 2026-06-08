@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.73.0] — 2026-06-08
+
+### Added — Ezra v6 Phase A3: Task Group Aggregation (BG-3)
+
+- **Grouped background tasks** — `background_task` MCP tool now accepts `group_id` + `group_size` for multi-task aggregation. Tasks with the same group_id are tracked together.
+- **Automatic aggregation** — When all tasks in a group complete, results are synthesized: primary ACP receives an aggregation prompt with all task outputs and produces a unified report.
+- **Error handling in groups** — Errors count toward group completion (no immediate notification for grouped errors; they appear in the aggregated report).
+- **Stale group timeout** — Groups that don't complete within 10 minutes trigger partial aggregation with available results.
+- **Fallback paths** — Tasks that get rejected (queue full) or fall back to primary still count toward group completion with appropriate status markers.
+- **Status visibility** — `backgroundStatus` getter now includes active group tracking (groupId, completed/total, age).
+- **Silent + grouped** — Silent tasks still record results for group aggregation (output isn't delivered individually but counts toward the group).
+
 ## [0.72.0] — 2026-06-08
 
 ### Added — Ezra v6 Phase A2: Silent SI + notify_user
