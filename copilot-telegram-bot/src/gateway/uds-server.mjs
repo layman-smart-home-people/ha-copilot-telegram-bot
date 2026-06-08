@@ -74,6 +74,7 @@ export class UdsServer {
             try { unlinkSync(TG_UX_SOCK); } catch {}
         }
         for (const [id, q] of this.#pending) {
+            this.#editResolved(q, "⚠️ Bot restarting");
             clearTimeout(q.timer);
             q.resolve({ error: "Server shutting down" });
         }
@@ -96,17 +97,17 @@ export class UdsServer {
         this.#telegram.call("answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
 
         if (value === "__cancel__") {
+            this.#editResolved(q, "❌ Cancelled");
             this.#resolve(qId, { error: "User cancelled" });
         } else if (value === "__custom__") {
             q.freeText = true;
-            this.#telegram.call("editMessageText", {
-                chat_id: q.chatId,
-                message_id: q.messageId,
-                text: "✏️ Type your answer below:",
-            }).catch(() => {});
+            this.#editResolved(q, "✏️ Type your answer below:", true);
         } else {
             const idx = parseInt(value, 10);
-            const answer = (!isNaN(idx) && q.options?.[idx]) ? q.options[idx].value : value;
+            const opt = (!isNaN(idx) && q.options?.[idx]) ? q.options[idx] : null;
+            const answer = opt?.value ?? value;
+            const label = opt?.label ?? answer;
+            this.#editResolved(q, `✅ ${label}`);
             this.#resolve(qId, { answer });
         }
         return true;
@@ -135,7 +136,8 @@ export class UdsServer {
 
     /** Cancel all pending questions (e.g., on /stop). */
     cancelAll(reason = "Cancelled") {
-        for (const [qId] of this.#pending) {
+        for (const [qId, q] of this.#pending) {
+            this.#editResolved(q, "❌ Cancelled");
             this.#resolve(qId, { error: reason });
         }
     }
@@ -158,11 +160,19 @@ export class UdsServer {
 
     #resolveChatId(scopeKey) {
         if (scopeKey) {
-            const conv = this.#conversationManager.get(scopeKey);
+            const conv = this.#conversationManager?.get(scopeKey);
             if (conv?.ref?.chatId) return { chatId: conv.ref.chatId, threadId: conv.ref.threadId };
         }
         const chatId = this.#config.allowedChatIds?.[0];
         return chatId ? { chatId } : {};
+    }
+
+    /** Edit a question message to show the result and remove inline keyboard. */
+    #editResolved(q, text, keepKeyboard = false) {
+        if (!q?.messageId) return;
+        const params = { chat_id: q.chatId, message_id: q.messageId, text };
+        if (!keepKeyboard) params.reply_markup = { inline_keyboard: [] };
+        this.#telegram.call("editMessageText", params).catch(() => {});
     }
 
     #resolve(qId, result) {
@@ -209,7 +219,11 @@ export class UdsServer {
         if (threadId) sendParams.message_thread_id = threadId;
 
         return new Promise((resolve) => {
-            const timer = setTimeout(() => this.#resolve(qId, { error: "Question timed out" }), QUESTION_TIMEOUT_MS);
+            const timer = setTimeout(() => {
+                const tq = this.#pending.get(qId);
+                if (tq) this.#editResolved(tq, "⏰ Question timed out");
+                this.#resolve(qId, { error: "Question timed out" });
+            }, QUESTION_TIMEOUT_MS);
             const entry = { resolve, chatId, threadId, options: options || [], freeText: !hasButtons, timer };
             this.#pending.set(qId, entry);
 
