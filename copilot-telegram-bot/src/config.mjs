@@ -1,4 +1,5 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { createLogger } from "./logger.mjs";
 
 const log = createLogger('config');
@@ -162,7 +163,14 @@ export async function loadConfig() {
         }
     }
     if (config.mcpServers.length === 0) {
-        log.info("No MCP servers configured (ha-mcp add-on not detected — using direct API)");
+        // Auto-bootstrap ha-mcp if no MCP config exists but SUPERVISOR_TOKEN is available
+        const bootstrapped = await bootstrapHaMcp(config);
+        if (bootstrapped) {
+            config.mcpServers = [{ name: "ha-mcp", command: "/data/ha-mcp-wrapper.sh", args: [] }];
+            log.info("ha-mcp auto-bootstrapped successfully");
+        } else {
+            log.info("No MCP servers configured (ha-mcp not available — using direct API)");
+        }
     }
 
     // Check HA API connectivity
@@ -226,4 +234,65 @@ export async function loadConfig() {
     config.changelog = changelog;
 
     return config;
+}
+
+// ── ha-mcp auto-bootstrap ──────────────────────────────────────
+// Installs ha-mcp Python package into /data/ha-mcp-venv/ and creates
+// a wrapper script. Runs once — subsequent boots reuse the venv.
+
+const HA_MCP_VENV = "/data/ha-mcp-venv";
+const HA_MCP_WRAPPER = "/data/ha-mcp-wrapper.sh";
+const HA_MCP_BIN = `${HA_MCP_VENV}/bin/ha-mcp`;
+
+async function bootstrapHaMcp(config) {
+    if (!process.env.SUPERVISOR_TOKEN) return false;
+
+    // Already installed?
+    if (existsSync(HA_MCP_BIN) && existsSync(HA_MCP_WRAPPER)) {
+        log.info(`ha-mcp already installed at ${HA_MCP_BIN}`);
+        return true;
+    }
+
+    // Check Python available
+    try {
+        execSync("python3 --version", { stdio: "pipe" });
+    } catch {
+        log.warn("ha-mcp bootstrap: python3 not available");
+        return false;
+    }
+
+    log.info("ha-mcp bootstrap: installing...");
+    try {
+        // Create venv + install ha-mcp
+        if (!existsSync(HA_MCP_VENV)) {
+            execSync(`python3 -m venv "${HA_MCP_VENV}"`, { stdio: "pipe", timeout: 30_000 });
+        }
+        // Install/upgrade pip first, then ha-mcp
+        execSync(`"${HA_MCP_VENV}/bin/python3" -m ensurepip --upgrade 2>/dev/null; "${HA_MCP_VENV}/bin/pip" install --quiet ha-mcp`, {
+            stdio: "pipe",
+            timeout: 120_000,
+            env: { ...process.env, PATH: `${HA_MCP_VENV}/bin:${process.env.PATH}` },
+        });
+
+        if (!existsSync(HA_MCP_BIN)) {
+            log.warn("ha-mcp bootstrap: pip install succeeded but binary not found");
+            return false;
+        }
+
+        // Create wrapper script
+        const wrapper = `#!/bin/bash
+export HOMEASSISTANT_URL="http://supervisor/core"
+export HOMEASSISTANT_TOKEN="\${SUPERVISOR_TOKEN}"
+export LOG_LEVEL="WARNING"
+exec "${HA_MCP_BIN}" "$@"
+`;
+        writeFileSync(HA_MCP_WRAPPER, wrapper);
+        chmodSync(HA_MCP_WRAPPER, 0o755);
+
+        log.info("ha-mcp bootstrap: installed successfully");
+        return true;
+    } catch (err) {
+        log.warn(`ha-mcp bootstrap failed: ${err.message}`);
+        return false;
+    }
 }

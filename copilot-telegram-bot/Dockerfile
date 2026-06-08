@@ -1,9 +1,9 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base-debian:bookworm
 FROM ${BUILD_FROM}
 
-# Install Node.js 22 (LTS) from NodeSource and jq
+# Install Node.js 22 (LTS) from NodeSource, Python venv support, and jq
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl gnupg git jq \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg git jq python3-venv \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
