@@ -17,6 +17,7 @@ import { TopicManager } from "./core/topic-manager.mjs";
 import { StandingInstructionManager } from "./ha/standing-instructions.mjs";
 import { StandingInstructionOrchestrator } from "./ha/orchestrator.mjs";
 import { HAEventListener } from "./ha/events.mjs";
+import { UdsServer } from "./gateway/uds-server.mjs";
 import { WebUIServer } from "./webui/server.mjs";
 import { loadConfig } from "./config.mjs";
 import { createLogger, setLogLevel } from "./logger.mjs";
@@ -53,6 +54,7 @@ let _telegram = null;
 let _router = null;
 let _siOrchestrator = null;
 let _webui = null;
+let _uds = null;
 
 // --- Main ---
 async function main() {
@@ -169,6 +171,12 @@ async function main() {
         }
     }
 
+    // --- UDS Server (MCP sidecar IPC) ---
+    const uds = new UdsServer({ telegram, conversationManager: convMgr, config });
+    _uds = uds;
+    uds.start();
+    router.setUdsServer(uds);
+
     // --- Start Polling ---
     telegram.startPolling();
     log.info(`✅ Bot v${config.version} online — polling for messages`);
@@ -250,6 +258,7 @@ async function shutdown(signal) {
     try {
         if (_telegram) _telegram.stopPolling();
         if (_router) _router.stop();
+        if (_uds) _uds.stop();
         if (_siOrchestrator) await _siOrchestrator.stop();
         if (_webui) await _webui.stop();
     } catch {}

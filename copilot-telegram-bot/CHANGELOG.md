@@ -2,6 +2,22 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.4.0] — 2026-06-08
+
+### Removed — v6 architecture (BREAKING)
+
+- **Deleted 24 v6-only files** — orchestrator.mjs, agent-memory.mjs, acp-manager.mjs, lifecycle.mjs, prompt-builder.mjs, interactive-flows.mjs, scope-manager.mjs, scope-state.mjs, sessions.mjs, commands.mjs, status.mjs, tool-notifications.mjs, history.mjs, event-log.mjs, metrics.mjs, errors.mjs, pairing.mjs, index-v6.mjs, adapter.mjs, buttons.mjs, transport-ref.mjs, test-registry.mjs, tests-phase-a.mjs, tests-phase-b.mjs.
+- No more dual maintenance — all context injection, daily log loading, memory management is in v7 only (prompt-enricher.mjs).
+
+### Added
+
+- **UDS server for v7** (`src/gateway/uds-server.mjs`) — Replacement for InteractiveFlows UDS server. Handles all MCP sidecar IPC: `ask_user`, `notify_user`, `background_task`, `telegram_call`. Integrates with Router for callback/text interception. Same UDS socket protocol — sidecar scripts unchanged.
+
+### Changed
+
+- **index.mjs** — Now starts UDS server and wires it to Router. Added to shutdown sequence.
+- **router.mjs** — Added `setUdsServer()`, UDS callback routing (`uds:` prefix), text interception for pending ask_user questions, cancel-all on `/stop`.
+
 ## [1.3.14] — 2026-06-08
 
 ### Added

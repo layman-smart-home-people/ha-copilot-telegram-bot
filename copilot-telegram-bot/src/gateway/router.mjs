@@ -38,6 +38,7 @@ export class Router {
     #menus;
     #siOrchestrator = null; // set externally after boot
     #topicManager = null;   // set externally after boot
+    #udsServer = null;      // set externally after boot
 
     constructor({ telegram, conversationManager, pool, permissions, config, enricher }) {
         this.#telegram = telegram;
@@ -64,6 +65,9 @@ export class Router {
 
     /** Set TopicManager reference (called after boot). */
     setTopicManager(mgr) { this.#topicManager = mgr; }
+
+    /** Set UDS server reference for MCP sidecar IPC (called after boot). */
+    setUdsServer(uds) { this.#udsServer = uds; }
 
     #updateListener = null;
 
@@ -192,6 +196,12 @@ export class Router {
                 await this.#reply(ref, lines.join("\n"), "HTML");
                 return;
             }
+        }
+
+        // Intercept text for pending UDS ask_user questions (MCP sidecar)
+        if (this.#udsServer?.tryResolveText(ref.chatId, text)) {
+            log.debug(`Text resolved pending UDS question for chat ${ref.chatId}`);
+            return;
         }
 
         // Get role-based config
@@ -388,6 +398,9 @@ export class Router {
     async #cmdStop(ref) {
         const scopeKey = this.#resolveScopeKey(ref);
         const conv = this.#conversationManager.get(scopeKey);
+
+        // Cancel any pending UDS questions
+        if (this.#udsServer) this.#udsServer.cancelAll("User cancelled");
 
         if (conv && conv.state === "prompting") {
             try {
@@ -645,6 +658,9 @@ export class Router {
         const messageId = query.message?.message_id;
 
         if (!data || !userId || !chatId) return;
+
+        // UDS server callbacks (MCP ask_user buttons)
+        if (this.#udsServer?.handleCallback(query)) return;
 
         // Check if this is a menu callback — ack immediately for menus
         const menuParsed = parseMenuCallback(data);
