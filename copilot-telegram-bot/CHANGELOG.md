@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.9] — 2026-06-08
+
+### Added
+
+- **Session resumption** — Conversations now persist their ACP session ID in an append-only ledger (`/data/session-ledger.jsonl`). After idle reap or bot restart, the next message resumes the previous session via `loadSession()` instead of starting fresh. Agent retains full conversation history — no more blank slate after 30 min of inactivity.
+- **`/new` clears session** — The `/new` command now explicitly clears the ledger entry so the next conversation starts with a genuinely fresh session.
+- **Graceful shutdown persistence** — All active conversation session IDs are saved to the ledger on bot shutdown.
+
+### Fixed
+
+- **Concurrent message race condition** — Two messages arriving for the same scope during conversation creation could leak a pool instance. `route()` now serializes creation per scope using an in-flight promise guard.
+
 ## [1.3.8] — 2026-06-08
 
 ### Added

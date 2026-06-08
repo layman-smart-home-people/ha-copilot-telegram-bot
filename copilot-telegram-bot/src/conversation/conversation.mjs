@@ -54,6 +54,7 @@ export class Conversation extends EventEmitter {
     get scopeKey() { return this.#scopeKey; }
     get state() { return this.#state; }
     get instanceId() { return this.#poolInstance?.id; }
+    get sessionId() { return this.#poolInstance?.sessionId || this.#poolInstance?.acp?.sessionId || null; }
     get model() { return this.#poolInstance?.model; }
     get mcpProfile() { return this.#mcpProfile; }
     get ref() { return this.#ref; }

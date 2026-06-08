@@ -8,6 +8,7 @@
 // - SI (scheduled intelligence) conversation spawning
 
 import { Conversation } from "./conversation.mjs";
+import { SessionLedger } from "./session-ledger.mjs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("conv-mgr");
@@ -16,17 +17,20 @@ const DEFAULT_IDLE_REAP_MS = 30 * 60_000; // 30 min
 
 export class ConversationManager {
     #conversations = new Map(); // scopeKey → Conversation
+    #creating = new Map();      // scopeKey → Promise<Conversation> (in-flight creation guard)
     #pool;                      // ACPPool
     #telegram;                  // TelegramClient
     #config;
     #reapInterval = null;
     #idleReapMs;
+    #ledger;                    // SessionLedger — persists scopeKey→sessionId
 
     constructor({ pool, telegram, config }) {
         this.#pool = pool;
         this.#telegram = telegram;
         this.#config = config;
         this.#idleReapMs = (config.poolIdleMinutes || 30) * 60_000;
+        this.#ledger = new SessionLedger();
     }
 
     // ── Public API ───────────────────────────────────────────
@@ -45,6 +49,11 @@ export class ConversationManager {
             this.#reapInterval = null;
         }
         for (const conv of this.#conversations.values()) {
+            // Persist sessionIds before shutdown
+            const sid = conv.sessionId;
+            if (sid && conv.scopeKey) {
+                this.#ledger.record(conv.scopeKey, sid);
+            }
             if (conv.instanceId) {
                 this.#pool.release(conv.instanceId);
             }
@@ -73,7 +82,18 @@ export class ConversationManager {
         }
 
         if (!conv) {
-            conv = await this.#createConversation(scopeKey, ref, opts);
+            // Serialize creation per scope to prevent duplicate pool instances
+            if (this.#creating.has(scopeKey)) {
+                conv = await this.#creating.get(scopeKey);
+            } else {
+                const p = this.#createConversation(scopeKey, ref, opts);
+                this.#creating.set(scopeKey, p);
+                try {
+                    conv = await p;
+                } finally {
+                    this.#creating.delete(scopeKey);
+                }
+            }
         }
 
         return conv.receive(text, opts);
@@ -113,11 +133,13 @@ export class ConversationManager {
 
     /**
      * Destroy a specific conversation (e.g., user says /new).
+     * Clears ledger entry so next conversation starts fresh.
      */
     async destroy(scopeKey) {
         const conv = this.#conversations.get(scopeKey);
         if (!conv) return false;
-        this.#releaseConversation(conv);
+        this.#ledger.clear(scopeKey);
+        this.#releaseConversation(conv, { skipLedger: true });
         return true;
     }
 
@@ -145,12 +167,30 @@ export class ConversationManager {
 
         const inst = await this.#pool.acquire(scopeKey, { model, mcpProfile });
 
+        // Try to resume previous session from ledger
+        const previousSessionId = this.#ledger.get(scopeKey);
+        if (previousSessionId) {
+            try {
+                await inst.acp.loadSession(previousSessionId);
+                inst.sessionId = previousSessionId;
+                log.info(`Resumed session ${previousSessionId} for ${scopeKey}`);
+            } catch (err) {
+                log.debug(`Could not resume session ${previousSessionId}: ${err.message} — using fresh session`);
+            }
+        }
+
         const conv = new Conversation({
             scopeKey, poolInstance: inst, telegram: this.#telegram, ref,
             config: this.#config,
         });
         this.#setupConvListeners(conv);
         this.#conversations.set(scopeKey, conv);
+
+        // Record current sessionId for future resumption
+        if (inst.sessionId) {
+            this.#ledger.record(scopeKey, inst.sessionId);
+        }
+
         return conv;
     }
 
@@ -196,7 +236,14 @@ export class ConversationManager {
         });
     }
 
-    #releaseConversation(conv) {
+    #releaseConversation(conv, { skipLedger = false } = {}) {
+        // Persist sessionId before releasing (unless explicitly skipped, e.g. /new)
+        if (!skipLedger) {
+            const sid = conv.sessionId;
+            if (sid && conv.scopeKey) {
+                this.#ledger.record(conv.scopeKey, sid);
+            }
+        }
         conv.kill();
         this.#conversations.delete(conv.scopeKey);
         if (conv.instanceId) {
