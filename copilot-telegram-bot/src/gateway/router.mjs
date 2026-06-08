@@ -37,6 +37,7 @@ export class Router {
     #fileHandler;
     #menus;
     #siOrchestrator = null; // set externally after boot
+    #topicManager = null;   // set externally after boot
 
     constructor({ telegram, conversationManager, pool, permissions, config, enricher }) {
         this.#telegram = telegram;
@@ -60,6 +61,9 @@ export class Router {
 
     /** Set SI orchestrator reference (called after boot). */
     setSIOrchestrator(orch) { this.#siOrchestrator = orch; }
+
+    /** Set TopicManager reference (called after boot). */
+    setTopicManager(mgr) { this.#topicManager = mgr; }
 
     #updateListener = null;
 
@@ -118,6 +122,19 @@ export class Router {
         // Group mention gate: in groups (non-forum), only respond if mentioned/replied/command
         if (this.#shouldIgnoreInGroup(msg, ref)) {
             return;
+        }
+
+        // DM topic lobby gate: when topics are enabled, root messages (no threadId)
+        // get redirected — only commands pass through
+        if (this.#isDmLobbyMessage(msg, ref)) {
+            const text = msg.text || msg.caption || "";
+            // Allow commands in the lobby
+            if (text.startsWith("/")) {
+                // Fall through to normal processing
+            } else {
+                await this.#handleLobbyMessage(ref);
+                return;
+            }
         }
 
         // Extract text (with file attachment handling)
@@ -271,6 +288,39 @@ export class Router {
         return true;
     }
 
+    // ── DM Topic Lobby ───────────────────────────────────────
+
+    /** Check if this is a root/lobby message in a DM with topics enabled. */
+    #isDmLobbyMessage(msg, ref) {
+        if (ref.chatType !== "private") return false;
+        if (!this.#config.dmTopicsEnabled) return false;
+        if (ref.threadId) return false; // in a topic — not lobby
+        if (msg.is_topic_message) return false; // explicitly in a topic
+        return true;
+    }
+
+    /** Handle a message sent to the DM lobby (outside any topic). */
+    async #handleLobbyMessage(ref) {
+        const topics = this.#topicManager?.getTopics(ref.chatId);
+        if (topics && topics.length > 0) {
+            const topicList = topics.map(t => `  • ${t.name}`).join("\n");
+            await this.#reply(ref,
+                `💡 <b>Please use a topic thread</b>\n\n` +
+                `This chat uses topics for organized conversations. ` +
+                `Tap a topic above to get started!\n\n` +
+                `<b>Available topics:</b>\n${topicList}\n\n` +
+                `<i>Commands (/help, /status, etc.) still work here.</i>`,
+                "HTML",
+            );
+        } else {
+            await this.#reply(ref,
+                `💡 <b>Topics are enabled</b>\n\n` +
+                `Tap a topic above to start a conversation, or use /help for commands.`,
+                "HTML",
+            );
+        }
+    }
+
     // ── Scope Resolution ─────────────────────────────────────
 
     #resolveScopeKey(ref) {
@@ -281,6 +331,10 @@ export class Router {
         // Group: scope per user within group
         if (ref.chatType === "group" || ref.chatType === "supergroup") {
             return `group:${ref.chatId}:${ref.userId}`;
+        }
+        // DM with topic → scope per topic thread
+        if (ref.chatType === "private" && ref.threadId) {
+            return `dm:${ref.userId}:${ref.threadId}`;
         }
         // DM: scope per user
         return `dm:${ref.userId}`;
@@ -567,6 +621,7 @@ export class Router {
     #scopePrefix(ref) {
         if (ref.isForum && ref.threadId) return `forum:${ref.chatId}:${ref.threadId}`;
         if (ref.chatType === "group" || ref.chatType === "supergroup") return `group:${ref.chatId}:${ref.userId}`;
+        if (ref.chatType === "private" && ref.threadId) return `dm:${ref.userId}:${ref.threadId}`;
         return `dm:${ref.userId}`;
     }
 
@@ -598,9 +653,17 @@ export class Router {
 
         let scopeKey, action, payload;
         if (parts[0] === "dm") {
-            scopeKey = `dm:${parts[1]}`;
-            action = parts[2];
-            payload = parts.slice(3).join(":");
+            // dm:{userId}:action:payload OR dm:{userId}:{threadId}:action:payload
+            // Detect: if parts[2] is numeric, it's a threadId (DM topic)
+            if (parts.length >= 4 && /^\d+$/.test(parts[2])) {
+                scopeKey = `dm:${parts[1]}:${parts[2]}`;
+                action = parts[3];
+                payload = parts.slice(4).join(":");
+            } else {
+                scopeKey = `dm:${parts[1]}`;
+                action = parts[2];
+                payload = parts.slice(3).join(":");
+            }
         } else if (parts[0] === "group") {
             scopeKey = `group:${parts[1]}:${parts[2]}`;
             action = parts[3];
@@ -687,6 +750,11 @@ export class Router {
         }
         if (scopeKey.startsWith("group:")) {
             return { chatId, userId, chatType: "supergroup", isForum: false, threadId: null };
+        }
+        // dm:{userId}:{threadId} → DM topic
+        const dmParts = scopeKey.split(":");
+        if (dmParts.length >= 3 && dmParts[0] === "dm") {
+            return { chatId, userId, chatType: "private", isForum: false, threadId: parseInt(dmParts[2]) || null };
         }
         return { chatId, userId, chatType: "private", isForum: false, threadId: null };
     }

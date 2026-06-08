@@ -121,6 +121,17 @@ export async function loadConfig() {
         dispatcherModel: options.dispatcher_model || "fast",
         guestModel: options.guest_model || "fast",
         siDefaultModel: options.si_default_model || "standard",
+
+        // DM Topics (Phase 1-2)
+        dmTopicsEnabled: options.dm_topics_enabled === true,
+        dmTopics: Array.isArray(options.dm_topics) && options.dm_topics.length > 0
+            ? options.dm_topics
+            : ["🏠 Home Control", "🔍 Research", "🚨 Alerts", "📋 Briefings"],
+
+        // Streaming transport (Phase 3): auto | draft | edit | off
+        streamingTransport: ["auto", "draft", "edit", "off"].includes(options.streaming_transport)
+            ? options.streaming_transport
+            : "auto",
     };
 
     // Try to load MCP config (copilot uses mcp-config.json)

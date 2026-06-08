@@ -103,6 +103,7 @@ export class ConversationManager {
 
         const conv = new Conversation({
             scopeKey: siKey, poolInstance: inst, telegram: this.#telegram, ref,
+            config: this.#config,
         });
         this.#setupConvListeners(conv);
         this.#conversations.set(siKey, conv);
@@ -146,6 +147,7 @@ export class ConversationManager {
 
         const conv = new Conversation({
             scopeKey, poolInstance: inst, telegram: this.#telegram, ref,
+            config: this.#config,
         });
         this.#setupConvListeners(conv);
         this.#conversations.set(scopeKey, conv);

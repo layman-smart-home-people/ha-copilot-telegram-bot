@@ -13,6 +13,7 @@ import { Router } from "./gateway/router.mjs";
 import { Permissions } from "./gateway/permissions.mjs";
 import { PromptEnricher } from "./gateway/prompt-enricher.mjs";
 import { SIBridge } from "./gateway/si-bridge.mjs";
+import { TopicManager } from "./core/topic-manager.mjs";
 import { StandingInstructionManager } from "./ha/standing-instructions.mjs";
 import { StandingInstructionOrchestrator } from "./ha/orchestrator.mjs";
 import { HAEventListener } from "./ha/events.mjs";
@@ -89,6 +90,9 @@ async function main() {
     try {
         const me = await telegram.getMe();
         log.info(`Telegram: @${me.username} (${me.first_name})`);
+        if (me.has_topics_enabled) {
+            log.info("Bot has Threaded Mode enabled (BotFather)");
+        }
     } catch (err) {
         log.error(`Invalid bot token: ${err.message}`);
         process.exit(1);
@@ -146,6 +150,25 @@ async function main() {
     _router = router;
     router.start();
 
+    // --- DM Topics ---
+    let topicManager = null;
+    if (config.dmTopicsEnabled) {
+        topicManager = new TopicManager({ telegram, config });
+        router.setTopicManager(topicManager);
+
+        // Create topics for each allowed private chat
+        const topicChatId = config.allowedChatIds?.[0];
+        if (topicChatId) {
+            try {
+                await topicManager.ensureTopics(Number(topicChatId));
+                const topics = topicManager.getTopics(topicChatId);
+                log.info(`DM topics ready: ${topics?.length || 0} topics for chat ${topicChatId}`);
+            } catch (err) {
+                log.warn(`DM topic setup failed (non-fatal): ${err.message}`);
+            }
+        }
+    }
+
     // --- Start Polling ---
     telegram.startPolling();
     log.info("✅ Ezra v7 online — polling for messages");
@@ -156,6 +179,7 @@ async function main() {
         const siManager = new StandingInstructionManager();
         const haEventListener = new HAEventListener();
         const siBridge = new SIBridge({ conversationManager: convMgr, telegram, config });
+        if (topicManager) siBridge.setTopicManager(topicManager);
 
         const siOrchestrator = new StandingInstructionOrchestrator({
             eventListener: haEventListener,

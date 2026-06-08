@@ -2,7 +2,7 @@ name: Copilot Telegram Bot
 description: Always-on Telegram bot connected to GitHub Copilot CLI via ACP
 slug: copilot-telegram-bot
 url: https://github.com/layman-smart-home-people/ha-copilot-telegram-bot
-version: 1.2.0
+version: 1.3.0
 init: false
 arch:
   - aarch64
@@ -53,6 +53,13 @@ options:
   default_model: standard
   guest_model: fast
   si_default_model: standard
+  dm_topics_enabled: false
+  dm_topics:
+    - "🏠 Home Control"
+    - "🔍 Research"
+    - "🚨 Alerts"
+    - "📋 Briefings"
+  streaming_transport: auto
 schema:
   bot_token: password
   allowed_chat_ids:
@@ -80,3 +87,7 @@ schema:
   default_model: "list(fast|standard|reasoning)?"
   guest_model: "list(fast|standard|reasoning)?"
   si_default_model: "list(fast|standard|reasoning)?"
+  dm_topics_enabled: bool?
+  dm_topics:
+    - str
+  streaming_transport: "list(auto|draft|edit|off)?"

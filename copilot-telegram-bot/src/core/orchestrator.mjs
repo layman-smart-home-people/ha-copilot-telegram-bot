@@ -2072,7 +2072,9 @@ export class Orchestrator {
         // Create composer for progressive message display
         if (ref && scope) {
             log.debug(`Creating ResponseComposer for chat=${ref.chatId}`);
-            scope.composer = new ResponseComposer(this.#telegram);
+            scope.composer = new ResponseComposer(this.#telegram, {
+                streamingTransport: this.#config.streamingTransport || "auto",
+            });
             try {
                 await scope.composer.start(ref);
                 log.debug(`Composer started, messageId=${scope.composer.messageId}`);

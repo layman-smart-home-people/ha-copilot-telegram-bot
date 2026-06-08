@@ -24,8 +24,10 @@
  * @returns {ConversationRef}
  */
 export function makeRef(chatId, threadId = null, sessionId = null, chatType = null) {
-    // Private chats never support message_thread_id — strip to prevent 400 errors
-    return { chatId, threadId: chatType === "private" ? null : threadId, sessionId, chatType };
+    // Always preserve threadId when explicitly provided.
+    // Pre-topics code stripped threadId for private chats as a safety measure,
+    // but now DM topics need it. Callers that don't want threads simply pass null.
+    return { chatId, threadId: threadId || null, sessionId, chatType };
 }
 
 /**

@@ -42,14 +42,30 @@ export class ResponseComposer {
     #draftFailures = 0;     // consecutive draft API failures; fallback after 3 (C6)
     #draftThrottleMs = 750; // adaptive throttle for draft updates (C4)
     #draftSending = false;  // serializes draft sends to prevent concurrent failure increments
+    #transportConfig;       // 'auto' | 'draft' | 'edit' | 'off'
 
-    constructor(telegram) {
+    constructor(telegram, { streamingTransport = "auto" } = {}) {
         this.#telegram = telegram;
+        this.#transportConfig = streamingTransport;
     }
 
     get active() { return this.#messageId !== null && !this.#finalized; }
-    get messageId() { return this.#draftMode && this.#messageId === -1 ? null : this.#messageId; }
+    get messageId() { return (this.#draftMode && this.#messageId === -1) || this.#messageId === -2 ? null : this.#messageId; }
     get trailingHtml() { return this.#trailingHtml; }
+
+    /** Determine whether to use draft mode for this ref. */
+    #shouldUseDraft(ref) {
+        switch (this.#transportConfig) {
+        case "off":
+        case "edit":
+            return false;
+        case "draft":
+            return ref.chatType === "private";
+        case "auto":
+        default:
+            return ref.chatType === "private" && !ref.threadId;
+        }
+    }
 
     /**
      * Send initial placeholder message.
@@ -76,8 +92,16 @@ export class ResponseComposer {
         this.#draftThrottleMs = 750;
         this.#draftSending = false;
 
-        // Try draft mode for private chats (ephemeral typing bubble)
-        if (ref.chatType === "private") {
+        // Transport selection based on config
+        if (this.#transportConfig === "off") {
+            // No progress updates — only final message via finalize()
+            this.#messageId = -2; // sentinel: active but no real message
+            return;
+        }
+
+        const useDraft = this.#shouldUseDraft(ref);
+
+        if (useDraft) {
             try {
                 this.#draftId = 1;
                 await this.#telegram.call("sendMessageDraft", {
@@ -277,6 +301,11 @@ export class ResponseComposer {
             return this.#finalizeDraft();
         }
 
+        // "off" mode (sentinel -2): no placeholder was sent, send final as fresh message
+        if (this.#messageId === -2) {
+            return this.#finalizeDraft(); // same logic: send as fresh sendMessage
+        }
+
         if (!this.#messageId) {
             return fullText ? chunkMessage(fullText) : [];
         }
@@ -433,6 +462,7 @@ export class ResponseComposer {
 
     #doEdit() {
         if (this.#finalized || !this.#messageId) return;
+        if (this.#messageId === -2) return; // "off" mode — no progress updates
         if (this.#draftMode) return this.#doDraftEdit();
 
         const planHtml = this.#buildPlanHtml();

@@ -2,6 +2,22 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.0] — 2026-06-08
+
+### Added
+
+- **DM Topic Core** — Native topic threads in private chats. When enabled (`dm_topics_enabled: true`), bot creates operator-curated topics (🏠 Home Control, 🔍 Research, 🚨 Alerts, 📋 Briefings) and routes each to an isolated conversation scope (`dm:{userId}:{threadId}`).
+- **TopicManager** — New `topic-manager.mjs` manages topic lifecycle: creates on startup, persists to `/data/dm-topics.json`, resolves names↔threadIds, prevents auto-rename on operator topics.
+- **Root lobby handler** — When topics are enabled, non-command messages in the DM root get redirected to topics with guidance. Commands (/help, /status, etc.) still work in the lobby.
+- **SI thread routing** — Standing instruction results auto-route to matching DM topics (e.g., alerts → 🚨 Alerts, daily briefings → 📋 Briefings). Falls back to Briefings topic if no match.
+- **Streaming transport config** — New `streaming_transport` option: `auto` (default, draft for DMs, edit for groups/topics), `draft` (force drafts), `edit` (always editMessageText), `off` (final-only, no progress). Per-response fallback on draft failure.
+
+### Changed
+
+- **makeRef() simplified** — No longer strips `threadId` for private chats. Callers that don't want threads pass null. Auto-recovery in client.mjs handles stale thread IDs.
+- **Scope resolution** — Both `ScopeManager.resolveKey()` and `Router.#resolveScopeKey()` now produce `dm:{userId}:{threadId}` scopes for topic-scoped private chats. Callback parsing updated to handle the new 3-part DM scope keys.
+- **ScopeManager.deleteByUser()** — Now deletes all DM scopes for a user including topic-scoped ones.
+
 ## [1.2.0] — 2026-06-08
 
 ### Fixed

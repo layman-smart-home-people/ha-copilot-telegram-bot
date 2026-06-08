@@ -62,6 +62,7 @@ export class ResponseStreamer {
     #messageId = null;
     #draftMode = false;
     #draftId = null;
+    #transportConfig;  // 'auto' | 'draft' | 'edit' | 'off'
 
     // Content accumulation
     #textBuffer = "";
@@ -82,8 +83,9 @@ export class ResponseStreamer {
     #draftFailures = 0;
     #draftSending = false;
 
-    constructor(telegram) {
+    constructor(telegram, { streamingTransport = "auto" } = {}) {
         this.#telegram = telegram;
+        this.#transportConfig = streamingTransport;
     }
 
     get active() { return this.#messageId !== null && !this.#finalized; }
@@ -111,12 +113,22 @@ export class ResponseStreamer {
         this.#messageId = null;
         this.#draftId = null;
 
-        // Use draft mode for private chats (drafts don't support threads)
-        if (ref.chatType === "private" && !ref.threadId) {
+        // Transport selection based on config
+        // 'auto': draft for private DMs (no thread), edit for everything else
+        // 'draft': force draft (only works in private DMs, fallback for others)
+        // 'edit': always use editMessageText
+        // 'off': only show final message (no progress)
+        const useDraft = this.#shouldUseDraft(ref);
+
+        if (useDraft) {
             this.#draftMode = true;
             this.#draftId = `stream-${Date.now()}`;
             this.#messageId = -1; // sentinel for draft mode
             await this.#sendDraft("🤔 Thinking...");
+        } else if (this.#transportConfig === "off") {
+            // No progress updates — send final as fresh message
+            this.#draftMode = false;
+            this.#messageId = -2; // sentinel: active but no progress
         } else {
             this.#draftMode = false;
             const params = {
@@ -190,8 +202,8 @@ export class ResponseStreamer {
         const html = this.#renderFinal(replyMarkup);
         await this.#commitFinal(html, replyMarkup);
 
-        // React with ✅
-        if (this.#ref && this.#messageId && this.#messageId !== -1) {
+        // React with ✅ (only on real messages, not sentinels)
+        if (this.#ref && this.#messageId && this.#messageId > 0) {
             this.#telegram.setMessageReaction(this.#ref.chatId, this.#messageId, "✅").catch(() => {});
         }
     }
@@ -230,6 +242,26 @@ export class ResponseStreamer {
     }
 
     // ── Private: Rendering ───────────────────────────────────
+
+    /**
+     * Determine whether to use draft mode (sendMessageDraft) for this ref.
+     * Draft mode only works in private DMs without topic threads.
+     */
+    #shouldUseDraft(ref) {
+        switch (this.#transportConfig) {
+        case "off":
+        case "edit":
+            return false;
+        case "draft":
+            // Force draft — but only if technically supported (private chat)
+            return ref.chatType === "private";
+        case "auto":
+        default:
+            // Auto: draft for private DMs without topic threads
+            // DM topics likely need edit mode (sendMessageDraft may not work in threads)
+            return ref.chatType === "private" && !ref.threadId;
+        }
+    }
 
     /** Periodically trigger re-render to keep elapsed timer fresh. */
     #scheduleElapsedUpdate() {
@@ -271,6 +303,7 @@ export class ResponseStreamer {
 
     async #renderProgress() {
         if (this.#finalized) return;
+        if (this.#messageId === -2) return; // "off" mode — no progress updates
 
         const html = this.#buildProgressHtml();
         if (html === this.#lastRendered) return;
@@ -465,7 +498,7 @@ export class ResponseStreamer {
                 const result = await this.#telegram.call("sendMessage", fallbackParams);
                 this.#messageId = result?.result?.message_id ?? null;
             }
-        } else if (this.#messageId) {
+        } else if (this.#messageId && this.#messageId !== -2) {
             // Edit existing message to final content
             try {
                 const params = { chat_id: this.#ref.chatId, message_id: this.#messageId,
@@ -480,6 +513,24 @@ export class ResponseStreamer {
                         this.#ref.chatId, this.#messageId, plain
                     ).catch(() => {});
                 }
+            }
+        } else {
+            // "off" mode or no messageId — send final as fresh message
+            try {
+                const params = { chat_id: this.#ref.chatId, text: html, parse_mode: "HTML",
+                    link_preview_options: { is_disabled: true } };
+                if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+                if (replyMarkup) params.reply_markup = replyMarkup;
+                const result = await this.#telegram.call("sendMessage", params);
+                this.#messageId = result?.result?.message_id ?? null;
+            } catch (err) {
+                log.warn(`Fresh send failed: ${err.message}`);
+                const plain = stripHtmlKeepStructure(html);
+                const params = { chat_id: this.#ref.chatId, text: plain,
+                    link_preview_options: { is_disabled: true } };
+                if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+                const result = await this.#telegram.call("sendMessage", params).catch(() => null);
+                this.#messageId = result?.result?.message_id ?? null;
             }
         }
     }

@@ -35,6 +35,10 @@ export class ScopeManager {
         if (ref.chatType === "group" || ref.chatType === "supergroup") {
             return `group:${ref.chatId}`;
         }
+        // DM with topic thread → per-topic scope
+        if (ref.threadId && ref.chatType === "private") {
+            return `dm:${ref.userId}:${ref.threadId}`;
+        }
         return `dm:${ref.userId}`;
     }
 
@@ -116,15 +120,25 @@ export class ScopeManager {
     }
 
     /**
-     * Delete DM scope for a user.
+     * Delete DM scope for a user (all DM scopes including topic-scoped).
      * @param {string|number} userId
      */
     deleteByUser(userId) {
-        const removed = this.delete(`dm:${userId}`);
-        if (removed) {
-            log.info(`Deleted DM scope for user ${userId}`);
+        const prefix = `dm:${userId}`;
+        let removed = 0;
+        for (const [key, scope] of this.#scopes) {
+            if (key === prefix || key.startsWith(`${prefix}:`)) {
+                scope.reset();
+                this.#scopes.delete(key);
+                if (this.#activeKey === key) this.#activeKey = null;
+                removed++;
+            }
         }
-        return removed;
+        if (removed) {
+            this.#markDirty();
+            log.info(`Deleted ${removed} DM scope(s) for user ${userId}`);
+        }
+        return removed > 0;
     }
 
     setForumChat(chatId) {

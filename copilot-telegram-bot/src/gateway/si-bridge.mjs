@@ -12,6 +12,7 @@ export class SIBridge {
     #conversationManager;
     #telegram;
     #config;
+    #topicManager = null;
     #activePrompts = new Set(); // track in-flight SI prompts
 
     constructor({ conversationManager, telegram, config }) {
@@ -19,6 +20,9 @@ export class SIBridge {
         this.#telegram = telegram;
         this.#config = config;
     }
+
+    /** Set TopicManager for thread-targeted delivery. */
+    setTopicManager(mgr) { this.#topicManager = mgr; }
 
     /** Whether any SI prompt is currently active. */
     get promptActive() {
@@ -76,19 +80,28 @@ export class SIBridge {
         const model = this.#config.siDefaultModel || "standard";
         const mcpProfile = "owner"; // SI always gets full access
 
+        // Resolve target thread for DM topic routing
+        let threadId = null;
+        if (this.#config.dmTopicsEnabled && this.#topicManager && chatId) {
+            // Route to matching topic if description hints at one, else default to Briefings
+            threadId = this.#topicManager.resolveThreadId(chatId, description)
+                    || this.#topicManager.resolveThreadId(chatId, "Briefings")
+                    || null;
+        }
+
         // Build a minimal ref for the conversation
         const ref = {
             chatId: chatId || this.#config.allowedChatIds?.[0],
             userId: 0, // system-initiated
             chatType: "private",
-            threadId: null,
+            threadId,
             isForum: false,
             messageId: null,
             username: "system",
             firstName: "Standing Instruction",
         };
 
-        log.info(`Routing SI: "${description}" → scope ${scopeKey} [${model}]`);
+        log.info(`Routing SI: "${description}" → scope ${scopeKey} [${model}]${threadId ? ` thread=${threadId}` : ""}`);
 
         await this.#conversationManager.route(scopeKey, prompt, ref, {
             messageId: null,
