@@ -99,10 +99,15 @@ export class FileHandler {
             const fileInfo = await this.#telegram.getFile(photo.file_id);
             const buffer = await this.#telegram.downloadFile(fileInfo.file_path);
 
-            // Save to temp path for ACP to reference
+            // Save to temp path for ACP to reference (cleaned up after 10 min)
             const tmpPath = `/tmp/tg_photo_${Date.now()}.jpg`;
-            const { writeFileSync } = await import("node:fs");
+            const { writeFileSync, unlinkSync } = await import("node:fs");
             writeFileSync(tmpPath, buffer);
+
+            // Schedule cleanup after 10 minutes
+            setTimeout(() => {
+                try { unlinkSync(tmpPath); } catch {}
+            }, 10 * 60 * 1000);
 
             const caption = msg.caption || "";
             const text = caption

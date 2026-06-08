@@ -657,14 +657,22 @@ export class Router {
         if (action.startsWith("view:")) {
             const fileName = action.split(":")[1];
             const agentDir = this.#config.agentDir || "/config/.agent";
-            const path = `${agentDir}/${fileName}`;
+
+            // Path traversal protection
+            const { resolve } = await import("node:path");
+            const resolved = resolve(agentDir, fileName);
+            if (!resolved.startsWith(resolve(agentDir) + "/")) {
+                await this.#telegram.sendMessage(chatId, "⛔ Invalid file path.");
+                return;
+            }
+
             try {
                 const { readFileSync, existsSync } = await import("node:fs");
-                if (!existsSync(path)) {
+                if (!existsSync(resolved)) {
                     await this.#telegram.sendMessage(chatId, `📄 ${fileName} not found.`);
                     return;
                 }
-                let content = readFileSync(path, "utf-8");
+                let content = readFileSync(resolved, "utf-8");
                 if (content.length > 3800) content = content.slice(0, 3800) + "\n\n... (truncated)";
                 await this.#telegram.sendMessage(chatId, `<b>📄 ${fileName}</b>\n\n<pre>${escapeHtml(content)}</pre>`, "HTML");
             } catch (err) {

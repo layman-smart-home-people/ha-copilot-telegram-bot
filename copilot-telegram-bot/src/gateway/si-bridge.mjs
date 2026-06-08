@@ -32,7 +32,8 @@ export class SIBridge {
     injectBackgroundPrompt(prompt, chatId, opts = {}) {
         const description = opts.description || "SI";
         const silent = opts.silent || false;
-        const scopeKey = `si:${Date.now()}`;
+        // Use a fixed scope key per description hash to allow reuse/GC
+        const scopeKey = `si:${this.#hashScope(description)}`;
 
         this.#activePrompts.add(scopeKey);
 
@@ -46,7 +47,17 @@ export class SIBridge {
             })
             .finally(() => {
                 this.#activePrompts.delete(scopeKey);
+                // Destroy the SI conversation after completion to prevent accumulation
+                this.#conversationManager.destroy(scopeKey).catch(() => {});
             });
+    }
+
+    #hashScope(str) {
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+            hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+        }
+        return Math.abs(hash).toString(36);
     }
 
     /**

@@ -796,7 +796,13 @@ export class WebUIServer {
         }
 
         try {
-            await conversationManager.route(WEBUI_SCOPE_KEY, text, ref, body?.opts || {});
+            // Force safe defaults — never trust client-supplied model/mcpProfile
+            const opts = {
+                model: this.#ctx.config?.defaultModel || "standard",
+                mcpProfile: "owner",
+                messageId: null,
+            };
+            await conversationManager.route(WEBUI_SCOPE_KEY, text, ref, opts);
             this.#json(res, 200, { sent: true, conversation: this.#getWebuiConversationStatus() });
         } catch (err) {
             this.#json(res, 500, { error: `Chat error: ${err.message}` });

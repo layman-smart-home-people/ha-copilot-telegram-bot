@@ -2,6 +2,35 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.1.0] — 2026-06-08
+
+### Added
+
+- **Standing Instruction Bridge** — SI wake_agent now routes through the ACP Pool via ConversationManager
+- **Group Mention Filter** — Bot only responds when @mentioned, replied-to, or addressed via command in groups
+- **File Attachments** — Text documents embedded in prompts, photos downloaded for ACP, unsupported media gracefully rejected
+- **Inline Keyboard Framework** — Scope-aware menus with edit-in-place and 5-minute auto-expiry
+- **Full Command UX** — All 7 commands now have proper inline keyboards:
+  - `/help` — quick action grid with buttons
+  - `/status` — pool/conversation/metrics with refresh + action buttons
+  - `/settings` — model tier picker (fast/standard/reasoning)
+  - `/standing` — SI list with pause/resume controls
+  - `/memory` — agent file viewer with content display
+- **WebUI v7 Adaptation** — Dashboard shows pool instances, conversations, and metrics
+- **Graceful Shutdown** — Active conversations notified on restart
+
+### Fixed (from critique)
+
+- Path traversal protection on memory file viewer
+- WebUI chat API no longer accepts user-supplied model/mcpProfile
+- Photo temp files cleaned up after 10 minutes
+- SI conversations destroyed after completion (prevents memory leak)
+
+### Changed
+
+- WebUI reduced to 6 tabs (removed Users/RBAC — deferred)
+- WebUI backend API returns v7 pool/conversation data structure
+
 ## [1.0.0] — 2026-06-08
 
 ### 🚀 Major — Ezra v7: Multi-Session ACP Pool Architecture

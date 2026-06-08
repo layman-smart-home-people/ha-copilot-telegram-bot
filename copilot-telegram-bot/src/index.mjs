@@ -199,6 +199,17 @@ async function shutdown(signal) {
     log.info(`${signal} received — shutting down`);
     const timer = setTimeout(() => process.exit(0), 8000);
 
+    // Notify active conversations
+    if (_convMgr && _telegram) {
+        const active = _convMgr.list().filter(c => c.state === "prompting");
+        for (const c of active) {
+            const chatId = c.scopeKey.split(":")[1];
+            if (chatId) {
+                _telegram.sendMessage(chatId, "⚠️ Restarting — your conversation will resume shortly.").catch(() => {});
+            }
+        }
+    }
+
     try {
         if (_telegram) _telegram.stopPolling();
         if (_router) _router.stop();
