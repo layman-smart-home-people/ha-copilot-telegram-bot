@@ -232,14 +232,7 @@ async function main() {
         webui.pushLog(line);
     };
 
-    // Notify owner
-    if (ownerChatId) {
-        const poolStatus = pool.status();
-        telegram.sendMessage(
-            ownerChatId,
-            `✅ Bot v${config.version} online\n🤖 Pool: ${poolStatus.idle} ready (max ${poolStatus.maxSize})`,
-        ).catch(() => {});
-    }
+    // Startup notification removed — only notify on mid-session shutdown
 }
 
 // --- Shutdown ---
