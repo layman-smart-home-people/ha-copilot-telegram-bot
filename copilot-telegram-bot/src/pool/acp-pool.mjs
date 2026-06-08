@@ -270,9 +270,35 @@ export class ACPPool extends EventEmitter {
         writeFileSync(join(home, "settings.json"), JSON.stringify(modelConfig));
 
         // 4. Build MCP server config for this profile
+        // Internal sidecar MCP servers (always included for owner/member profiles)
+        const internalMcpServers = mcpProfile !== "guest" ? {
+            "tg-ux": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/mcp-server.mjs"],
+            },
+            "si-tools": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
+            },
+            "rbac-tools": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/rbac-mcp-server.mjs"],
+            },
+            "pkm-tools": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/pkm/pkm-mcp-server.mjs"],
+            },
+        } : {};
+        // Merge: internal sidecar servers + external profile servers (e.g. ha-mcp)
         const profileConfig = this.#mcpProfiles[mcpProfile] || this.#mcpProfiles.owner || {};
-        const mcpServers = (profileConfig.mcpServers && Object.keys(profileConfig.mcpServers).length > 0)
-            ? profileConfig.mcpServers : null;
+        const mcpServers = {
+            ...internalMcpServers,
+            ...(profileConfig.mcpServers || {}),
+        };
 
         // 5. Create ACP client
         const acp = new ACPClient({

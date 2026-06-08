@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.5] — 2026-06-08
+
+### Fixed
+
+- **Internal MCP tools missing when external servers configured** — Pool passed external MCP servers (e.g. ha-mcp) as `stdioMcpServers`, which caused `ACPClient` to skip internal sidecar servers (tg-ux, si-tools, rbac-tools, pkm-tools). Now merges internal defaults with external profile servers so all tools are available. Guest profile still gets no MCP tools.
+
 ## [1.3.4] — 2026-06-08
 
 ### Fixed
