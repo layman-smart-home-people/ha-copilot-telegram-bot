@@ -8,7 +8,7 @@ import { createConnection } from "net";
 const SOCKET_PATH = process.env.TG_UX_SOCK || "/run/tg-ux.sock";
 const SCOPE_KEY = process.env.TG_UX_SCOPE_KEY || null;
 
-function log(msg) { process.stderr.write(`[tg-mcp] ${msg}\n`); }
+function log(msg) { process.stderr.write(`[telegram-mcp] ${msg}\n`); }
 
 const TOOL = {
     name: "ask_user",
@@ -83,34 +83,6 @@ const NOTIFY_TOOL = {
             message: { type: "string", description: "The notification message to send" },
         },
         required: ["message"],
-    },
-};
-
-const SELF_TEST_TOOL = {
-    name: "self_test",
-    description:
-        "Run self-tests to verify Ezra v6 requirements. " +
-        "Provide exactly one of: {id} for one requirement (e.g. 'SI-1'), " +
-        "{phase} for all requirements in a phase (e.g. 'A'), " +
-        "or {all: true} for full regression. " +
-        "If multiple params given, precedence is: all > phase > id. " +
-        "Returns pass/fail/skip status with details for each requirement tested.",
-    inputSchema: {
-        type: "object",
-        properties: {
-            id: {
-                type: "string",
-                description: "Single requirement ID to test (e.g. 'SI-1', 'UX-2')",
-            },
-            phase: {
-                type: "string",
-                description: "Phase letter to test all requirements (e.g. 'A', 'B')",
-            },
-            all: {
-                type: "boolean",
-                description: "Set true to run all registered tests",
-            },
-        },
     },
 };
 
@@ -192,13 +164,13 @@ function handleInitialize(id, params) {
     if (params?.protocolVersion) clientProtocolVersion = params.protocolVersion;
     send(id, {
         protocolVersion: clientProtocolVersion,
-        serverInfo: { name: "tg-ux", version: "1.0.0" },
+        serverInfo: { name: "telegram", version: "2.0.0" },
         capabilities: { tools: {} },
     });
 }
 
 function handleToolsList(id) {
-    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL, SELF_TEST_TOOL, TELEGRAM_CALL_TOOL] });
+    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL, TELEGRAM_CALL_TOOL] });
 }
 
 async function handleToolsCall(id, params) {
@@ -214,8 +186,6 @@ async function handleToolsCall(id, params) {
         return handleBackgroundTask(id, args);
     } else if (name === "notify_user") {
         return handleNotifyUser(id, args);
-    } else if (name === "self_test") {
-        return handleSelfTest(id, args);
     } else if (name === "telegram_call") {
         return handleTelegramCall(id, args);
     } else {
@@ -383,44 +353,6 @@ async function handleTelegramCall(id, args) {
     }
 }
 
-async function handleSelfTest(id, args) {
-    if (!args || (typeof args !== "object") || (!args.id && !args.phase && !args.all)) {
-        send(id, {
-            content: [{ type: "text", text: "Error: provide {id}, {phase}, or {all: true}" }],
-            isError: true,
-        });
-        return;
-    }
-    const mode = args.all ? "all" : args.phase ? `phase:${args.phase}` : `id:${args.id}`;
-    log(`self_test called: ${mode}`);
-    pendingCalls++;
-    try {
-        const result = await callBot({
-            method: "self_test",
-            params: { id: args.id, phase: args.phase, all: args.all },
-            scopeKey: SCOPE_KEY,
-        });
-        if (result.error) {
-            send(id, {
-                content: [{ type: "text", text: `Error: ${result.error}` }],
-                isError: true,
-            });
-        } else {
-            send(id, {
-                content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-            });
-        }
-    } catch (err) {
-        send(id, {
-            content: [{ type: "text", text: `Error: ${err.message}` }],
-            isError: true,
-        });
-    } finally {
-        pendingCalls--;
-        checkExit();
-    }
-}
-
 // --- Stdio NDJSON framing ---
 
 function handleMessage(msg) {
@@ -456,7 +388,7 @@ process.stdin.setEncoding("utf-8");
 process.stdin.on("data", (chunk) => {
     lineBuf += chunk;
     if (lineBuf.length > MAX_BUF) {
-        process.stderr.write("tg-ux: line buffer exceeded 1MB, resetting\n");
+        process.stderr.write("telegram-mcp: line buffer exceeded 1MB, resetting\n");
         lineBuf = "";
         return;
     }

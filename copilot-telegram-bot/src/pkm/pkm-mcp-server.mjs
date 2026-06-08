@@ -845,7 +845,7 @@ function handleInitialize(id, params) {
     if (params?.protocolVersion) clientProtocolVersion = params.protocolVersion;
     send(id, {
         protocolVersion: clientProtocolVersion,
-        serverInfo: { name: "pkm-tools", version: "2.0.0" },
+        serverInfo: { name: "memory", version: "3.0.0" },
         capabilities: { tools: {} },
     });
 }

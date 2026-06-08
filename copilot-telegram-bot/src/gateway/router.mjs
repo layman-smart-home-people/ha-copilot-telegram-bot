@@ -868,7 +868,7 @@ export class Router {
             // Reset files to defaults
             const defaults = {
                 "MEMORY.md": "# Agent Memory\n\nSeed facts always loaded into context. Keep minimal — use PKM for long-term storage.\n\n## Key Entities\n<!-- Add frequently used entity IDs here -->\n\n## Bot Versions\n<!-- Track key version milestones here -->\n",
-                "SKILLS.md": "# Agent Skills Reference\n\n## MCP Tool Index\nUse `tool_search_tool_regex` to discover tools by pattern. Schemas are self-documenting.\n- **ha-mcp** (82+ tools) — ALL HA ops\n- **tg-ux** — `ask_user`, `notify_user`, `background_task`, `telegram_call`\n- **si-tools** — `si_create/list/get/update/delete/toggle`\n- **pkm-tools** — `pkm_memory`, `pkm_search`, `pkm_navigate`, `pkm_collection`, `pkm_manage`\n- **session-history** — cross-session history lookup\n\n## Sub-Agents\n**NEVER `task(mode: \"background\")`** — use `mode: \"sync\"` always.\n",
+                "SKILLS.md": "# Agent Skills Reference\n\n## MCP Tool Index\nUse `tool_search_tool_regex` to discover tools by pattern. Schemas are self-documenting.\n- **ha-mcp** (82+ tools) — ALL Home Assistant ops\n- **telegram** — `ask_user`, `notify_user`, `background_task`, `telegram_call`\n- **standing-instructions** — `si_create/list/get/update/delete/toggle`\n- **memory** — `pkm_memory`, `pkm_search`, `pkm_navigate`, `pkm_collection`, `pkm_manage`\n- **access-control** — user roles & permissions\n- **session-history** — cross-session history lookup\n\n## Sub-Agents\n**NEVER `task(mode: \"background\")`** — use `mode: \"sync\"` always.\n",
                 "TASKS.md": "# Active Tasks\n\nTasks the agent is working on or needs to resume.\n\n## In Progress\n\n## Pending\n\n## Recently Completed\n",
             };
 

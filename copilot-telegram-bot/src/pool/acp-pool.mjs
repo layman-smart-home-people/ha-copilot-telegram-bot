@@ -282,22 +282,22 @@ export class ACPPool extends EventEmitter {
         // 4. Build MCP server config for this profile
         // Internal sidecar MCP servers (always included for owner/member profiles)
         const internalMcpServers = mcpProfile !== "guest" ? {
-            "tg-ux": {
+            "telegram": {
                 type: "stdio",
                 command: "node",
                 args: ["/app/src/ai/copilot/mcp-server.mjs"],
             },
-            "si-tools": {
+            "standing-instructions": {
                 type: "stdio",
                 command: "node",
                 args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
             },
-            "rbac-tools": {
+            "access-control": {
                 type: "stdio",
                 command: "node",
                 args: ["/app/src/ai/copilot/rbac-mcp-server.mjs"],
             },
-            "pkm-tools": {
+            "memory": {
                 type: "stdio",
                 command: "node",
                 args: ["/app/src/pkm/pkm-mcp-server.mjs"],

@@ -86,28 +86,28 @@ export class ACPClient extends EventEmitter {
             args.push("--allow-all");
         }
         // Disable broken built-in ask_user (no TUI in headless mode).
-        // Our tg-ux MCP server provides a working replacement.
+        // Our telegram MCP server provides a working replacement.
         args.push("--no-ask-user");
         // Register MCP sidecar servers for agent tools.
-        // Use custom config if provided (e.g. overflow uses si-tools only),
-        // otherwise default to full tg-ux + si-tools.
+        // Use custom config if provided (e.g. overflow uses standing-instructions only),
+        // otherwise default to full set.
         const mcpServers = this.#config.stdioMcpServers || {
-            "tg-ux": {
+            "telegram": {
                 type: "stdio",
                 command: "node",
                 args: ["/app/src/ai/copilot/mcp-server.mjs"],
             },
-            "si-tools": {
+            "standing-instructions": {
                 type: "stdio",
                 command: "node",
                 args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
             },
-            "rbac-tools": {
+            "access-control": {
                 type: "stdio",
                 command: "node",
                 args: ["/app/src/ai/copilot/rbac-mcp-server.mjs"],
             },
-            "pkm-tools": {
+            "memory": {
                 type: "stdio",
                 command: "node",
                 args: ["/app/src/pkm/pkm-mcp-server.mjs"],

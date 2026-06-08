@@ -2,6 +2,21 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.4.1] — 2026-06-08
+
+### Changed — MCP server renames (agent-facing)
+
+- `tg-ux` → **`telegram`** — ask_user, notify_user, background_task, telegram_call
+- `si-tools` → **`standing-instructions`** — si_create/list/get/update/delete/toggle
+- `rbac-tools` → **`access-control`** — user roles & permissions
+- `pkm-tools` → **`memory`** — pkm_memory, pkm_search, pkm_navigate, pkm_collection, pkm_manage
+- `session-history` — unchanged (already clear)
+- Updated: acp-pool.mjs, acp-client.mjs, all MCP server scripts, mcp.json, SKILLS.md, copilot-instructions.md
+
+### Removed
+
+- **self_test tool** — v6 testing infrastructure, no longer functional. Removed from telegram MCP server.
+
 ## [1.4.0] — 2026-06-08
 
 ### Removed — v6 architecture (BREAKING)

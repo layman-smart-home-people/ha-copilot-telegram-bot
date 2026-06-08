@@ -399,7 +399,7 @@ function handleInitialize(id, params) {
     if (params?.protocolVersion) clientProtocolVersion = params.protocolVersion;
     send(id, {
         protocolVersion: clientProtocolVersion,
-        serverInfo: { name: "si-tools", version: "1.0.0" },
+        serverInfo: { name: "standing-instructions", version: "2.0.0" },
         capabilities: { tools: {} },
     });
 }
