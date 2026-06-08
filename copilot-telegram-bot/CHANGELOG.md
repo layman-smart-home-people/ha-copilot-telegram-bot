@@ -2,6 +2,16 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.4.8] — 2026-06-09
+
+### Added — send_file MCP tool
+
+- **New `send_file` tool** — agents can now send files directly to users via Telegram as document or photo attachments instead of saving to /config/www/ and sharing URLs.
+- Supports auto-detection: images (jpg, png, gif, webp) sent as photos, everything else as documents. Override with `type` parameter.
+- Thread-aware: files route to the correct chat/thread via scope key.
+- Validates file size (50MB Telegram limit) and handles missing files gracefully.
+- Wired through MCP server → UDS → Telegram client's existing `callForm()` multipart upload support.
+
 ## [1.4.4] — 2026-06-08
 
 ### Fixed — Thread routing for all MCP tools

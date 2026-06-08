@@ -98,6 +98,34 @@ const NOTIFY_TOOL = {
     },
 };
 
+const SEND_FILE_TOOL = {
+    name: "send_file",
+    description:
+        "Send a file to the user via Telegram. " +
+        "Accepts a local file path and sends it as a document or photo attachment. " +
+        "Images (jpg, png, gif, webp) are sent as photos by default — set type='document' to force document mode. " +
+        "Use for sharing reports, exports, images, or any generated files directly in chat instead of sharing URLs.",
+    inputSchema: {
+        type: "object",
+        properties: {
+            file_path: {
+                type: "string",
+                description: "Absolute path to the file on disk (e.g. '/config/www/report.html')",
+            },
+            caption: {
+                type: "string",
+                description: "Optional caption to send with the file (max 1024 chars)",
+            },
+            type: {
+                type: "string",
+                enum: ["auto", "document", "photo"],
+                description: "Send mode: 'auto' (default) picks photo for images, document for everything else. 'document' forces document mode. 'photo' forces photo mode.",
+            },
+        },
+        required: ["file_path"],
+    },
+};
+
 const TELEGRAM_CALL_TOOL = {
     name: "telegram_call",
     description:
@@ -210,7 +238,7 @@ function handleInitialize(id, params) {
 }
 
 function handleToolsList(id) {
-    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL, TELEGRAM_CALL_TOOL] });
+    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL, SEND_FILE_TOOL, TELEGRAM_CALL_TOOL] });
 }
 
 async function handleToolsCall(id, params) {
@@ -226,6 +254,8 @@ async function handleToolsCall(id, params) {
         return handleBackgroundTask(id, args);
     } else if (name === "notify_user") {
         return handleNotifyUser(id, args);
+    } else if (name === "send_file") {
+        return handleSendFile(id, args);
     } else if (name === "telegram_call") {
         return handleTelegramCall(id, args);
     } else {
@@ -343,6 +373,47 @@ async function handleNotifyUser(id, args) {
         } else {
             send(id, {
                 content: [{ type: "text", text: "Notification sent" }],
+            });
+        }
+    } catch (err) {
+        send(id, {
+            content: [{ type: "text", text: `Error: ${err.message}` }],
+            isError: true,
+        });
+    } finally {
+        pendingCalls--;
+        checkExit();
+    }
+}
+
+async function handleSendFile(id, args) {
+    if (!args?.file_path || typeof args.file_path !== "string") {
+        send(id, {
+            content: [{ type: "text", text: "Error: file_path parameter is required" }],
+            isError: true,
+        });
+        return;
+    }
+    log(`send_file called: "${args.file_path}"`);
+    pendingCalls++;
+    try {
+        const result = await callBot({
+            method: "send_file",
+            params: {
+                file_path: args.file_path,
+                caption: args.caption || "",
+                type: args.type || "auto",
+            },
+            scopeKey: getScopeKey(),
+        });
+        if (result.error) {
+            send(id, {
+                content: [{ type: "text", text: `Error: ${result.error}` }],
+                isError: true,
+            });
+        } else {
+            send(id, {
+                content: [{ type: "text", text: `File sent: ${result.filename || args.file_path}` }],
             });
         }
     } catch (err) {

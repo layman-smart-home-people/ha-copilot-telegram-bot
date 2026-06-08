@@ -1,11 +1,13 @@
 // ============================================================
 // UdsServer — UDS IPC for MCP sidecar tools (v7)
 // ============================================================
-// Handles: ask_user, notify_user, background_task, telegram_call
+// Handles: ask_user, notify_user, send_file, background_task, telegram_call
 // Replaces InteractiveFlows UDS server from v6.
 
 import { createServer as createNetServer } from "node:net";
 import { unlinkSync, chmodSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { basename, extname } from "node:path";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("uds");
@@ -150,6 +152,7 @@ export class UdsServer {
         switch (method) {
             case "ask_user":       return this.#askUser(params, scopeKey);
             case "notify_user":    return this.#notifyUser(params, scopeKey);
+            case "send_file":      return this.#sendFile(params, scopeKey);
             case "background_task": return this.#backgroundTask(params, scopeKey);
             case "telegram_call":  return this.#telegramCall(params);
             default:               return { error: `Unknown method: ${method}` };
@@ -249,6 +252,60 @@ export class UdsServer {
         this.#telegram.call("sendMessage", params)
             .catch(err => log.warn(`notify_user failed: ${err.message}`));
         return Promise.resolve({ status: "sent" });
+    }
+
+    async #sendFile({ file_path, caption, type = "auto" }, scopeKey) {
+        if (!file_path || typeof file_path !== "string") return { error: "file_path is required" };
+
+        const { chatId, threadId } = this.#resolveChatId(scopeKey);
+        if (!chatId) return { error: "No chat available" };
+
+        const MIME_MAP = {
+            ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+            ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+            ".pdf": "application/pdf", ".html": "text/html", ".htm": "text/html",
+            ".json": "application/json", ".csv": "text/csv", ".txt": "text/plain",
+            ".xml": "application/xml", ".yaml": "text/yaml", ".yml": "text/yaml",
+            ".zip": "application/zip", ".mp3": "audio/mpeg", ".mp4": "video/mp4",
+            ".log": "text/plain", ".md": "text/markdown",
+        };
+        const PHOTO_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+        const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB Telegram limit
+
+        let buffer;
+        try {
+            buffer = await readFile(file_path);
+        } catch (err) {
+            return { error: `Cannot read file: ${err.message}` };
+        }
+        if (buffer.length > MAX_FILE_SIZE) {
+            return { error: `File too large (${(buffer.length / 1024 / 1024).toFixed(1)}MB). Telegram limit is 50MB.` };
+        }
+
+        const filename = basename(file_path);
+        const ext = extname(file_path).toLowerCase();
+        const mimeType = MIME_MAP[ext] || "application/octet-stream";
+        const isPhoto = type === "photo" || (type === "auto" && PHOTO_TYPES.has(mimeType));
+
+        log.info(`send_file: ${filename} (${(buffer.length / 1024).toFixed(1)}KB, ${mimeType}, ${isPhoto ? "photo" : "document"})`);
+
+        try {
+            const form = new FormData();
+            form.append("chat_id", String(chatId));
+            if (threadId) form.append("message_thread_id", String(threadId));
+            if (caption) form.append("caption", caption.slice(0, 1024));
+
+            if (isPhoto) {
+                form.append("photo", new File([buffer], filename, { type: mimeType }));
+                await this.#telegram.callForm("sendPhoto", form);
+            } else {
+                form.append("document", new File([buffer], filename, { type: mimeType }));
+                await this.#telegram.callForm("sendDocument", form);
+            }
+            return { status: "sent", filename, size: buffer.length };
+        } catch (err) {
+            return { error: `Send failed: ${err.message}` };
+        }
     }
 
     async #backgroundTask({ prompt, description, groupId, groupSize }, scopeKey) {
