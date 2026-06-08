@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.4.9] — 2026-06-09
+
+### Changed — ha-mcp discovery replaces bootstrap
+
+- **Removed pip-based ha-mcp bootstrap** — the bot no longer installs ha-mcp via `pip install` into a Python venv at startup.
+- **Added sibling add-on discovery** — ha-mcp is now auto-discovered via the Supervisor API by finding the running add-on, reading its `secret_path` and network port, and constructing the SSE URL.
+- Pool agents automatically get the discovered ha-mcp endpoint — no manual MCP config needed.
+- Removed unused `node:child_process` and filesystem write imports from config module.
+
 ## [1.4.8] — 2026-06-09
 
 ### Added — send_file MCP tool

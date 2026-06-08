@@ -1,5 +1,4 @@
-import { readFileSync, existsSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { readFileSync, existsSync } from "node:fs";
 import { createLogger } from "./logger.mjs";
 
 const log = createLogger('config');
@@ -163,13 +162,13 @@ export async function loadConfig() {
         }
     }
     if (config.mcpServers.length === 0) {
-        // Auto-bootstrap ha-mcp if no MCP config exists but SUPERVISOR_TOKEN is available
-        const bootstrapped = await bootstrapHaMcp(config);
-        if (bootstrapped) {
-            config.mcpServers = [{ name: "ha-mcp", command: "/data/ha-mcp-wrapper.sh", args: [] }];
-            log.info("ha-mcp auto-bootstrapped successfully");
+        // Auto-discover ha-mcp as a sibling Home Assistant add-on
+        const discovered = await discoverHaMcpAddon();
+        if (discovered) {
+            config.mcpServers = [{ name: "ha-mcp", url: discovered.url }];
+            log.info(`ha-mcp discovered as sibling add-on at ${discovered.url}`);
         } else {
-            log.info("No MCP servers configured (ha-mcp not available — using direct API)");
+            log.info("No MCP servers configured (ha-mcp add-on not found)");
         }
     }
 
@@ -236,63 +235,63 @@ export async function loadConfig() {
     return config;
 }
 
-// ── ha-mcp auto-bootstrap ──────────────────────────────────────
-// Installs ha-mcp Python package into /data/ha-mcp-venv/ and creates
-// a wrapper script. Runs once — subsequent boots reuse the venv.
+// ── ha-mcp sibling add-on discovery ────────────────────────────
+// Discovers the ha-mcp Home Assistant add-on via the Supervisor API
+// and returns its SSE URL (hostname + port + secret_path).
 
-const HA_MCP_VENV = "/data/ha-mcp-venv";
-const HA_MCP_WRAPPER = "/data/ha-mcp-wrapper.sh";
-const HA_MCP_BIN = `${HA_MCP_VENV}/bin/ha-mcp`;
+async function discoverHaMcpAddon() {
+    const token = process.env.SUPERVISOR_TOKEN;
+    if (!token) return null;
 
-async function bootstrapHaMcp(config) {
-    if (!process.env.SUPERVISOR_TOKEN) return false;
-
-    // Already installed?
-    if (existsSync(HA_MCP_BIN) && existsSync(HA_MCP_WRAPPER)) {
-        log.info(`ha-mcp already installed at ${HA_MCP_BIN}`);
-        return true;
-    }
-
-    // Check Python available
     try {
-        execSync("python3 --version", { stdio: "pipe" });
-    } catch {
-        log.warn("ha-mcp bootstrap: python3 not available");
-        return false;
-    }
-
-    log.info("ha-mcp bootstrap: installing...");
-    try {
-        // Create venv + install ha-mcp
-        if (!existsSync(HA_MCP_VENV)) {
-            execSync(`python3 -m venv "${HA_MCP_VENV}"`, { stdio: "pipe", timeout: 30_000 });
-        }
-        // Install/upgrade pip first, then ha-mcp
-        execSync(`"${HA_MCP_VENV}/bin/python3" -m ensurepip --upgrade 2>/dev/null; "${HA_MCP_VENV}/bin/pip" install --quiet ha-mcp`, {
-            stdio: "pipe",
-            timeout: 120_000,
-            env: { ...process.env, PATH: `${HA_MCP_VENV}/bin:${process.env.PATH}` },
+        // List all add-ons and find one whose slug ends with _ha_mcp
+        const listRes = await fetch("http://supervisor/addons", {
+            headers: { Authorization: `Bearer ${token}` },
         });
+        if (!listRes.ok) return null;
 
-        if (!existsSync(HA_MCP_BIN)) {
-            log.warn("ha-mcp bootstrap: pip install succeeded but binary not found");
-            return false;
+        const listData = await listRes.json();
+        const addons = listData?.data?.addons || [];
+        const hamcp = addons.find(a => a.slug?.endsWith("_ha_mcp"));
+        if (!hamcp) {
+            log.debug("ha-mcp add-on not installed");
+            return null;
+        }
+        if (hamcp.state !== "started") {
+            log.warn(`ha-mcp add-on found (${hamcp.slug}) but not running (state: ${hamcp.state})`);
+            return null;
         }
 
-        // Create wrapper script
-        const wrapper = `#!/bin/bash
-export HOMEASSISTANT_URL="http://supervisor/core"
-export HOMEASSISTANT_TOKEN="\${SUPERVISOR_TOKEN}"
-export LOG_LEVEL="WARNING"
-exec "${HA_MCP_BIN}" "$@"
-`;
-        writeFileSync(HA_MCP_WRAPPER, wrapper);
-        chmodSync(HA_MCP_WRAPPER, 0o755);
+        // Get add-on details for secret_path, network, and ip_address
+        const infoRes = await fetch(`http://supervisor/addons/${hamcp.slug}/info`, {
+            headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!infoRes.ok) return null;
 
-        log.info("ha-mcp bootstrap: installed successfully");
-        return true;
+        const info = (await infoRes.json())?.data;
+        if (!info) return null;
+
+        const secretPath = info.options?.secret_path;
+        if (!secretPath) {
+            log.warn("ha-mcp add-on has no secret_path configured");
+            return null;
+        }
+
+        // Resolve port from network config (e.g. { "9583/tcp": 9583 })
+        const networkPorts = info.network || {};
+        const port = Object.values(networkPorts)[0];
+        if (!port) {
+            log.warn("ha-mcp add-on has no exposed port");
+            return null;
+        }
+
+        const host = info.ip_address || info.hostname;
+        const url = `http://${host}:${port}${secretPath}`;
+
+        log.debug(`ha-mcp discovered: ${hamcp.slug} at ${url}`);
+        return { slug: hamcp.slug, url };
     } catch (err) {
-        log.warn(`ha-mcp bootstrap failed: ${err.message}`);
-        return false;
+        log.warn(`ha-mcp discovery failed: ${err.message}`);
+        return null;
     }
 }
