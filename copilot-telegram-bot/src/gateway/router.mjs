@@ -15,6 +15,83 @@ import { MenuManager, menuCallback, parseMenuCallback, row, btn } from "./menus.
 
 const log = createLogger("router");
 
+// ── Reset defaults ──────────────────────────────────────────
+// Used by /memory → Reset to restore seed docs to clean state.
+// Keep in sync with the actual files in /config/.github/ and agentDir.
+
+const SKILLS_DEFAULT = `# Agent Skills Reference
+
+## MCP Tool Index
+Use \`tool_search_tool_regex\` to discover tools by pattern. Schemas are self-documenting.
+- **ha-mcp** (82+ tools) — ALL Home Assistant ops: entities, services, automations, dashboards, history, calendar, HACS, backups, bulk control
+- **telegram** — \`ask_user\` (inline buttons/prompts, auto-appends ✏️+❌), \`notify_user\`, \`background_task\` (fire-and-forget), \`telegram_call\` (any Bot API method)
+- **standing-instructions** — \`si_create/list/get/update/delete/toggle\`. Supports events/cron/timers, conditions (state/numeric/time + AND/OR/NOT), cooldown, chaining, expiry. NEVER edit the JSON file directly.
+- **memory** — \`pkm_memory\` (write/update/delete/get/link), \`pkm_search\` (FTS + \`expand_context\`), \`pkm_navigate\` (map/browse/timeline), \`pkm_collection\` (structured data), \`pkm_manage\` (admin). Topics: hierarchical max 3 deep.
+- **access-control** — user roles & permissions management
+- **session-history** — cross-session history lookup
+
+## Sub-Agents & Background Work
+- **\`task(mode: "sync")\`** — ALWAYS use sync. Background mode agents are killed when the prompt completes.
+- **\`background_task\` MCP tool** — safe fire-and-forget. Runs on a separate agent, delivers results to the user via Telegram. Use for async research, monitoring, or any work the user doesn't need in this response.
+- **When to dispatch**: task needs >5 independent tool calls, >2 sequential decision points, or research across unknown files. Otherwise do it inline.
+- **When NOT to dispatch**: simple lookups, reading a few known files, single grep/glob — just do it yourself.
+
+## PKM (Memory) Scoping
+- **\`scope: "agent"\`** — operational notes private to you: workflow preferences, recurring patterns, internal reminders (e.g. "user prefers notifications 9-17", "AV system uses QSYS protocol")
+- **\`scope: "user"\`** — facts about a specific person: preferences, habits, personal context (e.g. "Sam prefers dark mode dashboards", "Jas allergic to shellfish")
+- **\`scope: "household"\`** — shared knowledge: home policies, building info, device inventory, shared workflows
+- **Graduation rule**: if a fact is useful across 2+ sessions or informs future decision-making, store in PKM. One-off facts stay in conversation.
+`;
+
+const COPILOT_INSTRUCTIONS_DEFAULT = `# Copilot Instructions for Home Assistant
+
+## Tool Preference
+**Always use ha-mcp tools over curl.** 82+ MCP tools available. Use \`tool_search_tool_regex\` to discover.
+
+### Tool routing
+- Entity state → \`ha_get_state\` | Service → \`ha_call_service\` | Search → \`ha_search_entities\`
+- History → \`ha_get_history\` | Templates → \`ha_eval_template\` | System → \`ha_get_system_health\`
+- Dashboard R/W → \`ha_config_get/set_dashboard\` | Automations → \`ha_config_get/set_automation\`
+- Bulk control → \`ha_bulk_control\` | Prompts → \`ask_user\`
+- Fallback: \`bash/curl\` with \`$SUPERVISOR_TOKEN\` — LAST RESORT
+
+## Environment
+- Home Assistant OS, working directory: \`/config\`
+- \`/config/www/\` serves at \`https://nuach.thng.sg/local/\`
+
+## Telegram Formatting
+Auto-converted from markdown to Telegram HTML. Bold, italic, code, lists, headers, blockquotes work.
+Use emoji for hierarchy. **Avoid** tables — save HTML reports to \`/config/www/\` instead.
+
+## Telegram Bot API — \`telegram_call\`
+Direct Bot API access: \`telegram_call(method="...", params={...})\`
+- Forum topics: \`editForumTopic\`, \`createForumTopic\`, \`closeForumTopic\`, \`getForumTopicIconStickers\`
+- Messages: \`sendMessage\` (with \`message_thread_id\`), \`editMessageText\`
+- Any Bot API method works. Blocked: webhook/logout methods.
+
+## Dashboard Editing
+**NEVER edit \`.storage/lovelace*\` directly.** Use:
+1. \`ha_config_get_dashboard(url_path="...")\` → get config + \`config_hash\`
+2. \`ha_config_set_dashboard(url_path="...", config_hash="...", python_transform="...")\` → surgical edits
+Key dashboards: \`lovelace\` (main), \`dashboard-modern\` (floorplan), \`jasmine-home\` (YAML)
+
+## Reactive Requests — SI vs HA Automation
+When the user asks "when X happens, do Y":
+- **Standing Instruction (SI)** — default choice for user-requested reactive behavior. Use when: agent reasoning needed, complex conditions, user explicitly asked, or cross-system logic.
+- **HA Automation** — only suggest (never create directly) for sub-second latency triggers or simple state-based rules the user wants to own in the HA UI.
+- **Decision rule**: if the user asked you to do it → SI. If it's a raw device trigger → suggest HA automation and let the user decide.
+
+## Output Routing
+- **Telegram inline** — under 300 words, single topic, no data grids
+- **HTML report** (\`/config/www/\`) — multi-section analysis, data with >5 rows or >3 columns, visual formatting
+- **Log/file** — diagnostic traces, verbose output, archival
+
+## Safety
+- Confirm physical-consequence actions via \`ask_user\` first
+- Never expose tokens/secrets. Don't modify \`.storage/\` directly.
+- Search entities first — don't guess IDs
+`;
+
 // Commands handled by the router
 const COMMANDS = new Map([
     ["stop", "Cancel current operation"],
@@ -851,7 +928,7 @@ export class Router {
         if (action === "reset") {
             // Show confirmation
             const scopePrefix = this.#scopePrefix(ref);
-            const text = "⚠️ <b>Reset agent memory?</b>\n\nThis will reset MEMORY.md, SKILLS.md, and TASKS.md to defaults.\nIDENTITY.md will be preserved.\nDaily logs will be cleared.";
+            const text = "⚠️ <b>Reset agent memory?</b>\n\nThis will reset MEMORY.md, SKILLS.md, TASKS.md, and copilot-instructions.md to defaults.\nIDENTITY.md will be preserved.\nDaily logs will be cleared.";
             const keyboard = [
                 row(
                     btn("✅ Yes, reset", menuCallback(scopePrefix, "memory", "confirm-reset")),
@@ -865,10 +942,10 @@ export class Router {
             const agentDir = this.#config.agentDir || "/config/.agent";
             const { writeFileSync, rmSync, mkdirSync, existsSync: exists } = await import("node:fs");
 
-            // Reset files to defaults
+            // Reset agent seed files to defaults
             const defaults = {
                 "MEMORY.md": "# Agent Memory\n\nSeed facts always loaded into context. Keep minimal — use PKM for long-term storage.\n\n## Key Entities\n<!-- Add frequently used entity IDs here -->\n\n## Bot Versions\n<!-- Track key version milestones here -->\n",
-                "SKILLS.md": "# Agent Skills Reference\n\n## MCP Tool Index\nUse `tool_search_tool_regex` to discover tools by pattern. Schemas are self-documenting.\n- **ha-mcp** (82+ tools) — ALL Home Assistant ops\n- **telegram** — `ask_user`, `notify_user`, `background_task`, `telegram_call`\n- **standing-instructions** — `si_create/list/get/update/delete/toggle`\n- **memory** — `pkm_memory`, `pkm_search`, `pkm_navigate`, `pkm_collection`, `pkm_manage`\n- **access-control** — user roles & permissions\n- **session-history** — cross-session history lookup\n\n## Sub-Agents\n**NEVER `task(mode: \"background\")`** — use `mode: \"sync\"` always.\n",
+                "SKILLS.md": SKILLS_DEFAULT,
                 "TASKS.md": "# Active Tasks\n\nTasks the agent is working on or needs to resume.\n\n## In Progress\n\n## Pending\n\n## Recently Completed\n",
             };
 
@@ -876,6 +953,9 @@ export class Router {
                 for (const [file, content] of Object.entries(defaults)) {
                     writeFileSync(`${agentDir}/${file}`, content, "utf-8");
                 }
+
+                // Reset copilot-instructions.md (operational context)
+                writeFileSync("/config/.github/copilot-instructions.md", COPILOT_INSTRUCTIONS_DEFAULT, "utf-8");
 
                 // Clear daily logs
                 const memDir = `${agentDir}/memory`;
@@ -888,7 +968,7 @@ export class Router {
                 this.#enricher.reload();
 
                 await this.#menus.close(ref.chatId, "memory",
-                    "✅ Reset complete.\n📄 MEMORY.md, SKILLS.md, TASKS.md → defaults\n📁 Daily logs cleared\n🛡️ IDENTITY.md preserved",
+                    "✅ Reset complete.\n📄 MEMORY.md, SKILLS.md, TASKS.md, copilot-instructions.md → defaults\n📁 Daily logs cleared\n🛡️ IDENTITY.md preserved",
                     { threadId: ref.threadId });
             } catch (err) {
                 await this.#reply(ref, `⚠️ Reset failed: ${err.message}`);
