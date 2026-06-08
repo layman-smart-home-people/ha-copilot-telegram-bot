@@ -434,7 +434,7 @@ export class Router {
 
     async #cmdHelp(ref) {
         const scopePrefix = this.#scopePrefix(ref);
-        const text = `<b>📋 Ezra v7</b>\n\nSend any message to chat with Copilot.\n💡 Send a new message while I'm working to redirect me.`;
+        const text = `<b>📋 Bot v${this.#config.version}</b>\n\nSend any message to chat with Copilot.\n💡 Send a new message while I'm working to redirect me.`;
 
         const keyboard = [
             row(
@@ -461,7 +461,7 @@ export class Router {
         const metrics = this.#pool.getMetrics();
 
         const lines = [
-            "<b>📊 Ezra v7 Status</b>\n",
+            "<b>📊 Status — v" + this.#config.version + "</b>\n",
             `<b>🤖 Pool</b>`,
             `  ${poolStatus.claimed} active · ${poolStatus.idle} idle · ${poolStatus.booting} booting (max ${poolStatus.maxSize})`,
         ];

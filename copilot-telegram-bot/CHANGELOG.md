@@ -2,6 +2,18 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.6] — 2026-06-08
+
+### Fixed
+
+- **Status close button not working** — `MenuManager.close()` called `editMessageText` without `reply_markup`, so Telegram preserved the inline keyboard after the text changed. Now explicitly sends `reply_markup: { inline_keyboard: [] }` to remove buttons on close.
+- **DM topic menu callbacks broken** — `parseMenuCallback()` dropped the threadId from `dm:userId:threadId` scoped callbacks, causing menu lookups to fail in DM topic threads. Now preserves the full DM topic scope.
+- **Hardcoded "Ezra v7" branding removed** — All references replaced with dynamic `config.version` from config.yaml. Instance names belong to deployments, not the project.
+
+### Added
+
+- **`.copilot-setup-steps.yml`** — Auto-registers bot MCP sidecar servers (tg-ux, si-tools, rbac-tools, pkm-tools) for standalone Copilot CLI sessions that don't go through the bot's ACP process.
+
 ## [1.3.5] — 2026-06-08
 
 ### Fixed

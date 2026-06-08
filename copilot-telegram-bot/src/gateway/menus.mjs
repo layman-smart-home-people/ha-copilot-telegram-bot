@@ -93,6 +93,7 @@ export class MenuManager {
                     message_id: existing.messageId,
                     text: finalText,
                     parse_mode: "HTML",
+                    reply_markup: { inline_keyboard: [] },
                 });
             } else {
                 await this.#telegram.call("editMessageReplyMarkup", {
@@ -167,7 +168,11 @@ export function parseMenuCallback(data) {
     // Reconstruct scopeKey from prefix
     let scopeKey;
     const scopeParts = scopePrefix.split(":");
-    if (scopeParts[0] === "dm") scopeKey = `dm:${scopeParts[1]}`;
+    if (scopeParts[0] === "dm") {
+        scopeKey = scopeParts.length >= 3
+            ? `dm:${scopeParts[1]}:${scopeParts[2]}`
+            : `dm:${scopeParts[1]}`;
+    }
     else if (scopeParts[0] === "group") scopeKey = `group:${scopeParts[1]}:${scopeParts[2]}`;
     else if (scopeParts[0] === "forum") scopeKey = `forum:${scopeParts[1]}:${scopeParts[2]}`;
     else scopeKey = scopePrefix;

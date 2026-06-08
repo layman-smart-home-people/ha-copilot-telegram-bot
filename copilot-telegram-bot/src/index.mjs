@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ============================================================
-// Ezra v7 — Main Entry Point
+// Copilot Telegram Bot — Main Entry Point
 // ============================================================
 // Architecture: Pool → ConversationManager → Router → Telegram
 // Replaces the v6 orchestrator-based design.
@@ -59,7 +59,7 @@ async function main() {
     const config = await loadConfig();
     setLogLevel(config.logLevel);
 
-    log.info(`Ezra v7 starting (TZ=${process.env.TZ || "UTC"})`);
+    log.info(`Bot v${config.version} starting (TZ=${process.env.TZ || "UTC"})`);
     log.info(`Binary: ${config.copilotBinary} | Config: ${config.copilotConfigDir}`);
 
     // GitHub token
@@ -171,7 +171,7 @@ async function main() {
 
     // --- Start Polling ---
     telegram.startPolling();
-    log.info("✅ Ezra v7 online — polling for messages");
+    log.info(`✅ Bot v${config.version} online — polling for messages`);
 
     // --- Standing Instructions ---
     const ownerChatId = config.allowedChatIds?.[0];
@@ -226,7 +226,7 @@ async function main() {
         const poolStatus = pool.status();
         telegram.sendMessage(
             ownerChatId,
-            `✅ Ezra v7 online\n🤖 Pool: ${poolStatus.idle} ready (max ${poolStatus.maxSize})`,
+            `✅ Bot v${config.version} online\n🤖 Pool: ${poolStatus.idle} ready (max ${poolStatus.maxSize})`,
         ).catch(() => {});
     }
 }
