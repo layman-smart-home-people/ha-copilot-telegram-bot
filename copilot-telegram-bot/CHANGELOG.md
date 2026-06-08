@@ -2,6 +2,19 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.12] — 2026-06-08
+
+### Fixed
+
+- **Daily log loader bug (v7)** — `PromptEnricher` was reading ALL `.md` files in `memory/`, sorting alphabetically, and picking the last 2. Plan files (`pkm-plan.md`, `rbac-plan.md`) sorted after dates → loaded instead of actual daily logs. Now uses explicit date construction (matching v6 behavior).
+- **Context token reduction** — Deduplicated IDENTITY.md + MEMORY.md (people, preferences, rules were tripled). Compressed SKILLS.md and copilot-instructions.md. Total injected context: 6.6KB (was 17.3KB) — **62% reduction**.
+
+### Changed
+
+- **Daily log labels** — Now show relative context: "today (Sun 2026-06-08)" instead of raw "2026-06-08"
+- **Agent memory instructions** — Tell agents to use descriptive topic tags in daily logs (e.g. `#bot-dev`, `#home-automation`, `#debug`)
+- **Plan files relocated** — Moved `pkm-plan.md`, `rbac-plan.md`, `background-agents-plan.md` from `memory/` to `plans/` to prevent accidental loading
+
 ## [1.3.11] — 2026-06-08
 
 ### Added

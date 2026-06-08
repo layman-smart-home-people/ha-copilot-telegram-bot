@@ -5,7 +5,7 @@
 // injects sender metadata, pinned instructions, and role context.
 // Used by the Router before passing text to ConversationManager.
 
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("prompt-enricher");
@@ -160,25 +160,29 @@ export class PromptEnricher {
             }
         }
 
-        // Load recent daily logs (today + yesterday)
+        // Load recent daily logs (today + yesterday) — explicit date construction
         const memDir = `${dir}/memory`;
         if (existsSync(memDir)) {
             try {
-                const logs = readdirSync(memDir)
-                    .filter(f => f.endsWith(".md"))
-                    .sort()
-                    .slice(-DAILY_LOGS_TO_LOAD);
-                if (logs.length > 0) {
-                    const logSections = ["# Recent Daily Logs\n"];
-                    for (const f of logs) {
-                        try {
-                            let content = readFileSync(`${memDir}/${f}`, "utf-8").trim();
-                            if (content.length > MAX_DAILY_LOG_SIZE) content = content.slice(0, MAX_DAILY_LOG_SIZE) + "\n... (truncated)";
-                            if (content) logSections.push(`## Daily Log: ${f.replace(".md", "")}\n${content}`);
-                        } catch { /* skip unreadable logs */ }
-                    }
-                    if (logSections.length > 1) sections.push(logSections.join("\n"));
+                const now = new Date();
+                const labels = ["today", "yesterday"];
+                const logSections = ["# Recent Daily Logs\n"];
+                for (let i = 0; i < DAILY_LOGS_TO_LOAD; i++) {
+                    const d = new Date(now);
+                    d.setDate(d.getDate() - i);
+                    const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+                    const dayName = d.toLocaleDateString("en-US", { weekday: "short" });
+                    const label = labels[i] || `${i} days ago`;
+                    const filePath = `${memDir}/${dateStr}.md`;
+                    try {
+                        if (!existsSync(filePath)) continue;
+                        let content = readFileSync(filePath, "utf-8").trim();
+                        if (!content) continue;
+                        if (content.length > MAX_DAILY_LOG_SIZE) content = content.slice(0, MAX_DAILY_LOG_SIZE) + "\n... (truncated)";
+                        logSections.push(`## ${label} (${dayName} ${dateStr})\n${content}`);
+                    } catch { /* skip unreadable */ }
                 }
+                if (logSections.length > 1) sections.push(logSections.join("\n"));
             } catch { /* skip if memory dir unreadable */ }
         }
 
@@ -187,12 +191,10 @@ export class PromptEnricher {
             sections.push([
                 "\n## Agent Memory Instructions",
                 `You have a persistent memory directory at ${dir}/. You MUST maintain it:`,
-                "- MEMORY.md has been loaded above — update it when you learn important durable facts",
-                "- Update TASKS.md when starting, completing, or being interrupted on a task",
-                `- Append observations to today's daily log: ${dir}/memory/YYYY-MM-DD.md`,
-                "- Periodically distill key insights from daily logs into MEMORY.md",
-                "- Keep files concise — MEMORY.md under 200 lines, daily logs under 100 lines",
-                "- This is YOUR persistent self. These files define who you are across sessions.",
+                "- MEMORY.md — update when you learn important durable facts",
+                "- TASKS.md — update when starting, completing, or interrupted on a task",
+                `- Daily logs at ${dir}/memory/YYYY-MM-DD.md — append observations with topic tags (e.g. #bot-dev, #home-automation, #debug, #decision)`,
+                "- Periodically distill daily logs → MEMORY.md. Keep MEMORY.md under 200 lines.",
             ].join("\n"));
         }
 

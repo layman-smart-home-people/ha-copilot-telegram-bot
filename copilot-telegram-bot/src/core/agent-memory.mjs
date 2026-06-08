@@ -317,12 +317,10 @@ export class AgentMemory {
         const selfMaintainInstructions = [
             "\n## Agent Memory Instructions",
             `You have a persistent memory directory at ${agentDir}/. You MUST maintain it:`,
-            `- MEMORY.md has been loaded above — update it when you learn important durable facts`,
-            "- Update TASKS.md when starting, completing, or being interrupted on a task",
-            `- Append observations to today's daily log: ${agentDir}/memory/YYYY-MM-DD.md`,
-            "- Periodically distill key insights from daily logs into MEMORY.md",
-            "- Keep files concise — MEMORY.md under 200 lines, daily logs under 100 lines",
-            "- This is YOUR persistent self. These files define who you are across sessions.",
+            `- MEMORY.md — update when you learn important durable facts`,
+            "- TASKS.md — update when starting, completing, or interrupted on a task",
+            `- Daily logs at ${agentDir}/memory/YYYY-MM-DD.md — append observations with topic tags (e.g. #bot-dev, #home-automation, #debug, #decision)`,
+            "- Periodically distill daily logs → MEMORY.md. Keep MEMORY.md under 200 lines.",
         ].join("\n");
 
         return sections.join("\n\n---\n\n") + "\n\n" + selfMaintainInstructions;
@@ -349,16 +347,15 @@ export class AgentMemory {
         const memoryDir = join(this.#agentDir, "memory");
         if (!existsSync(memoryDir)) return null;
 
-        const today = new Date();
-        const dates = [];
-        for (let i = 0; i < DAILY_LOGS_TO_LOAD; i++) {
-            const d = new Date(today);
-            d.setDate(d.getDate() - i);
-            dates.push(this.#formatDate(d));
-        }
-
+        const labels = ["today", "yesterday"];
+        const now = new Date();
         const logs = [];
-        for (const date of dates) {
+        for (let i = 0; i < DAILY_LOGS_TO_LOAD; i++) {
+            const d = new Date(now);
+            d.setDate(d.getDate() - i);
+            const date = this.#formatDate(d);
+            const dayName = d.toLocaleDateString("en-US", { weekday: "short" });
+            const label = labels[i] || `${i} days ago`;
             const filePath = join(memoryDir, `${date}.md`);
             try {
                 if (!existsSync(filePath)) continue;
@@ -367,7 +364,7 @@ export class AgentMemory {
                 if (content.length > MAX_DAILY_LOG_SIZE) {
                     content = content.slice(0, MAX_DAILY_LOG_SIZE) + "\n... (truncated)";
                 }
-                logs.push(`## Daily Log: ${date}\n${content}`);
+                logs.push(`## ${label} (${dayName} ${date})\n${content}`);
             } catch (err) {
                 log.warn(`Failed to read daily log ${date}: ${err.message}`);
             }
