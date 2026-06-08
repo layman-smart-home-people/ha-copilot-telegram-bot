@@ -5,13 +5,17 @@
 // injects sender metadata, pinned instructions, and role context.
 // Used by the Router before passing text to ConversationManager.
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("prompt-enricher");
 
-const AGENT_DIR = "/config/.agent";
+const DEFAULT_AGENT_DIR = "/config/copilot-telegram-bot";
+const LEGACY_AGENT_DIR = "/config/.agent";
 const AGENT_FILES = ["IDENTITY.md", "MEMORY.md", "SKILLS.md", "TASKS.md"];
+const MAX_FILE_SIZE = 8000;
+const MAX_DAILY_LOG_SIZE = 4000;
+const DAILY_LOGS_TO_LOAD = 2;
 
 const MAX_PINNED = 100; // max pinned instructions to keep in memory
 
@@ -70,7 +74,8 @@ export class PromptEnricher {
 
             // Agent memory/identity
             if (this.#agentContext) {
-                parts.push(`[Agent persistent memory:\n${this.#agentContext}\n]`);
+                const agentDir = this.#config.agentDir || DEFAULT_AGENT_DIR;
+                parts.push(`[Agent persistent memory — your identity and memory from ${agentDir}/:\n${this.#agentContext}\n]`);
             }
 
             // Dispatcher instructions for fast triage model
@@ -120,20 +125,64 @@ export class PromptEnricher {
     // ── Private ──────────────────────────────────────────────
 
     #loadAgentContext() {
+        // Resolve agent directory: config option → default → legacy fallback
+        const agentDir = this.#config.agentDir || DEFAULT_AGENT_DIR;
+        const dir = existsSync(`${agentDir}/IDENTITY.md`) ? agentDir
+            : existsSync(`${LEGACY_AGENT_DIR}/IDENTITY.md`) ? LEGACY_AGENT_DIR
+            : agentDir;
+
         const sections = [];
         for (const file of AGENT_FILES) {
-            const path = `${AGENT_DIR}/${file}`;
+            const path = `${dir}/${file}`;
             if (existsSync(path)) {
                 try {
-                    const content = readFileSync(path, "utf-8").trim();
+                    let content = readFileSync(path, "utf-8").trim();
+                    if (content.length > MAX_FILE_SIZE) content = content.slice(0, MAX_FILE_SIZE) + "\n... (truncated)";
                     if (content) sections.push(content);
                 } catch (err) {
                     log.warn(`Failed to load ${path}: ${err.message}`);
                 }
             }
         }
+
+        // Load recent daily logs (today + yesterday)
+        const memDir = `${dir}/memory`;
+        if (existsSync(memDir)) {
+            try {
+                const logs = readdirSync(memDir)
+                    .filter(f => f.endsWith(".md"))
+                    .sort()
+                    .slice(-DAILY_LOGS_TO_LOAD);
+                if (logs.length > 0) {
+                    const logSections = ["# Recent Daily Logs\n"];
+                    for (const f of logs) {
+                        try {
+                            let content = readFileSync(`${memDir}/${f}`, "utf-8").trim();
+                            if (content.length > MAX_DAILY_LOG_SIZE) content = content.slice(0, MAX_DAILY_LOG_SIZE) + "\n... (truncated)";
+                            if (content) logSections.push(`## Daily Log: ${f.replace(".md", "")}\n${content}`);
+                        } catch { /* skip unreadable logs */ }
+                    }
+                    if (logSections.length > 1) sections.push(logSections.join("\n"));
+                }
+            } catch { /* skip if memory dir unreadable */ }
+        }
+
+        // Add self-maintenance instructions
+        if (sections.length > 0) {
+            sections.push([
+                "\n## Agent Memory Instructions",
+                `You have a persistent memory directory at ${dir}/. You MUST maintain it:`,
+                "- MEMORY.md has been loaded above — update it when you learn important durable facts",
+                "- Update TASKS.md when starting, completing, or being interrupted on a task",
+                `- Append observations to today's daily log: ${dir}/memory/YYYY-MM-DD.md`,
+                "- Periodically distill key insights from daily logs into MEMORY.md",
+                "- Keep files concise — MEMORY.md under 200 lines, daily logs under 100 lines",
+                "- This is YOUR persistent self. These files define who you are across sessions.",
+            ].join("\n"));
+        }
+
         this.#agentContext = sections.length > 0 ? sections.join("\n\n---\n\n") : null;
-        log.info(`Agent context loaded: ${sections.length} files, ${this.#agentContext?.length || 0} chars`);
+        log.info(`Agent context loaded: ${sections.length} files, ${this.#agentContext?.length || 0} chars (dir: ${dir})`);
     }
 
     #buildSenderLine(ref) {

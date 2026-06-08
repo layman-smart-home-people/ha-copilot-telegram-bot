@@ -2,6 +2,13 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.3] — 2026-06-08
+
+### Fixed
+
+- **Agent context not loading** — `PromptEnricher` hardcoded agent dir to `/config/.agent` instead of using `config.agentDir` (default: `/config/copilot-telegram-bot`). This caused the agent to start with zero identity/memory context, losing knowledge of SI tools, HA tools, and personality. Now resolves: config option → default → legacy fallback.
+- **Daily logs missing from agent context** — `PromptEnricher` only loaded the 4 main files (IDENTITY/MEMORY/SKILLS/TASKS). Now also loads recent daily logs and self-maintenance instructions, matching the old `agent-memory.mjs` behavior.
+
 ## [1.3.2] — 2026-06-08
 
 ### Fixed
