@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.7] — 2026-06-08
+
+### Improved
+
+- **Smart forum topic titles** — Topic names now truncated to 28 chars (word-boundary) instead of 64, with greeting filler stripped ("Hey can you..." → meaningful text). Topic icons auto-set from 13 keyword categories (🏠 home, 💻 code, 🤖 automation, ⛅ weather, etc.) using Telegram's `icon_custom_emoji_id`. Plurals now match correctly.
+
 ## [1.3.6] — 2026-06-08
 
 ### Fixed

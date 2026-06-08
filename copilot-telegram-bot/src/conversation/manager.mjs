@@ -210,25 +210,21 @@ export class ConversationManager {
         const ref = conv.ref;
         if (!ref?.threadId) return;
 
-        // Use raw user text (before enrichment) for a meaningful title
         const firstPrompt = conv.rawUserText || "";
-        let title = firstPrompt.replace(/\n/g, " ").trim();
-        if (!title) return;
+        let text = firstPrompt.replace(/\n/g, " ").trim();
+        if (!text || text.startsWith("/")) return;
 
-        // Skip commands
-        if (title.startsWith("/")) return;
+        // Pick icon based on keywords
+        const { iconId, title } = topicTitle(text);
 
-        // Truncate intelligently
-        if (title.length > 64) {
-            title = title.slice(0, 61) + "…";
-        }
-        title = `💬 ${title}`;
-
-        await this.#telegram.call("editForumTopic", {
+        const params = {
             chat_id: ref.chatId,
             message_thread_id: ref.threadId,
             name: title,
-        });
+        };
+        if (iconId) params.icon_custom_emoji_id = iconId;
+
+        await this.#telegram.call("editForumTopic", params);
         log.debug(`Topic renamed: ${title}`);
     }
 
@@ -244,4 +240,52 @@ export class ConversationManager {
             }
         }
     }
+}
+
+// ── Topic Title & Icon ──────────────────────────────────────
+
+const TOPIC_MAX_LEN = 28;
+
+const TOPIC_ICONS = [
+    { id: "5350554349074391003", kw: /\b(code|bug|fix|error|crash|debug|build|deploy|commit|push|merge|refactor|api)\b/i },
+    { id: "5309832892262654231", kw: /\b(automat|script|routine|standing|cron|trigger|schedul)/i },
+    { id: "5379748062124056162", kw: /\b(alert|alarm|warn|urgent|emergency|critical)/i },
+    { id: "5312486108309757006", kw: /\b(home|house|room|light|lamp|switch|door|lock|window|curtain|blind|garage|bedroom|kitchen|living|bathroom)/i },
+    { id: "5312016608254762256", kw: /\b(power|energy|electric|outlet|plug|charg|battery|watt)/i },
+    { id: "5350305691942788490", kw: /\b(status|dashboard|report|analytic|metric|stat|graph)/i },
+    { id: "5350424168615649565", kw: /\b(weather|forecast|rain|humid|temperature|climate|outdoor)/i },
+    { id: "5373251851074415873", kw: /\b(note|remind|remember|memo|task|todo|list)\b/i },
+    { id: "5309965701241379366", kw: /\b(search|find|look up|research|investigat|compar)/i },
+    { id: "5312536423851630001", kw: /\b(idea|suggest|feature|what if|how about)/i },
+    { id: "5237889595894414384", kw: /\b(think|reason|explain|why|understand|analy[zs]|opinion)/i },
+    { id: "5348227245599105972", kw: /\b(work|meeting|calendar|appointment|office)/i },
+    { id: "5350481781306958339", kw: /\b(learn|doc|guide|tutorial|how to|manual)/i },
+    { id: "5417915203100613993", kw: null }, // 💬 default
+];
+
+const FILLER_RE = /^(hey|hi|hello|yo|ok|okay|please|can you|could you|i need you to|i want you to)\b\s*/i;
+
+function topicTitle(text) {
+    // Pick icon
+    let iconId = TOPIC_ICONS[TOPIC_ICONS.length - 1].id;
+    for (const { id, kw } of TOPIC_ICONS) {
+        if (kw && kw.test(text)) { iconId = id; break; }
+    }
+
+    // Build short title — strip filler only if result is still meaningful
+    let title = text.replace(/\s+/g, " ").trim();
+    const stripped = title.replace(FILLER_RE, "").trim();
+    if (stripped.length >= 10) title = stripped;
+
+    if (title.length > TOPIC_MAX_LEN) {
+        const cut = title.lastIndexOf(" ", TOPIC_MAX_LEN);
+        title = title.slice(0, cut > 10 ? cut : TOPIC_MAX_LEN);
+    }
+
+    // Capitalize first letter
+    if (title.length > 0) {
+        title = title[0].toUpperCase() + title.slice(1);
+    }
+
+    return { iconId, title };
 }
