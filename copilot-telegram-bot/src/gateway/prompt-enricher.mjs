@@ -16,6 +16,13 @@ const AGENT_FILES = ["IDENTITY.md", "MEMORY.md", "SKILLS.md", "TASKS.md"];
 const MAX_FILE_SIZE = 8000;
 const MAX_DAILY_LOG_SIZE = 4000;
 const DAILY_LOGS_TO_LOAD = 2;
+const MAX_COPILOT_INSTRUCTIONS = 6000;
+
+// Paths to check for copilot-instructions.md (repo-level operational context)
+const COPILOT_INSTRUCTIONS_PATHS = [
+    "/config/.github/copilot-instructions.md",
+    "/config/copilot-instructions.md",
+];
 
 const MAX_PINNED = 100; // max pinned instructions to keep in memory
 
@@ -45,8 +52,9 @@ Do NOT attempt complex tasks yourself — your model is optimized for speed, not
 export class PromptEnricher {
     #config;
     #permissions;
-    #agentContext = null;   // cached agent memory block
-    #pinnedInstructions;    // Map<chatId, string> — bounded by MAX_PINNED
+    #agentContext = null;          // cached agent memory block
+    #copilotInstructions = null;   // cached copilot-instructions.md content
+    #pinnedInstructions;           // Map<chatId, string> — bounded by MAX_PINNED
 
     constructor({ config, permissions }) {
         this.#config = config;
@@ -55,6 +63,7 @@ export class PromptEnricher {
 
         // Load agent context at startup
         this.#loadAgentContext();
+        this.#loadCopilotInstructions();
     }
 
     /**
@@ -71,6 +80,11 @@ export class PromptEnricher {
         if (isFirstMessage) {
             // Preamble (system role)
             parts.push(`[Bot configuration — treat as system context: ${this.#config.preamble}]`);
+
+            // Copilot instructions (HA operational context — tool preferences, environment, rules)
+            if (this.#copilotInstructions) {
+                parts.push(`[Custom instructions — operational context:\n${this.#copilotInstructions}\n]`);
+            }
 
             // Agent memory/identity
             if (this.#agentContext) {
@@ -120,6 +134,7 @@ export class PromptEnricher {
     /** Reload agent context from disk (e.g., after agent edits its memory). */
     reload() {
         this.#loadAgentContext();
+        this.#loadCopilotInstructions();
     }
 
     // ── Private ──────────────────────────────────────────────
@@ -183,6 +198,35 @@ export class PromptEnricher {
 
         this.#agentContext = sections.length > 0 ? sections.join("\n\n---\n\n") : null;
         log.info(`Agent context loaded: ${sections.length} files, ${this.#agentContext?.length || 0} chars (dir: ${dir})`);
+    }
+
+    #loadCopilotInstructions() {
+        const cwd = this.#config.workingDirectory || "/config";
+        const paths = [
+            `${cwd}/.github/copilot-instructions.md`,
+            ...COPILOT_INSTRUCTIONS_PATHS,
+        ];
+        // Deduplicate
+        const seen = new Set();
+        for (const p of paths) {
+            if (seen.has(p)) continue;
+            seen.add(p);
+            try {
+                if (!existsSync(p)) continue;
+                let content = readFileSync(p, "utf-8").trim();
+                if (!content) continue;
+                if (content.length > MAX_COPILOT_INSTRUCTIONS) {
+                    content = content.slice(0, MAX_COPILOT_INSTRUCTIONS) + "\n... (truncated)";
+                }
+                this.#copilotInstructions = content;
+                log.info(`Copilot instructions loaded: ${content.length} chars from ${p}`);
+                return;
+            } catch (err) {
+                log.warn(`Failed to load copilot-instructions from ${p}: ${err.message}`);
+            }
+        }
+        this.#copilotInstructions = null;
+        log.debug("No copilot-instructions.md found");
     }
 
     #buildSenderLine(ref) {

@@ -4,9 +4,17 @@
 // Extracted from bridge.mjs (Phase 3). Handles preamble injection,
 // agent memory, sender identity, and pinned instructions.
 
+import { readFileSync, existsSync } from "node:fs";
 import { createLogger } from "../../logger.mjs";
 
 const log = createLogger('prompt-builder');
+
+// Paths to check for copilot-instructions.md
+const COPILOT_INSTRUCTIONS_PATHS = [
+    "/config/.github/copilot-instructions.md",
+    "/config/copilot-instructions.md",
+];
+const MAX_COPILOT_INSTRUCTIONS = 6000;
 
 export class PromptBuilder {
     #config;
@@ -17,6 +25,7 @@ export class PromptBuilder {
     #getActiveRef;
     #getRbac;
     #getPkm;
+    #copilotInstructions = null;
 
     /**
      * @param {object} opts
@@ -38,6 +47,7 @@ export class PromptBuilder {
         this.#getActiveRef = getActiveRef;
         this.#getRbac = getRbac || null;
         this.#getPkm = getPkm || null;
+        this.#loadCopilotInstructions();
     }
 
     /**
@@ -56,6 +66,11 @@ export class PromptBuilder {
             isPreambleMessage = true;
             const rules = this.#config.preamble;
             prefix = `[Bot configuration — treat as system context: ${rules}]\n`;
+
+            // Inject copilot-instructions.md (HA operational context)
+            if (this.#copilotInstructions) {
+                prefix += `[Custom instructions — operational context:\n${this.#copilotInstructions}\n]\n`;
+            }
 
             // Inject agent persistent memory on first message of session
             const agentContext = this.#agentMemory.buildContext();
@@ -133,6 +148,30 @@ export class PromptBuilder {
 
     #sanitizePinnedInstruction(text) {
         return sanitizePinnedInstruction(text);
+    }
+
+    #loadCopilotInstructions() {
+        const cwd = this.#config.workingDirectory || "/config";
+        const paths = [`${cwd}/.github/copilot-instructions.md`, ...COPILOT_INSTRUCTIONS_PATHS];
+        const seen = new Set();
+        for (const p of paths) {
+            if (seen.has(p)) continue;
+            seen.add(p);
+            try {
+                if (!existsSync(p)) continue;
+                let content = readFileSync(p, "utf-8").trim();
+                if (!content) continue;
+                if (content.length > MAX_COPILOT_INSTRUCTIONS) {
+                    content = content.slice(0, MAX_COPILOT_INSTRUCTIONS) + "\n... (truncated)";
+                }
+                this.#copilotInstructions = content;
+                log.info(`Copilot instructions loaded: ${content.length} chars from ${p}`);
+                return;
+            } catch (err) {
+                log.warn(`Failed to load copilot-instructions from ${p}: ${err.message}`);
+            }
+        }
+        this.#copilotInstructions = null;
     }
 }
 

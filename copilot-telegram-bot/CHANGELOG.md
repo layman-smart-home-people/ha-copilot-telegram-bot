@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.10] — 2026-06-08
+
+### Fixed
+
+- **Agents missing HA context** — `.github/copilot-instructions.md` (HA tool preferences, environment, dashboard rules, safety) was only loaded by the CLI binary natively. If the CLI didn't auto-detect the git repo, agents got tools but no operational instructions. Both v6 `PromptBuilder` and v7 `PromptEnricher` now explicitly load and inject `copilot-instructions.md` on the first message — guaranteed regardless of CLI behavior.
+
 ## [1.3.9] — 2026-06-08
 
 ### Added
