@@ -500,19 +500,18 @@ export class Router {
 
         if (!data || !userId || !chatId) return;
 
-        // Acknowledge immediately
-        await this.#telegram.call("answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
-
-        // Check if this is a menu callback
+        // Check if this is a menu callback — ack immediately for menus
         const menuParsed = parseMenuCallback(data);
         if (menuParsed) {
+            await this.#telegram.call("answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
             await this.#handleMenuCallback(menuParsed, { chatId, userId, messageId, query });
             return;
         }
 
-        // Legacy: scope-encoded elicitation callbacks
+        // Legacy: scope-encoded elicitation callbacks — defer ack for alert text
         const parts = data.split(":");
         if (parts.length < 3) {
+            await this.#telegram.call("answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
             log.debug(`Ignoring unrecognized callback: ${data}`);
             return;
         }
@@ -559,8 +558,10 @@ export class Router {
         switch (action) {
             case "elicit":
                 await conv.respondElicitation(payload === "decline" ? "decline" : "accept");
+                await this.#telegram.call("answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
                 break;
             default:
+                await this.#telegram.call("answerCallbackQuery", { callback_query_id: query.id }).catch(() => {});
                 log.debug(`Unknown callback action: ${action}`);
         }
     }
@@ -568,35 +569,49 @@ export class Router {
     // ── Menu Callback Router ─────────────────────────────────
 
     async #handleMenuCallback(parsed, ctx) {
-        const { menuName, action } = parsed;
+        const { scopeKey, menuName, action } = parsed;
         const { chatId, userId, messageId } = ctx;
 
         // Auth: only allowed users can interact with menus
         if (!this.#permissions.isAllowed(userId)) return;
 
+        // Build correct ref from parsed scope key
+        const ref = this.#refFromScope(scopeKey, chatId, userId);
+
         switch (menuName) {
         case "help":
-            await this.#handleHelpAction(action, ctx);
+            await this.#handleHelpAction(action, ref);
             break;
         case "status":
-            await this.#handleStatusAction(action, ctx);
+            await this.#handleStatusAction(action, ref);
             break;
         case "settings":
-            await this.#handleSettingsAction(action, ctx);
+            await this.#handleSettingsAction(action, { chatId, userId, messageId });
             break;
         case "standing":
-            await this.#handleStandingAction(action, ctx);
+            await this.#handleStandingAction(action, { chatId });
             break;
         case "memory":
-            await this.#handleMemoryAction(action, ctx);
+            await this.#handleMemoryAction(action, { chatId });
             break;
         default:
             log.debug(`Unknown menu: ${menuName}`);
         }
     }
 
-    async #handleHelpAction(action, { chatId, userId, messageId }) {
-        const ref = { chatId, userId, chatType: "private", isForum: false, threadId: null };
+    /** Reconstruct a ref from a scope key for correct scope resolution. */
+    #refFromScope(scopeKey, chatId, userId) {
+        if (scopeKey.startsWith("forum:")) {
+            const parts = scopeKey.split(":");
+            return { chatId, userId, chatType: "supergroup", isForum: true, threadId: parseInt(parts[2]) || null };
+        }
+        if (scopeKey.startsWith("group:")) {
+            return { chatId, userId, chatType: "supergroup", isForum: false, threadId: null };
+        }
+        return { chatId, userId, chatType: "private", isForum: false, threadId: null };
+    }
+
+    async #handleHelpAction(action, ref) {
         switch (action) {
         case "new": await this.#cmdNew(ref); break;
         case "stop": await this.#cmdStop(ref); break;
@@ -607,8 +622,7 @@ export class Router {
         }
     }
 
-    async #handleStatusAction(action, { chatId, userId, messageId }) {
-        const ref = { chatId, userId, chatType: "private", isForum: false, threadId: null };
+    async #handleStatusAction(action, ref) {
         switch (action) {
         case "new": await this.#cmdNew(ref); break;
         case "stop": await this.#cmdStop(ref); break;
@@ -617,19 +631,17 @@ export class Router {
         }
     }
 
-    async #handleSettingsAction(action, { chatId, messageId }) {
+    async #handleSettingsAction(action, { chatId, userId, messageId }) {
         if (action === "close") {
             await this.#menus.close(chatId, "settings", "⚙️ Settings closed.");
             return;
         }
         if (action.startsWith("model:")) {
             const model = action.split(":")[1];
-            // Note: this updates in-memory config for this session
-            // Persistent config change would require addon options API
             this.#config.defaultModel = model;
             log.info(`Model changed to: ${model}`);
-            // Refresh the settings menu
-            const ref = { chatId, userId: 0, chatType: "private", isForum: false, threadId: null };
+            // Refresh the settings menu with correct userId
+            const ref = { chatId, userId, chatType: "private", isForum: false, threadId: null };
             await this.#cmdSettings(ref);
         }
     }

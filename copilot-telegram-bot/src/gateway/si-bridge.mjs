@@ -32,8 +32,13 @@ export class SIBridge {
     injectBackgroundPrompt(prompt, chatId, opts = {}) {
         const description = opts.description || "SI";
         const silent = opts.silent || false;
-        // Use a fixed scope key per description hash to allow reuse/GC
         const scopeKey = `si:${this.#hashScope(description)}`;
+
+        // Debounce: if this SI is already in-flight, skip
+        if (this.#activePrompts.has(scopeKey)) {
+            log.debug(`SI debounced (already active): "${description}"`);
+            return;
+        }
 
         this.#activePrompts.add(scopeKey);
 

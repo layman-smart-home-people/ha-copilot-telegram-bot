@@ -97,6 +97,9 @@ export class FileHandler {
         const photo = msg.photo[msg.photo.length - 1];
         try {
             const fileInfo = await this.#telegram.getFile(photo.file_id);
+            if (!fileInfo?.file_path) {
+                return { text: null, rejection: "⚠️ Photo too large to process. Try a smaller image." };
+            }
             const buffer = await this.#telegram.downloadFile(fileInfo.file_path);
 
             // Save to temp path for ACP to reference (cleaned up after 10 min)
