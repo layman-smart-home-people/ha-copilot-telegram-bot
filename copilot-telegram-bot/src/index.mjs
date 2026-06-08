@@ -137,6 +137,11 @@ async function main() {
         guest: { mcpServers: {} },
     };
 
+    // --- UDS Server (MCP sidecar IPC) — must start before pool so socket exists when sidecars connect ---
+    const uds = new UdsServer({ telegram, config });
+    _uds = uds;
+    await uds.start();
+
     // --- Pool ---
     const pool = new ACPPool({ config, mcpProfiles });
     _pool = pool;
@@ -147,10 +152,14 @@ async function main() {
     _convMgr = convMgr;
     convMgr.start();
 
+    // Wire ConversationManager into UDS server (needed for scope resolution)
+    uds.setConversationManager(convMgr);
+
     // --- Router ---
     const router = new Router({ telegram, conversationManager: convMgr, pool, permissions, config, enricher });
     _router = router;
     router.start();
+    router.setUdsServer(uds);
 
     // --- DM Topics ---
     let topicManager = null;
@@ -170,12 +179,6 @@ async function main() {
             }
         }
     }
-
-    // --- UDS Server (MCP sidecar IPC) ---
-    const uds = new UdsServer({ telegram, conversationManager: convMgr, config });
-    _uds = uds;
-    uds.start();
-    router.setUdsServer(uds);
 
     // --- Start Polling ---
     telegram.startPolling();

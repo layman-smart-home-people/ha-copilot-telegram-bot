@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.4.2] — 2026-06-08
+
+### Fixed — ask_user 180s delay
+
+- **Boot order fix** — UDS server now starts BEFORE pool boot, so the socket is guaranteed to exist when MCP sidecars need it. Previously pool booted first → sidecars spawned → UDS socket didn't exist yet.
+- **UDS server `start()` now async** — returns a Promise that resolves when the server is actually listening (was fire-and-forget).
+- **MCP sidecar connection retry** — `callBot()` retries up to 4 times with exponential backoff (500ms → 4s) on ENOENT/ECONNREFUSED, instead of failing immediately.
+- **Lazy ConversationManager** — UDS server accepts `setConversationManager()` since it now starts before ConversationManager exists.
+
 ## [1.4.1] — 2026-06-08
 
 ### Changed — MCP server renames (agent-facing)

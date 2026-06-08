@@ -119,41 +119,69 @@ function sendError(id, code, message) {
     process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }) + "\n");
 }
 
-// --- UDS call to bot ---
+// --- UDS call to bot (with retry) ---
 
-function callBot(params) {
+function connectUDS() {
     return new Promise((resolve, reject) => {
-        log(`UDS connect → ${SOCKET_PATH} (scope=${SCOPE_KEY || "none"})`);
-        const conn = createConnection(SOCKET_PATH, () => {
-            const payload = JSON.stringify(params) + "\n";
-            log(`UDS send: ${payload.length} bytes`);
-            conn.write(payload);
-        });
-        const chunks = [];
-        // 30-minute timeout — user may take time to respond, especially if queued
-        const timer = setTimeout(() => {
-            log("UDS timeout (30min)");
-            conn.destroy();
-            reject(new Error("Timed out waiting for user response"));
-        }, 30 * 60 * 1000);
-        conn.on("data", (c) => chunks.push(c));
-        conn.on("end", () => {
-            clearTimeout(timer);
-            try {
-                const result = JSON.parse(Buffer.concat(chunks).toString());
-                log(`UDS response: ${result.error ? "error: " + result.error : "ok"}`);
-                resolve(result);
-            } catch (e) {
-                log(`UDS parse error: ${e.message}`);
-                reject(new Error("Invalid response from bot"));
-            }
-        });
-        conn.on("error", (err) => {
-            clearTimeout(timer);
-            log(`UDS error: ${err.message}`);
-            reject(err);
-        });
+        const conn = createConnection(SOCKET_PATH, () => resolve(conn));
+        conn.on("error", reject);
     });
+}
+
+async function callBot(params) {
+    const maxRetries = 4;
+    const delays = [500, 1000, 2000, 4000]; // ms backoff
+
+    let lastErr;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            const conn = await connectUDS();
+            // Remove the one-shot error listener from connect phase
+            conn.removeAllListeners("error");
+
+            return await new Promise((resolve, reject) => {
+                const payload = JSON.stringify(params) + "\n";
+                if (attempt > 0) log(`UDS retry ${attempt}: sending ${payload.length} bytes`);
+                else log(`UDS send: ${payload.length} bytes`);
+                conn.write(payload);
+
+                const chunks = [];
+                // 30-minute timeout — user may take time to respond
+                const timer = setTimeout(() => {
+                    log("UDS timeout (30min)");
+                    conn.destroy();
+                    reject(new Error("Timed out waiting for user response"));
+                }, 30 * 60 * 1000);
+
+                conn.on("data", (c) => chunks.push(c));
+                conn.on("end", () => {
+                    clearTimeout(timer);
+                    try {
+                        const result = JSON.parse(Buffer.concat(chunks).toString());
+                        log(`UDS response: ${result.error ? "error: " + result.error : "ok"}`);
+                        resolve(result);
+                    } catch (e) {
+                        log(`UDS parse error: ${e.message}`);
+                        reject(new Error("Invalid response from bot"));
+                    }
+                });
+                conn.on("error", (err) => {
+                    clearTimeout(timer);
+                    log(`UDS stream error: ${err.message}`);
+                    reject(err);
+                });
+            });
+        } catch (err) {
+            lastErr = err;
+            if (attempt < maxRetries && (err.code === "ENOENT" || err.code === "ECONNREFUSED")) {
+                log(`UDS connect failed (${err.code}), retry in ${delays[attempt]}ms...`);
+                await new Promise(r => setTimeout(r, delays[attempt]));
+            } else {
+                throw err;
+            }
+        }
+    }
+    throw lastErr;
 }
 
 // --- Request handlers ---

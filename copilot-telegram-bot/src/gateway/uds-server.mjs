@@ -24,9 +24,12 @@ export class UdsServer {
 
     constructor({ telegram, conversationManager, config }) {
         this.#telegram = telegram;
-        this.#conversationManager = conversationManager;
+        this.#conversationManager = conversationManager || null;
         this.#config = config;
     }
+
+    /** Set conversation manager (when UDS starts before ConversationManager). */
+    setConversationManager(cm) { this.#conversationManager = cm; }
 
     // ── Lifecycle ────────────────────────────────────────────
 
@@ -55,9 +58,12 @@ export class UdsServer {
             conn.on("error", () => {});
         });
         this.#server.on("error", (e) => log.debug(`UDS server error: ${e.message}`));
-        this.#server.listen(TG_UX_SOCK, () => {
-            try { chmodSync(TG_UX_SOCK, 0o600); } catch {}
-            log.info(`UDS server listening on ${TG_UX_SOCK}`);
+        return new Promise((resolve) => {
+            this.#server.listen(TG_UX_SOCK, () => {
+                try { chmodSync(TG_UX_SOCK, 0o600); } catch {}
+                log.info(`UDS server listening on ${TG_UX_SOCK}`);
+                resolve();
+            });
         });
     }
 
