@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.1] — 2026-06-08
+
+### Fixed
+
+- **Streamer progress stuck on "Thinking..."** — `ResponseStreamer` had a double-dereference bug (`result?.result?.message_id` instead of `result?.message_id`) in 6 locations. Since `client.call()` already returns `json.result`, the messageId was always `null`, so no progress edits ever fired. The placeholder just sat there forever. Fixed all 6 instances.
+
 ## [1.3.0] — 2026-06-08
 
 ### Added

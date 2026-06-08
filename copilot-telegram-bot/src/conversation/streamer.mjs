@@ -137,7 +137,7 @@ export class ResponseStreamer {
             };
             if (ref.threadId) params.message_thread_id = ref.threadId;
             const result = await this.#telegram.call("sendMessage", params);
-            this.#messageId = result?.result?.message_id ?? null;
+            this.#messageId = result?.message_id ?? null;
         }
 
         // Start elapsed timer for periodic re-renders (keeps timer updating)
@@ -441,7 +441,7 @@ export class ResponseStreamer {
                     link_preview_options: { is_disabled: true } };
                 if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
                 const result = await this.#telegram.call("sendMessage", params);
-                this.#messageId = result?.result?.message_id ?? null;
+                this.#messageId = result?.message_id ?? null;
             }
             return;
         }
@@ -485,7 +485,7 @@ export class ResponseStreamer {
                 if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
                 if (replyMarkup) params.reply_markup = replyMarkup;
                 const result = await this.#telegram.call("sendMessage", params);
-                this.#messageId = result?.result?.message_id ?? null;
+                this.#messageId = result?.message_id ?? null;
                 // Clear the draft
                 this.#telegram.sendMessageDraft(this.#ref.chatId, this.#draftId, null).catch(() => {});
             } catch (err) {
@@ -496,7 +496,7 @@ export class ResponseStreamer {
                     link_preview_options: { is_disabled: true } };
                 if (this.#ref.threadId) fallbackParams.message_thread_id = this.#ref.threadId;
                 const result = await this.#telegram.call("sendMessage", fallbackParams);
-                this.#messageId = result?.result?.message_id ?? null;
+                this.#messageId = result?.message_id ?? null;
             }
         } else if (this.#messageId && this.#messageId !== -2) {
             // Edit existing message to final content
@@ -522,7 +522,7 @@ export class ResponseStreamer {
                 if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
                 if (replyMarkup) params.reply_markup = replyMarkup;
                 const result = await this.#telegram.call("sendMessage", params);
-                this.#messageId = result?.result?.message_id ?? null;
+                this.#messageId = result?.message_id ?? null;
             } catch (err) {
                 log.warn(`Fresh send failed: ${err.message}`);
                 const plain = stripHtmlKeepStructure(html);
@@ -530,7 +530,7 @@ export class ResponseStreamer {
                     link_preview_options: { is_disabled: true } };
                 if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
                 const result = await this.#telegram.call("sendMessage", params).catch(() => null);
-                this.#messageId = result?.result?.message_id ?? null;
+                this.#messageId = result?.message_id ?? null;
             }
         }
     }
