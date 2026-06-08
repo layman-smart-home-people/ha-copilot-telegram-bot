@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.4] — 2026-06-08
+
+### Fixed
+
+- **Menus in threads appearing outside the thread** — `MenuManager` tracked menus by `chatId:menuId` without including `threadId`, causing menus from different threads to collide. Running the same command in another thread would edit the old thread's message instead of sending a new one. Now includes threadId in the menu key.
+- **Close calls lose thread context** — All `menus.close()` calls in the router now pass `threadId` for correct menu lookup in threaded chats.
+
+### Added
+
+- **Status dismiss button** — `/status` now has a "❌ Close" button (moved Settings to second row for better layout).
+
 ## [1.3.3] — 2026-06-08
 
 ### Fixed

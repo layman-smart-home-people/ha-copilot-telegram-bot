@@ -501,8 +501,11 @@ export class Router {
             row(
                 btn("🆕 New", menuCallback(scopePrefix, "status", "new")),
                 btn("⏹ Stop", menuCallback(scopePrefix, "status", "stop")),
-                btn("⚙️ Settings", menuCallback(scopePrefix, "status", "settings")),
                 btn("🔄 Refresh", menuCallback(scopePrefix, "status", "refresh")),
+            ),
+            row(
+                btn("⚙️ Settings", menuCallback(scopePrefix, "status", "settings")),
+                btn("❌ Close", menuCallback(scopePrefix, "status", "close")),
             ),
         ];
 
@@ -776,12 +779,15 @@ export class Router {
         case "stop": await this.#cmdStop(ref); break;
         case "settings": await this.#cmdSettings(ref); break;
         case "refresh": await this.#cmdStatus(ref); break;
+        case "close":
+            await this.#menus.close(ref.chatId, "status", "📊 Status closed.", { threadId: ref.threadId });
+            break;
         }
     }
 
     async #handleSettingsAction(action, { chatId, userId, messageId, ref }) {
         if (action === "close") {
-            await this.#menus.close(chatId, "settings", "⚙️ Settings closed.");
+            await this.#menus.close(chatId, "settings", "⚙️ Settings closed.", { threadId: ref?.threadId });
             return;
         }
         const settingsRef = ref || { chatId, userId, chatType: "private", isForum: false, threadId: null };
@@ -801,7 +807,7 @@ export class Router {
     async #handleStandingAction(action, ref) {
         if (!this.#siOrchestrator) return;
         if (action === "close") {
-            await this.#menus.close(ref.chatId, "standing", "📌 Standing closed.");
+            await this.#menus.close(ref.chatId, "standing", "📌 Standing closed.", { threadId: ref.threadId });
             return;
         }
         if (action === "pause") {
@@ -815,7 +821,7 @@ export class Router {
 
     async #handleMemoryAction(action, ref) {
         if (action === "close") {
-            await this.#menus.close(ref.chatId, "memory", "🧠 Memory closed.");
+            await this.#menus.close(ref.chatId, "memory", "🧠 Memory closed.", { threadId: ref.threadId });
             return;
         }
         if (action.startsWith("view:")) {

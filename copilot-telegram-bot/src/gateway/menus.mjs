@@ -31,7 +31,9 @@ export class MenuManager {
      */
     async show(chatId, menuId, text, keyboard, opts = {}) {
         const replyMarkup = { inline_keyboard: keyboard };
-        const menuKey = `${chatId}:${menuId}`;
+        // Include threadId in key so menus in different threads don't collide
+        const threadSuffix = opts.threadId ? `:${opts.threadId}` : "";
+        const menuKey = `${chatId}:${menuId}${threadSuffix}`;
 
         // If we already have this menu open, edit in place
         const existing = this.#activeMenus.get(menuKey);
@@ -72,9 +74,16 @@ export class MenuManager {
     /**
      * Close a menu (remove buttons, optionally update text).
      */
-    async close(chatId, menuId, finalText) {
-        const menuKey = `${chatId}:${menuId}`;
-        const existing = this.#activeMenus.get(menuKey);
+    async close(chatId, menuId, finalText, opts = {}) {
+        // Try with threadId first, then without (backward compat)
+        const threadSuffix = opts.threadId ? `:${opts.threadId}` : "";
+        let menuKey = `${chatId}:${menuId}${threadSuffix}`;
+        let existing = this.#activeMenus.get(menuKey);
+        if (!existing && threadSuffix) {
+            // Fallback: try without threadId for menus opened before this fix
+            menuKey = `${chatId}:${menuId}`;
+            existing = this.#activeMenus.get(menuKey);
+        }
         if (!existing) return;
 
         try {
@@ -109,7 +118,10 @@ export class MenuManager {
         if (existing?.timer) clearTimeout(existing.timer);
 
         const timer = setTimeout(() => {
-            this.close(chatId, menuKey.split(":").slice(1).join(":")).catch(() => {});
+            // Extract menuId from key (chatId:menuId or chatId:menuId:threadId)
+            const parts = menuKey.split(":");
+            const menuId = parts.slice(1).join(":");
+            this.close(chatId, menuId).catch(() => {});
         }, MENU_EXPIRY_MS);
 
         this.#activeMenus.set(menuKey, { chatId, messageId, timer });
