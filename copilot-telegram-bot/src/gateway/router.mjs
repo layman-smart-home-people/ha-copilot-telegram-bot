@@ -51,10 +51,21 @@ export class Router {
         this.#handlers.set("memory", (ref) => this.#cmdStub(ref, "memory"));
     }
 
+    #updateListener = null;
+
     /** Start listening to Telegram updates. */
     start() {
-        this.#telegram.on("update", (update) => this.#handleUpdate(update));
+        this.#updateListener = (update) => this.#handleUpdate(update);
+        this.#telegram.on("update", this.#updateListener);
         log.info("Router listening for updates");
+    }
+
+    /** Stop listening (cleanup). */
+    stop() {
+        if (this.#updateListener) {
+            this.#telegram.off("update", this.#updateListener);
+            this.#updateListener = null;
+        }
     }
 
     // ── Update Handling ──────────────────────────────────────

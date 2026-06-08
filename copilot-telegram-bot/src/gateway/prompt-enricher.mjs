@@ -13,11 +13,13 @@ const log = createLogger("prompt-enricher");
 const AGENT_DIR = "/config/.agent";
 const AGENT_FILES = ["IDENTITY.md", "MEMORY.md", "SKILLS.md", "TASKS.md"];
 
+const MAX_PINNED = 100; // max pinned instructions to keep in memory
+
 export class PromptEnricher {
     #config;
     #permissions;
     #agentContext = null;   // cached agent memory block
-    #pinnedInstructions;    // Map<chatId, string>
+    #pinnedInstructions;    // Map<chatId, string> — bounded by MAX_PINNED
 
     constructor({ config, permissions }) {
         this.#config = config;
@@ -72,6 +74,11 @@ export class PromptEnricher {
     setPinned(chatId, text) {
         if (text) {
             this.#pinnedInstructions.set(chatId, text);
+            // LRU eviction — remove oldest if over limit
+            if (this.#pinnedInstructions.size > MAX_PINNED) {
+                const oldest = this.#pinnedInstructions.keys().next().value;
+                this.#pinnedInstructions.delete(oldest);
+            }
         } else {
             this.#pinnedInstructions.delete(chatId);
         }
