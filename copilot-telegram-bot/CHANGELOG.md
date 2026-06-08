@@ -2,6 +2,24 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.75.0] — 2026-06-08
+
+### Added — Ezra v6 Phase B: Embedded SDK Spike (ER-1)
+
+- **SDK spike files** — Two proof-of-concept implementations:
+  - `spike-vercel.mjs` — Vercel AI SDK v6 (generateText + streamText + MCP client structural test)
+  - `spike-anthropic.mjs` — Anthropic SDK direct (tool_use loop + streaming)
+- **Decision matrix** — `decision.mjs` with full comparison, recommendation (Vercel AI SDK v6), risks, migration strategy, and Phase C implications
+- **ER-1 self-test** — `tests-phase-b.mjs` validates spike files exist and contain required patterns
+- **Recommendation: Vercel AI SDK v6** — multi-model requirement (MM-1) is the deciding factor
+
+### Critique findings documented (0 CRITICAL code fixes, design risks noted)
+- CRITICAL (design): Token cost shift from subscription to per-token (~$50-75/mo est.)
+- CRITICAL (design): MCP server lifecycle management — bot must spawn/manage servers
+- HIGH (design): In-process blast radius — agent crash = bot crash
+- HIGH (design): Conversation history management needed from scratch
+- All tracked as Phase C blockers in decision.mjs
+
 ## [0.74.0] — 2026-06-08
 
 ### Added — Ezra v6 Phase A-ST: Self-Test Infrastructure (ST-1, ST-2, ST-5)

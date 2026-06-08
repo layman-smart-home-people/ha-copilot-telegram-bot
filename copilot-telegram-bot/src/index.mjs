@@ -23,6 +23,7 @@ import { eventLog } from "./core/event-log.mjs";
 import { metrics } from "./core/metrics.mjs";
 import { testRegistry } from "./testing/test-registry.mjs";
 import "./testing/tests-phase-a.mjs";
+import "./testing/tests-phase-b.mjs";
 import { ensureCopilotBinary, ensureCopilotConfigDir } from "./copilot-bootstrap.mjs";
 import { PkmManager } from "./pkm/index.mjs";
 
