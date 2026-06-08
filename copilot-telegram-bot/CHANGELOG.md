@@ -12,7 +12,7 @@ All notable changes to the Copilot Telegram Bot add-on.
 
 ### Added
 
-- **`.copilot-setup-steps.yml`** — Auto-registers bot MCP sidecar servers (tg-ux, si-tools, rbac-tools, pkm-tools) for standalone Copilot CLI sessions that don't go through the bot's ACP process.
+- **Local MCP registration** — Bot sidecar servers (tg-ux, si-tools, rbac-tools, pkm-tools) can now be added to `$COPILOT_HOME/mcp.json` for standalone CLI sessions via the merge script in the repo README.
 
 ## [1.3.5] — 2026-06-08
 
