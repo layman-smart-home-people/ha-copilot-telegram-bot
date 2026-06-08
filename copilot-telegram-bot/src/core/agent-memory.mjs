@@ -5,7 +5,7 @@
 // context to inject into each new session's preamble.
 // Inspired by OpenClaw's MEMORY.md + daily log pattern.
 
-import { existsSync, readFileSync, readdirSync, mkdirSync, cpSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, mkdirSync, cpSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { createLogger } from "../logger.mjs";
@@ -319,7 +319,7 @@ export class AgentMemory {
             `You have a persistent memory directory at ${agentDir}/. You MUST maintain it:`,
             `- MEMORY.md — update when you learn important durable facts`,
             "- TASKS.md — update when starting, completing, or interrupted on a task",
-            `- Daily logs at ${agentDir}/memory/YYYY-MM-DD.md — append observations with topic tags (e.g. #bot-dev, #home-automation, #debug, #decision)`,
+            `- Daily logs: \`${agentDir}/memory/YYYY-MM-DD/<topic>.md\` — one file per topic (e.g. bot-dev.md, home-automation.md, debug.md, decisions.md). Keep entries concise.`,
             "- Periodically distill daily logs → MEMORY.md. Keep MEMORY.md under 200 lines.",
         ].join("\n");
 
@@ -356,15 +356,33 @@ export class AgentMemory {
             const date = this.#formatDate(d);
             const dayName = d.toLocaleDateString("en-US", { weekday: "short" });
             const label = labels[i] || `${i} days ago`;
-            const filePath = join(memoryDir, `${date}.md`);
+            const dayDir = join(memoryDir, date);
+            const flatFile = join(memoryDir, `${date}.md`);
             try {
-                if (!existsSync(filePath)) continue;
-                let content = readFileSync(filePath, "utf-8").trim();
-                if (!content) continue;
-                if (content.length > MAX_DAILY_LOG_SIZE) {
-                    content = content.slice(0, MAX_DAILY_LOG_SIZE) + "\n... (truncated)";
+                if (existsSync(dayDir) && statSync(dayDir).isDirectory()) {
+                    // New format: directory with topic files
+                    const topics = readdirSync(dayDir).filter(f => f.endsWith(".md")).sort();
+                    let budget = MAX_DAILY_LOG_SIZE;
+                    const parts = [];
+                    for (const f of topics) {
+                        if (budget <= 0) break;
+                        let content = readFileSync(join(dayDir, f), "utf-8").trim();
+                        if (!content) continue;
+                        const topic = f.replace(/\.md$/, "");
+                        if (content.length > budget) content = content.slice(0, budget) + "\n... (truncated)";
+                        parts.push(`### ${topic}\n${content}`);
+                        budget -= content.length;
+                    }
+                    if (parts.length) logs.push(`## ${label} (${dayName} ${date})\n${parts.join("\n")}`);
+                } else if (existsSync(flatFile)) {
+                    // Legacy format: single flat file
+                    let content = readFileSync(flatFile, "utf-8").trim();
+                    if (!content) continue;
+                    if (content.length > MAX_DAILY_LOG_SIZE) {
+                        content = content.slice(0, MAX_DAILY_LOG_SIZE) + "\n... (truncated)";
+                    }
+                    logs.push(`## ${label} (${dayName} ${date})\n${content}`);
                 }
-                logs.push(`## ${label} (${dayName} ${date})\n${content}`);
             } catch (err) {
                 log.warn(`Failed to read daily log ${date}: ${err.message}`);
             }

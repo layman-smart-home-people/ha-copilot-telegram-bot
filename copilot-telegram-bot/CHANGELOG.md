@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.13] — 2026-06-08
+
+### Changed
+
+- **Topic-based daily logs** — New format: `memory/YYYY-MM-DD/<topic>.md` (e.g. `bot-dev.md`, `home-automation.md`). Each topic gets its own file under the date directory. Both v6 and v7 loaders support the new format with fallback to legacy flat `YYYY-MM-DD.md` files. Budget (4KB/day) shared across all topic files.
+
 ## [1.3.12] — 2026-06-08
 
 ### Fixed

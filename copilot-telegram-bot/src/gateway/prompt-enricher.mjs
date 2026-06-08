@@ -5,7 +5,7 @@
 // injects sender metadata, pinned instructions, and role context.
 // Used by the Router before passing text to ConversationManager.
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("prompt-enricher");
@@ -160,7 +160,7 @@ export class PromptEnricher {
             }
         }
 
-        // Load recent daily logs (today + yesterday) — explicit date construction
+        // Load recent daily logs (today + yesterday) — dir-per-day with topic filenames
         const memDir = `${dir}/memory`;
         if (existsSync(memDir)) {
             try {
@@ -173,13 +173,31 @@ export class PromptEnricher {
                     const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
                     const dayName = d.toLocaleDateString("en-US", { weekday: "short" });
                     const label = labels[i] || `${i} days ago`;
-                    const filePath = `${memDir}/${dateStr}.md`;
+                    const dayDir = `${memDir}/${dateStr}`;
+                    const flatFile = `${memDir}/${dateStr}.md`;
                     try {
-                        if (!existsSync(filePath)) continue;
-                        let content = readFileSync(filePath, "utf-8").trim();
-                        if (!content) continue;
-                        if (content.length > MAX_DAILY_LOG_SIZE) content = content.slice(0, MAX_DAILY_LOG_SIZE) + "\n... (truncated)";
-                        logSections.push(`## ${label} (${dayName} ${dateStr})\n${content}`);
+                        if (existsSync(dayDir) && statSync(dayDir).isDirectory()) {
+                            // New format: directory with topic files
+                            const topics = readdirSync(dayDir).filter(f => f.endsWith(".md")).sort();
+                            let budget = MAX_DAILY_LOG_SIZE;
+                            const parts = [];
+                            for (const f of topics) {
+                                if (budget <= 0) break;
+                                let content = readFileSync(`${dayDir}/${f}`, "utf-8").trim();
+                                if (!content) continue;
+                                const topic = f.replace(/\.md$/, "");
+                                if (content.length > budget) content = content.slice(0, budget) + "\n... (truncated)";
+                                parts.push(`### ${topic}\n${content}`);
+                                budget -= content.length;
+                            }
+                            if (parts.length) logSections.push(`## ${label} (${dayName} ${dateStr})\n${parts.join("\n")}`);
+                        } else if (existsSync(flatFile)) {
+                            // Legacy format: single flat file
+                            let content = readFileSync(flatFile, "utf-8").trim();
+                            if (!content) continue;
+                            if (content.length > MAX_DAILY_LOG_SIZE) content = content.slice(0, MAX_DAILY_LOG_SIZE) + "\n... (truncated)";
+                            logSections.push(`## ${label} (${dayName} ${dateStr})\n${content}`);
+                        }
                     } catch { /* skip unreadable */ }
                 }
                 if (logSections.length > 1) sections.push(logSections.join("\n"));
@@ -193,7 +211,7 @@ export class PromptEnricher {
                 `You have a persistent memory directory at ${dir}/. You MUST maintain it:`,
                 "- MEMORY.md — update when you learn important durable facts",
                 "- TASKS.md — update when starting, completing, or interrupted on a task",
-                `- Daily logs at ${dir}/memory/YYYY-MM-DD.md — append observations with topic tags (e.g. #bot-dev, #home-automation, #debug, #decision)`,
+                `- Daily logs: \`${dir}/memory/YYYY-MM-DD/<topic>.md\` — one file per topic (e.g. bot-dev.md, home-automation.md, debug.md, decisions.md). Keep entries concise.`,
                 "- Periodically distill daily logs → MEMORY.md. Keep MEMORY.md under 200 lines.",
             ].join("\n"));
         }
