@@ -11,6 +11,10 @@ import { ACPPool } from "./pool/index.mjs";
 import { ConversationManager } from "./conversation/index.mjs";
 import { Router } from "./gateway/router.mjs";
 import { Permissions } from "./gateway/permissions.mjs";
+import { SIBridge } from "./gateway/si-bridge.mjs";
+import { StandingInstructionManager } from "./ha/standing-instructions.mjs";
+import { StandingInstructionOrchestrator } from "./ha/orchestrator.mjs";
+import { HAEventListener } from "./ha/events.mjs";
 import { loadConfig } from "./config.mjs";
 import { createLogger, setLogLevel } from "./logger.mjs";
 import { ensureCopilotBinary, ensureCopilotConfigDir } from "./copilot-bootstrap.mjs";
@@ -44,6 +48,7 @@ let _pool = null;
 let _convMgr = null;
 let _telegram = null;
 let _router = null;
+let _siOrchestrator = null;
 
 // --- Main ---
 async function main() {
@@ -139,8 +144,31 @@ async function main() {
     telegram.startPolling();
     log.info("✅ Ezra v7 online — polling for messages");
 
-    // Notify owner
+    // --- Standing Instructions ---
     const ownerChatId = config.allowedChatIds?.[0];
+    try {
+        const siManager = new StandingInstructionManager();
+        const haEventListener = new HAEventListener();
+        const siBridge = new SIBridge({ conversationManager: convMgr, telegram, config });
+
+        const siOrchestrator = new StandingInstructionOrchestrator({
+            eventListener: haEventListener,
+            manager: siManager,
+            bridge: siBridge,
+            telegram,
+            ownerChatId,
+            haBaseUrl: "http://supervisor/core/api",
+            haToken: process.env.SUPERVISOR_TOKEN,
+        });
+        _siOrchestrator = siOrchestrator;
+        await siOrchestrator.start();
+        router.setSIOrchestrator(siOrchestrator);
+        log.info("Standing instructions active");
+    } catch (err) {
+        log.warn(`SI startup failed (non-fatal): ${err.message}`);
+    }
+
+    // Notify owner
     if (ownerChatId) {
         const poolStatus = pool.status();
         telegram.sendMessage(
@@ -158,6 +186,7 @@ async function shutdown(signal) {
     try {
         if (_telegram) _telegram.stopPolling();
         if (_router) _router.stop();
+        if (_siOrchestrator) await _siOrchestrator.stop();
     } catch {}
 
     try {
