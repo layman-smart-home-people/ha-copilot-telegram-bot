@@ -69,14 +69,19 @@ class TestRegistry {
         if (!this.#ctx) {
             return { id, phase: test.phase, title: test.title, status: "skip", detail: "Test context not initialized yet", durationMs: 0 };
         }
+        if (this.#running) {
+            return { id, phase: test.phase, title: test.title, status: "skip", detail: "Test run already in progress", durationMs: 0 };
+        }
         const start = Date.now();
+        let timer;
         try {
             const result = await Promise.race([
                 test.fn(this.#ctx, instrumentation),
-                new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error("Test timed out (30s)")), TEST_TIMEOUT_MS)
-                ),
+                new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(new Error("Test timed out (30s)")), TEST_TIMEOUT_MS);
+                }),
             ]);
+            clearTimeout(timer);
             return {
                 id,
                 phase: test.phase,
@@ -86,6 +91,7 @@ class TestRegistry {
                 durationMs: Date.now() - start,
             };
         } catch (err) {
+            clearTimeout(timer);
             return {
                 id,
                 phase: test.phase,

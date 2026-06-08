@@ -90,9 +90,10 @@ const SELF_TEST_TOOL = {
     name: "self_test",
     description:
         "Run self-tests to verify Ezra v6 requirements. " +
-        "Call with {id} for one requirement (e.g. 'SI-1'), " +
+        "Provide exactly one of: {id} for one requirement (e.g. 'SI-1'), " +
         "{phase} for all requirements in a phase (e.g. 'A'), " +
         "or {all: true} for full regression. " +
+        "If multiple params given, precedence is: all > phase > id. " +
         "Returns pass/fail/skip status with details for each requirement tested.",
     inputSchema: {
         type: "object",
@@ -321,14 +322,14 @@ async function handleNotifyUser(id, args) {
 }
 
 async function handleSelfTest(id, args) {
-    if (!args || (typeof args !== "object")) {
+    if (!args || (typeof args !== "object") || (!args.id && !args.phase && !args.all)) {
         send(id, {
             content: [{ type: "text", text: "Error: provide {id}, {phase}, or {all: true}" }],
             isError: true,
         });
         return;
     }
-    const mode = args.all ? "all" : args.phase ? `phase:${args.phase}` : args.id ? `id:${args.id}` : "none";
+    const mode = args.all ? "all" : args.phase ? `phase:${args.phase}` : `id:${args.id}`;
     log(`self_test called: ${mode}`);
     pendingCalls++;
     try {

@@ -579,6 +579,7 @@ export class Orchestrator {
             watchdog.unref?.();
 
             try {
+                instrumentation.recordLlmCall();
                 await overflowAcp.prompt(fullPrompt, {});
             } catch (err) {
                 if (timedOut) {
@@ -2138,6 +2139,7 @@ export class Orchestrator {
                     // Text already contains the preamble from the first attempt — reuse as-is
                     // Mark preambleSent true so the NEXT prompt after this doesn't double it
                     scope.preambleSent = true;
+                    instrumentation.recordLlmCall();
                     const retryResult = await this.#acp.prompt(text, opts);
                     const retryElapsed = ((Date.now() - promptStartMs) / 1000).toFixed(1);
                     log.info(`Retry prompt completed: ${scopeKey || 'unknown'} in ${retryElapsed}s (${scope?.turnToolCount || 0} tool calls)`);
