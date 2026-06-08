@@ -111,6 +111,15 @@ export async function loadConfig() {
         backgroundEnabled: options.background_enabled === true,
         backgroundModel: options.background_model || "",
         backgroundIdleMinutes: Number(options.background_idle_minutes) || 5,
+
+        // ACP Pool (v7)
+        poolSize: Math.min(Math.max(Number(options.pool_size) || 5, 1), 10),
+        poolPreWarm: Math.min(Math.max(Number(options.pool_pre_warm) || 1, 0), 10),
+        poolIdleMinutes: Number(options.pool_idle_minutes) || 5,
+        poolWaitTimeoutSeconds: Number(options.pool_wait_timeout_seconds) || 30,
+        defaultModel: options.default_model || "standard",
+        guestModel: options.guest_model || "fast",
+        siDefaultModel: options.si_default_model || "standard",
     };
 
     // Try to load MCP config (copilot uses mcp-config.json)
