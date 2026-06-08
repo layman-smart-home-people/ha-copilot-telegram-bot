@@ -1,236 +1,473 @@
-# Copilot Telegram Bot
+# Copilot Telegram Bot — v7 Documentation
 
-**Control your smart home with AI — right from Telegram.** Version **0.28.0**.
+Version **1.0.0** is the v7 rewrite of the Home Assistant add-on that connects **Telegram** to **GitHub Copilot CLI** through **ACP (Agent Client Protocol)**.
 
----
+The big change is architectural: v7 replaces the old single-instance orchestrator with an **ACP Pool** that can run multiple Copilot CLI workers at once.
 
-## 🏠 What Is This?
+For installation and a fast onboarding flow, start with [README.md](./README.md).
 
-This Home Assistant add-on gives you an always-on AI assistant in Telegram, with a built-in web dashboard, persistent agent memory, and a standing instruction system for alerts, reminders, and scheduled tasks.
+## ✨ What changed in v7
 
-You can use it like a chat assistant, a smart-home operator, or a proactive helper that watches for events and acts on them.
+- **ACP Pool** with **1-10** configurable Copilot CLI instances
+- **Concurrent conversations** instead of one global worker
+- **Scope isolation** by DM, group user, or forum topic
+- **Steering** when a user changes direction mid-response
+- **Crash recovery** that reacquires a new instance and retries automatically
+- **Progressive Telegram rendering** via the new ResponseStreamer
+- A much smaller Telegram command surface: **7 commands only**
 
-No coding is required to get started.
+## 🧱 Architecture overview
 
-## 💬 What Can I Do With It?
+### ACP Pool
 
-Here are some things you can ask your bot:
+The pool is the runtime core of v7.
 
-- **"Turn off all the lights"** — control Home Assistant devices
-- **"What's the temperature upstairs?"** — read sensors and entity state
-- **"Is the front door locked?"** — check status before you sleep
-- **"Remind me at 8 PM to take my medicine"** — create a timed reminder
-- **"If the washer finishes, alert me"** — create a standing instruction
-- **"Show me today's calendar"** — read HA calendars
-- **"Summarize all active alerts and battery issues"** — generate reports
-- **"Open the docs and change your default tone"** — customize agent behavior
+- Configurable size: **1-10 instances**
+- Default size: **5**
+- Model tiers:
+  - `fast` → Claude Haiku 4.5
+  - `standard` → Claude Sonnet 4.5
+  - `reasoning` → Claude Opus 4.6
+- MCP profiles:
+  - `owner` → full Home Assistant tooling
+  - `guest` → restricted tooling
 
-You can also reply to earlier messages for context, pin chat-specific instructions, work from Telegram or the WebUI, and keep long-term memory between sessions.
+When a conversation needs a worker, the pool tries this acquire path:
 
-## 🚀 Getting Started
+1. **Sticky** — reuse the instance already claimed by that scope
+2. **Matching idle** — exact model tier + MCP profile match
+3. **Spawn** — create a new worker if below pool limit
+4. **Reconfigure** — retune an idle worker to the requested model
+5. **Evict** — remove the oldest idle worker if necessary
+6. **Wait queue** — hold briefly until a suitable worker becomes available
 
-You'll need three things:
+The pool also handles:
 
-- a Telegram bot
-- a GitHub account with Copilot access
-- your Telegram user ID
+- health checks
+- idle reaping
+- crash supervision
+- pre-warming
+- per-instance isolation
 
-### Step 1 — Create Your Telegram Bot
+### Conversations
 
-1. Open Telegram and search for **@BotFather**
-2. Send `/newbot` and follow the prompts
-3. Copy the **bot token** BotFather gives you
+Each active scope gets its own conversation object and, while active, its own claimed pool instance.
 
-It looks something like:
+Conversation states are:
 
-```text
-123456789:ABC...xyz
-```
+- `idle`
+- `prompting`
+- `eliciting`
+- `dead`
 
-### Step 2 — Find Your Telegram User ID
+Two important behaviors define v7:
 
-1. Open Telegram and search for **@userinfobot**
-2. Send it any message
-3. Copy your numeric ID
+#### Steering
 
-### Step 3 — Configure the Add-on
+If a user sends another message while the bot is still processing, the conversation cancels the old prompt and starts the new one.
 
-In Home Assistant, open the add-on configuration and fill in:
+#### Crash recovery
 
-- **`bot_token`** — your Telegram bot token
-- **`allowed_chat_ids`** — your Telegram user ID
+If a Copilot CLI instance dies mid-conversation, v7 automatically acquires a new instance for the same scope and retries the prompt.
 
-Optional but useful:
+### ResponseStreamer
 
-- **`github_token`** — for GitHub-backed Copilot features
-- **`agent_dir`** — where the bot stores identity, memory, skills, and tasks
+The v7 streamer renders replies progressively in four layers:
 
-### Step 4 — Start the Add-on
+1. primary content text
+2. code blocks and formatted output
+3. expandable details/tool context
+4. inline buttons
 
-Start the add-on from Home Assistant.
+Rendering mode depends on chat type:
 
-Then:
+- **Private chats** use draft-style progressive rendering
+- **Groups and forums** use edit-in-place rendering
 
-- send your bot a message in Telegram, or
-- open the add-on's **WebUI** through Home Assistant Ingress
+### Gateway
 
-### Step 5 — Try a Few Commands
+The Gateway is the clean routing layer in front of the pool and conversations.
 
-Good first commands:
+It includes:
 
-- `/help` — show the main command menu
-- `/status` — live bot status
-- `/model` — choose an AI model
-- `/standing` — inspect standing instructions
-
-## 🎯 Handy Tips for Everyday Use
-
-- **Reply to a message** to give Copilot more context
-- **Pin a message** to add chat-specific guidance like "Always answer in Bahasa"
-- Use `/help` if you prefer buttons over typing commands
-- Use `/status` for a live control panel
-- Use `/standing` for reminders, alerts, and scheduled actions
-- Use the **WebUI** for longer editing tasks, docs, logs, and configuration
-- Use `/stop` or `/cancel` if something is taking too long
-
----
-
-*The rest of this document covers commands, features, and configuration in more detail.*
-
----
-
-## How It Works (Technical Overview)
-
-This add-on runs a Telegram bot connected to GitHub Copilot CLI via ACP (Agent Client Protocol).
-
-When a session starts, the bot injects multiple layers of context:
-
-- the **preamble** — channel-specific instructions such as Telegram formatting and API hints
-- the agent's persistent files from **`agent_dir`** — especially `IDENTITY.md`, `MEMORY.md`, `SKILLS.md`, and `TASKS.md`
-- chat-specific context such as pinned messages and reply chains
-
-The result is an assistant that can:
-
-- answer questions and perform actions through Home Assistant tools
-- remember durable facts across sessions
-- manage ongoing tasks
-- react automatically through standing instructions
-- be administered through Telegram or the WebUI
-
-## Commands
-
-### Everyday Commands
-
-- `/help` — show help with quick-action buttons
-- `/status` — open the live status menu
-- `/history [n]` — show recent messages
-- `/retry` — resend your last message
-- `/stop` — cancel the current operation
-- `/cancel` — alias for `/stop`
-- `/compact` — compress conversation history
-- `/usage` — show token usage and session stats
-- `/context` — same usage/context-window view as `/usage`
-
-### Mode & Model Commands
-
-- `/autopilot [on|off]` — let the agent execute without pausing for each step
-- `/plan [on|off]` — prefer plan-first behavior
-- `/fleet` — parallel agent mode
-- `/mode` — interactive mode switcher
-- `/model [name]` — choose a model by name or from a picker
-- `/allowall [on|off]` — auto-approve tool calls for the current conversation
-
-### Session & Topic Commands
-
-- `/new [title]` — start a new session; in forum mode this creates a new topic
-- `/close` — close the current forum topic
-- `/delete` — delete the current forum topic
-- `/sessions` — list active sessions/scopes
-- `/clear` — reset the current conversation/session
-- `/session new` — start a fresh session in the current scope
-- `/session stop` — stop Copilot for the current scope
-- `/session kill` — hard-stop the current scope session
-
-### Pairing & Access Commands
-
-- `/pair` — pairing help for adding users
-- `/pair list` — list paired users (admin)
-- `/unpair <userId>` — remove a user's access
-
-### Discovery Commands
-
-- `/skills` — list available MCP tools and bot capabilities
-- `/tools` — alias for `/skills`
-
-### Standing Instruction Commands
-
-- `/standing` — show the standing instruction summary
-- `/standing list` — list instructions
-- `/standing inspect <id>` — inspect a specific instruction
-- `/standing enable <id|all>` — enable one or more instructions
-- `/standing disable <id|all>` — disable one or more instructions
-- `/standing delete <id|all>` — delete one or more instructions
-- `/standing pause` — pause all standing instructions temporarily
-- `/standing resume` — resume paused instructions
-- `/standing mute <duration>` — suppress triggers for a while (for example `30m` or `2h`)
-
-## Features
+- **Router** — parses Telegram updates, resolves scopes, handles the 7 commands
+- **Permissions** — role gate with `owner`, `member`, and `guest`
+- **PromptEnricher** — injects sender info, pinned instructions, and agent files
 
 ### Standing Instructions
 
-**Standing Instructions** are the add-on's built-in system for automated alerts, reminders, and scheduled tasks.
+Standing instructions still work the same way as before. They remain the add-on's persistent automation-style system for alerts, reminders, scheduled work, and agent wake-ups.
 
-They persist across restarts and can be created or edited by:
+### WebUI
 
-- asking the agent in plain language
-- using `/standing`
-- using the WebUI **Instructions** tab
-- editing the JSON file directly
+The Ingress WebUI remains available and is the main operator surface for:
 
-### Storage & Reloading
+- status dashboards
+- web chat
+- standing instruction management
+- editing agent docs
+- viewing logs
+- editing add-on config
 
-- Stored at **`/data/standing_instructions.json`**
-- Changes are **hot-reloaded immediately** when the file changes
-- No add-on restart is required after saving the file
+## 💬 Command reference
 
-### Trigger Types
+v7 intentionally keeps only these commands in Telegram:
 
-Each instruction has one trigger. Supported trigger types are:
+### `/help`
+Show the current command list.
 
-- **`state_change`** — watch one or more Home Assistant entities for changes
-- **`cron`** — run on a recurring 5-field cron schedule
-- **`timer`** — run once at a specific timestamp
+### `/status`
+Show bot, pool, conversation, and metrics status.
 
-### Action Types
+Typical status output includes:
 
-Each instruction has one action. Supported action types are:
+- active / idle / booting pool counts
+- current instance assignments
+- active conversation count
+- total prompt count
+- wait queue size
+- crash count (if any)
 
-- **`wake_agent`** — wake Copilot with a prompt for reasoning-heavy work
-- **`notify`** — send a Telegram notification directly
-- **`ha_service`** — call a Home Assistant service directly without waking the agent
+### `/new`
+Start a fresh conversation in the current scope.
 
-`ha_service` is new in **0.28.0** and is ideal for fast, lightweight actions such as toggling helpers, scenes, lights, or scripts.
+### `/stop`
+Cancel the current operation for the current scope.
 
-### Lifecycle Controls
+### `/settings`
+Coming soon.
 
-Standing instructions can be made temporary or self-limiting:
+### `/standing`
+Coming soon.
 
-- **`one_shot`** — disable after the first trigger
-- **`max_triggers`** — disable after firing a set number of times
-- **`expires_at`** — disable after a specific date/time
+The standing instruction engine itself is already available; this command surface is just not finished yet.
 
-### Chaining & Context
+### `/memory`
+Coming soon.
 
-Standing instructions can work together:
+The memory system itself is already available; this command surface is just not finished yet.
 
-- **`chain_enable`** — enable another instruction after this one fires
-- **`notes`** — store free-form context for the agent between linked instructions
+## 🧭 Scope model: DMs, groups, and forums
 
-This lets you build small workflows, such as:
+Understanding scopes is the most important behavior change in v7.
 
-1. one instruction watches for arrival
-2. it enables a second instruction for a departure event
-3. the second instruction handles the follow-up action
+### Scope keys
+
+v7 uses these scope keys internally:
+
+- `dm:{userId}`
+- `group:{chatId}:{userId}`
+- `forum:{chatId}:{threadId}`
+
+### Direct messages
+
+In DMs, each user gets one conversation:
+
+- one user
+- one DM scope
+- one claimed pool instance while active
+
+### Groups (non-forum)
+
+In standard groups and supergroups **without topics**, the bot isolates conversations **per user within the group**.
+
+That means:
+
+- two different people in the same group do **not** share one conversation state
+- each user gets their own scope inside that group
+- this prevents accidental context bleed between participants
+
+### Forum groups (topics enabled)
+
+In Telegram forum groups, the bot isolates by **topic thread**.
+
+That means:
+
+- each topic gets its own conversation
+- messages inside one topic do not affect another topic
+- the bot simply follows Telegram's thread model automatically
+
+There is **no special user notification** about thread mode. It just works based on where the message arrives.
+
+### Summary
+
+- **DM:** per user
+- **Group (non-forum):** per user within the group
+- **Forum:** per topic thread
+
+## 👥 Permissions and roles
+
+v7 uses a simple 3-role system:
+
+- **owner** — full access
+- **member** — allowed user with owner MCP profile and normal default model routing
+- **guest** — allowed user with restricted MCP profile and guest model routing
+
+Sources of authority:
+
+- `allowed_chat_ids` seed the initial **owner** accounts
+- optional RBAC data can add members and guests
+
+Role behavior:
+
+- owners and members use `default_model`
+- guests use `guest_model`
+- standing instructions use `si_default_model`
+
+## 🧠 Prompt enrichment and persistent context
+
+On the first message of a conversation, v7 injects:
+
+- the configured `preamble`
+- agent files from the agent directory
+- sender identity metadata
+- any pinned chat instructions
+- reply context when the user replies to a bot message
+
+This makes each new conversation start with the right operating context without the user repeating setup information.
+
+## 📌 Pinned messages
+
+Pinned messages are still supported and still useful.
+
+Use a pinned message for durable chat context such as:
+
+- response style preferences
+- naming conventions
+- room aliases
+- household rules
+
+Examples:
+
+- “Always answer in Bahasa.”
+- “Call the upstairs AC Jasmine AC.”
+- “Keep replies under 5 bullets.”
+
+Pinned messages are **not** the same as standing instructions:
+
+- pinned messages shape conversational behavior
+- standing instructions trigger automation-like behavior over time
+
+## ↩️ Reply context
+
+If a user replies to a bot message, the router preserves that reply context and includes a short reference in the prompt.
+
+This helps follow-up questions stay coherent without rebuilding the full prior conversation manually.
+
+## ⚙️ Configuration reference
+
+Below is the v7 add-on configuration surface.
+
+```yaml
+bot_token: ""
+allowed_chat_ids: []
+github_token: ""
+copilot_binary: auto
+copilot_config_dir: auto
+copilot_extra_args: ""
+preamble: >-
+  This message arrived via Telegram. Be concise and mobile-friendly.
+  Use markdown (bold, lists, code blocks) — it's auto-converted to Telegram HTML.
+  Never use tables. For complex data, save an HTML report to /config/www/ and share the URL.
+  You have direct HA access: curl -s http://supervisor/core/api/... -H "Authorization: Bearer $SUPERVISOR_TOKEN".
+  If ha-mcp MCP tools are available, prefer those for dashboards.
+auto_start: true
+idle_timeout_minutes: 0
+model: auto
+working_directory: /config
+permission_policy: interactive
+group_mode: mention
+allowed_groups: []
+max_group_members: 50
+agent_dir: /config/.agent
+log_level: info
+pool_size: 5
+pool_pre_warm: 1
+pool_idle_minutes: 5
+pool_wait_timeout_seconds: 30
+default_model: standard
+guest_model: fast
+si_default_model: standard
+```
+
+### Required settings
+
+#### `bot_token`
+Telegram bot token from **@BotFather**.
+
+#### `allowed_chat_ids`
+List of Telegram user IDs that are allowed to use the bot immediately. These users become the initial **owners**.
+
+### Authentication and Copilot settings
+
+#### `github_token`
+Optional GitHub token. If omitted, you can authenticate Copilot later through its normal auth flow.
+
+#### `copilot_binary`
+Path to the Copilot CLI binary, or `auto`.
+
+#### `copilot_config_dir`
+Path to the Copilot auth/config directory, or `auto`.
+
+#### `copilot_extra_args`
+Additional arguments passed to the Copilot CLI process.
+
+#### `preamble`
+Channel-specific system guidance injected at conversation start.
+
+Use this for:
+
+- formatting instructions
+- environment hints
+- output preferences
+- operational reminders
+
+### Runtime behavior
+
+#### `auto_start`
+If `true`, start the bot automatically with the add-on.
+
+#### `idle_timeout_minutes`
+Legacy top-level idle timeout. Still exposed for compatibility.
+
+#### `model`
+Legacy compatibility option from earlier versions. In v7, prefer `default_model`, `guest_model`, and `si_default_model`.
+
+#### `working_directory`
+Default working directory for Copilot CLI workers. Default: `/config`.
+
+#### `permission_policy`
+Default permission policy. Supported values:
+
+- `interactive`
+- `allow_all`
+
+#### `log_level`
+Logging verbosity:
+
+- `debug`
+- `info`
+- `warn`
+- `error`
+
+### Group behavior
+
+#### `group_mode`
+How the bot reacts in groups:
+
+- `mention` — react when mentioned, replied to, or addressed via command
+- `all` — react to every message in the group
+
+#### `allowed_groups`
+Optional allow-list of Telegram group IDs.
+
+#### `max_group_members`
+Reject or avoid overly large groups.
+
+### Agent files and memory
+
+#### `agent_dir`
+Directory containing agent files such as:
+
+- `IDENTITY.md`
+- `MEMORY.md`
+- `SKILLS.md`
+- `TASKS.md`
+- `memory/YYYY-MM-DD.md`
+
+For v7 documentation and seeded agent files, use:
+
+```text
+/config/.agent
+```
+
+If you are upgrading from older installs, you may still see legacy layouts. Keep your WebUI docs editor, runtime config, and operational files aligned to one directory.
+
+### Pool settings (new in 1.0.0)
+
+#### `pool_size`
+Number of ACP workers to keep available.
+
+- Range: `1-10`
+- Default: `5`
+
+#### `pool_pre_warm`
+How many workers to boot eagerly at startup.
+
+- Range: `0-10`
+- Default: `1`
+
+#### `pool_idle_minutes`
+How long an idle worker may live before being reaped.
+
+- Range: `1-60`
+- Default: `5`
+
+#### `pool_wait_timeout_seconds`
+How long a request waits in the pool queue before timing out.
+
+- Range: `5-120`
+- Default: `30`
+
+#### `default_model`
+Model tier for owners and members.
+
+- `fast`
+- `standard`
+- `reasoning`
+
+Default: `standard`
+
+#### `guest_model`
+Model tier for guests.
+
+Default: `fast`
+
+#### `si_default_model`
+Model tier used by standing instructions when they wake an agent.
+
+Default: `standard`
+
+## 🔁 Standing Instructions
+
+Standing instructions are still a first-class part of the add-on in v7.
+
+### Storage and lifecycle
+
+- Stored at: `/data/standing_instructions.json`
+- Persist across restarts
+- Hot-reloaded when the file changes
+- Manageable through the WebUI
+
+### Trigger types
+
+- `state_change`
+- `cron`
+- `timer`
+
+### Action types
+
+- `wake_agent`
+- `notify`
+- `ha_service`
+
+### Useful control fields
+
+- `enabled`
+- `cooldown_seconds`
+- `one_shot`
+- `expires_at`
+- `max_triggers`
+- `notes`
+- `chain_enable`
+
+### Typical uses
+
+- temperature or battery alerts
+- timed reminders
+- calendar-like nudges
+- wake-the-agent investigation workflows
+- direct Home Assistant service calls without waking the agent
 
 ### Example
 
@@ -239,391 +476,172 @@ This lets you build small workflows, such as:
   "version": 1,
   "instructions": [
     {
-      "description": "Remind me to water the plants tomorrow morning",
+      "description": "Turn off the porch light at midnight",
       "enabled": true,
       "trigger": {
-        "type": "timer",
-        "fire_at": "2025-01-15T01:00:00.000Z"
+        "type": "cron",
+        "expression": "0 0 * * *"
       },
       "action": {
-        "type": "notify",
-        "message": "🪴 Time to water the plants"
-      },
-      "one_shot": true,
-      "notes": "Kitchen and balcony plants"
+        "type": "ha_service",
+        "domain": "light",
+        "service": "turn_off",
+        "data": {
+          "entity_id": "light.porch"
+        }
+      }
     }
   ]
 }
 ```
 
-### Agent Memory System
+## 🗂️ Agent memory system
 
-The add-on now has a persistent **agent memory system** so the assistant can keep a stable identity and remember important facts across sessions.
+The persistent agent files still matter in v7.
 
-By default, the memory directory is:
+### Core files
+
+- `IDENTITY.md` — personality, role, and operating rules
+- `MEMORY.md` — durable remembered facts
+- `SKILLS.md` — operational knowledge and standing-instruction reference
+- `TASKS.md` — in-progress work and handoff state
+- `memory/YYYY-MM-DD.md` — daily logs and recent observations
+
+### Recommended v7 location
 
 ```text
-/config/copilot-telegram-bot
+/config/.agent
 ```
 
-You can change this with the **`agent_dir`** config option.
+### How it is used
 
-### Files in `agent_dir`
-
-- **`IDENTITY.md`** — the agent's personality, role, and operating rules
-- **`MEMORY.md`** — long-term learned facts and durable knowledge
-- **`SKILLS.md`** — skills/capabilities reference loaded into session context
-- **`TASKS.md`** — active task tracking and resume notes
-- **`memory/YYYY-MM-DD.md`** — daily logs for recent observations and work
-
-### How It Works
-
-On a fresh install, the add-on automatically creates and seeds these files with defaults.
-
-On each new session, it loads:
+At conversation start, the bot loads these files into prompt context so the agent begins with:
 
 - identity
-- memory
-- skills
-- tasks
-- recent daily logs
+- persistent memory
+- skills/reference material
+- any unfinished tasks
 
-This gives the assistant continuity without you having to repeat everything every time.
+### Important note
 
-### Preamble vs `IDENTITY.md`
+`MEMORY.md` is user-specific operational data. Leave it intact during documentation updates and migrations unless you explicitly intend to rewrite user memory.
 
-These two are related, but they do different jobs.
+## 🖥️ WebUI
 
-### The Preamble
+The WebUI remains available via Home Assistant Ingress.
 
-The **`preamble`** config option is for channel-specific instructions such as:
+### Main areas
 
-- how to format Telegram replies
-- reminders like "don't use tables"
-- API access hints
-- environment notes
+#### Dashboard
 
-### `IDENTITY.md`
+Operational overview of bot state, scopes, and activity.
 
-**`IDENTITY.md`** is where the assistant's personality and behavior live, for example:
+#### Chat
 
-- tone and style
-- what it should prioritize
-- how proactive it should be
-- household-specific rules and preferences
+A web-based Copilot chat surface separate from Telegram.
 
-### Important Behavior
+#### Instructions
 
-Both the **preamble** and **`IDENTITY.md`** are injected at session start.
+Standing instructions manager.
 
-Use them like this:
+#### Docs
 
-- customize **`preamble`** for **format and channel behavior**
-- customize **`IDENTITY.md`** for **personality, role, and rules**
+Edit agent files such as:
 
-### WebUI
+- `IDENTITY.md`
+- `MEMORY.md`
+- `SKILLS.md`
+- `TASKS.md`
+- daily logs
 
-The add-on includes a built-in **WebUI** available through Home Assistant Ingress.
+#### Logs
 
-Open it from the add-on page or sidebar panel.
+Live add-on log viewer.
 
-### Tabs
+#### Config
 
-- **Dashboard** — status overview, system details, and activity summary
-- **Chat** — web-based Copilot chat separate from Telegram
-- **Instructions** — visual standing instruction manager
-- **Docs** — edit agent docs like `IDENTITY.md`, `MEMORY.md`, `SKILLS.md`, `TASKS.md`, and daily logs
-- **Logs** — view live bot logs
-- **Config** — edit add-on configuration
+Edit add-on configuration through the UI.
 
-The WebUI is especially useful for desktop use, longer edits, and reviewing logs without leaving Home Assistant.
+## 📎 File attachments
 
-### Pinned Messages as Persistent Chat Context
+Attachment support is still a **planned/expanding area** in v7.
 
-Pinned messages still work, but they are **not** the same thing as standing instructions.
+Current guidance:
 
-Use a **pinned message** for chat context such as:
+- treat the Telegram bot as **text-first**
+- do not rely on rich attachment workflows as a documented stable surface yet
+- keep text attachments and richer media support marked as planned unless your deployment has explicitly validated them
 
-- "Always answer in Bahasa"
-- "Call the upstairs AC 'Jasmine AC'"
-- "Keep responses under 5 bullet points"
+## 🔧 Troubleshooting
 
-Use a **standing instruction** for automation-like behavior such as:
+### The bot does not respond
 
-- "If freezer temperature rises above -10°C, alert me"
-- "Remind me at 9 PM to lock the gate"
+Check, in order:
 
-Each chat can have its own pinned context.
+1. `bot_token` is valid
+2. your user ID is in `allowed_chat_ids` or RBAC grants you access
+3. add-on logs show successful Telegram polling and Copilot startup
 
-### Reply Context & Chains
+### `/status` shows all workers busy
 
-Reply to any message to include it as context. If that message was itself a reply, the bot walks the recent reply chain so follow-up questions stay coherent.
+You are saturating the pool.
 
-This works for both user messages and bot messages.
+Options:
 
-### Permission System
+- increase `pool_size`
+- shorten heavy tasks
+- use `fast` for guests or lighter traffic
+- increase `pool_wait_timeout_seconds` if short bursts are normal
 
-The bot has two permission modes:
+### Responses change direction unexpectedly
 
-- **Interactive** (default) — safe/default mode; write actions ask for approval
-- **Allow-all** — auto-approve tool calls for that conversation
+That is usually **steering**, not a bug. In v7, a new user message while the bot is still processing cancels the previous prompt and redirects the conversation.
 
-Use `/allowall` to switch modes quickly.
+### Group and forum behavior seems inconsistent
 
-Permissions are scoped per conversation, so changing behavior in one chat does not silently change another.
+It is probably scope handling working as designed:
 
-### Multi-User Session Isolation
+- non-forum groups isolate per user
+- forum groups isolate per topic thread
 
-Each conversation gets its own Copilot session:
+### Standing instructions are not firing
 
-- **DM** — one private session per user
-- **Group** — one shared session per group
-- **Forum topic** — one session per topic
+Check:
 
-Sessions are created automatically on first use.
+- the instruction is enabled
+- trigger conditions actually match
+- `/data/standing_instructions.json` is valid JSON
+- HA connectivity is healthy
+- WebUI logs show no standing-instruction reconnect issues
 
-Use `/sessions` to inspect active scopes.
+### Agent doc edits are not taking effect
 
-### Group Chat Support
+Start a new conversation with `/new` after editing `IDENTITY.md`, `SKILLS.md`, or `TASKS.md`.
 
-The bot works in Telegram groups and forum supergroups.
+### WebUI is blank or stale
 
-### Group Modes
+Try:
 
-- **`mention`** (default) — reply only when mentioned, replied to, or called with `/command@botname`
-- **`all`** — reply to every message in the group
+- hard refresh
+- reopening through Home Assistant Ingress
+- restarting the add-on if frontend assets failed to load
 
-### Safety Controls
+### Copilot authentication errors
 
-- **`allowed_groups`** — whitelist permitted groups
-- **`max_group_members`** — keep the bot out of very large groups
+Complete GitHub Copilot authentication and verify the configured auth directory/binary paths if you overrode them.
 
-Unauthorized users in groups are guided through pairing instead of being allowed in automatically.
+### Forum topics are not isolated correctly
 
-### Rate Limiting
+Make sure the Telegram chat is actually a **forum-enabled supergroup**. In a normal group, the bot will use per-user group scopes instead of topic scopes.
 
-The bot rate-limits incoming messages to keep one user from overwhelming the service.
+## 🔗 Links
 
-If you hit the limit, wait a moment and use `/retry` if needed.
+- Repository: https://github.com/layman-smart-home-people/ha-copilot-telegram-bot
+- Add-on slug: `copilot-telegram-bot`
+- README: [README.md](./README.md)
+- Changelog: [CHANGELOG.md](./CHANGELOG.md)
+- Issues: https://github.com/layman-smart-home-people/ha-copilot-telegram-bot/issues
 
-### Forum Mode (Topic-per-Session)
+---
 
-In Telegram forum supergroups, each topic becomes its own independent AI session.
-
-- the **General** topic is reserved for management/commands
-- `/new [title]` creates a topic with its own session
-- `/close` closes the current topic session
-- `/delete` deletes the topic and its session
-
-This is useful for organizing projects, households, or issue threads.
-
-### User Pairing
-
-You can add users without editing the add-on config every time.
-
-Typical flow:
-
-1. an unknown user messages the bot
-2. a pairing code is generated
-3. the code appears in add-on logs
-4. an admin shares the code with the user
-5. the user sends the code to the bot
-
-Users in **`allowed_chat_ids`** are admins automatically.
-
-### Status Menu
-
-`/status` opens a live status menu with quick controls and current state, including things like:
-
-- whether Copilot is running
-- current model and mode
-- usage/session information
-- permission mode
-- active sessions
-- shortcut buttons for common actions
-
-### Progressive Response Display
-
-Replies stream progressively into Telegram:
-
-- thinking indicator
-- tool activity
-- partial answer preview
-- final response in place
-
-If the answer involved reasoning or tools, the bot can include a collapsible details block under the final message.
-
-### Emoji Reactions
-
-The bot uses emoji reactions to show status, such as:
-
-- ⚡ processing
-- ⏳ queued
-- ✅ finished
-- ⚠️ finished with issues
-- ✏️ edited/reprocessed
-
-### Message Editing
-
-Editing a message after sending is supported:
-
-- while queued — the queued request is updated
-- while running — the current operation is cancelled and resubmitted
-- after completion — the correction is sent back as follow-up context
-
-### File Attachments
-
-The bot can read common text files and pass them to the agent as context.
-
-Examples include:
-
-- `.yaml`
-- `.json`
-- `.py`
-- `.log`
-- `.txt`
-- `.csv`
-- `.xml`
-- `.md`
-
-Text attachments are read as UTF-8 and limited to about **50 KB**. Images are passed through for visual analysis.
-
-### Unsupported Media
-
-Unsupported media is handled gracefully.
-
-Examples:
-
-- voice/audio — suggests text or speech-to-text
-- video/GIF — suggests a screenshot
-- stickers — sends sticker emoji as context when possible
-- locations — forwards coordinates
-- contacts — politely rejected
-
-### Graceful Shutdown
-
-If the add-on stops while a request is running, the bot notifies the affected user so the interruption is visible instead of silent.
-
-## Configuration Options
-
-All existing options remain available in **0.28.0**.
-
-### Required
-
-**`bot_token`**
-Your Telegram bot token from @BotFather.
-
-**`allowed_chat_ids`**
-Telegram user/chat IDs allowed to use the bot. These users are also treated as admins for pairing.
-
-### Authentication
-
-**`github_token`**
-Optional GitHub token for Copilot/GitHub-backed features. If omitted, you can authenticate later through the device flow.
-
-### Copilot Settings
-
-**`model`**
-Default model. Use `auto` for automatic selection, or set a specific model name.
-
-**`preamble`**
-Channel-specific prompt prefix injected at session start. Best used for formatting, delivery style, and environment hints.
-
-**`permission_policy`**
-Default permission behavior on startup:
-
-- `interactive`
-- `allow_all`
-
-**`copilot_binary`**
-Path to the Copilot CLI binary. `auto` lets the add-on manage it automatically.
-
-**`copilot_config_dir`**
-Directory for Copilot authentication/config. `auto` lets the add-on manage it automatically.
-
-**`copilot_extra_args`**
-Additional CLI arguments passed to Copilot.
-
-### Behavior
-
-**`auto_start`**
-If `true`, Copilot starts with the add-on. If `false`, it starts on first use.
-
-**`idle_timeout_minutes`**
-Stop Copilot after inactivity. `0` means never auto-stop.
-
-**`working_directory`**
-The default working directory for Copilot. Default: `/config`.
-
-**`agent_dir`**
-Directory for the agent memory system. Default:
-
-```text
-/config/copilot-telegram-bot
-```
-
-This directory stores `IDENTITY.md`, `MEMORY.md`, `SKILLS.md`, `TASKS.md`, and daily logs.
-
-### Group Settings
-
-**`group_mode`**
-How the bot behaves in groups:
-
-- `mention`
-- `all`
-
-**`allowed_groups`**
-Optional list of group IDs the bot is allowed to join.
-
-**`max_group_members`**
-Maximum allowed group size before the bot leaves or refuses the group.
-
-## Troubleshooting
-
-**Bot doesn't respond at all**
-→ Check the add-on logs first. Common causes are a wrong bot token or your chat ID missing from `allowed_chat_ids`.
-
-**The WebUI does not load**
-→ Refresh the page, then restart the add-on if needed. If Ingress works but the UI stays blank, check add-on logs for WebUI startup errors.
-
-**Standing instructions are not firing**
-→ Check `/standing` or the WebUI Instructions tab. Confirm the instruction is enabled, not expired, and that the trigger condition actually matches. If you edited `/data/standing_instructions.json`, verify the JSON is valid.
-
-**Changes to `standing_instructions.json` are ignored**
-→ Save the file fully and check logs for validation errors. The file is hot-reloaded, so a restart should not be necessary.
-
-**Agent personality changes are not taking effect**
-→ Edit `IDENTITY.md` in `agent_dir`, then start a **new session** so the updated context is injected.
-
-**"Copilot binary not found"**
-→ On first start, the add-on auto-downloads the Copilot CLI from GitHub. If this fails, check internet connectivity and restart the add-on. To force a re-download, delete `/data/copilot/bin/copilot` inside the add-on container. If you set a custom `copilot_binary` path, make sure that binary exists and is executable.
-
-**"ACP test failed" or authentication errors**
-→ Copilot still needs GitHub authentication. Complete the device flow when prompted.
-
-**"Another process is polling"**
-→ Another Telegram bot instance is already using the same token. Stop the duplicate instance, wait a moment, then restart this add-on.
-
-**Responses are slow**
-→ Complex tasks can take time. Watch the live progress indicators and use `/stop` if needed.
-
-**Permission prompts are not appearing**
-→ Check `permission_policy`. If `/allowall on` was enabled for that conversation, prompts are bypassed until you turn it off or reset the session.
-
-**Forum topics are not working**
-→ Make sure the bot is in a Telegram supergroup with Topics enabled and has permission to manage topics.
-
-## Prerequisites
-
-- a GitHub account with Copilot access
-- a Telegram bot token from @BotFather
-- Home Assistant with this add-on installed
-- Internet access on first start (to auto-download the Copilot CLI binary)
-
-The add-on automatically downloads and manages the Copilot CLI on first start. The binary is stored in `/data/copilot/bin/` and persists across add-on updates. To force a re-download (e.g. to update the CLI), delete the binary and restart the add-on.
-
-## More Info
-
-Source code: https://github.com/layman-smart-home-people/ha-copilot-telegram-bot
-
-This software is provided as-is, without warranty of any kind.
+This add-on is provided as-is, without warranty of any kind.
