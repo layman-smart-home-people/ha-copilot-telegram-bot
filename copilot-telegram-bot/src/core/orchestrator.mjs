@@ -35,6 +35,45 @@ const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 const CANCEL_GRACE_MS = 15_000;                  // 15s after cancel before force-kill
 const HEARTBEAT_INTERVAL_MS = 60_000;            // log heartbeat every 60s during active prompt
 
+// Patterns that indicate a new topic rather than an answer to a pending question
+const NEW_TOPIC_RE = /^(turn\s|switch\s|set\s|what\b|how\b|why\b|when\b|where\b|who\b|show\s|check\s|tell\s|can\s|are\s(?:the|my)|please\s)/i;
+
+/**
+ * Disambiguate whether a user message is an answer to a pending elicitation
+ * or a completely different topic. Returns true if the message should be
+ * treated as a new prompt (cancelling the elicitation).
+ */
+function isLikelyNewTopic(text, elicitation) {
+    const msg = text.trim();
+    if (!msg) return false;
+
+    const { schema } = elicitation;
+
+    // If elicitation has enum values and message matches one → answer
+    if (schema?.enum?.length > 0) {
+        const lower = msg.toLowerCase();
+        if (schema.enum.some(v => String(v).toLowerCase() === lower)) return false;
+    }
+
+    // Expecting a number but got non-numeric text → new topic
+    if (schema?.type === "number" || schema?.type === "integer") {
+        return isNaN(Number(msg));
+    }
+
+    // Short replies (1-3 words) are likely answers — even with trailing "?"
+    const wordCount = msg.split(/\s+/).length;
+    if (wordCount <= 3) return false;
+
+    // Messages ending with "?" are almost always new questions (4+ words only)
+    if (msg.endsWith("?")) return true;
+
+    // Command or question-like patterns → new topic
+    if (NEW_TOPIC_RE.test(msg)) return true;
+
+    // Default: treat as answer (preserve existing behavior for borderline cases)
+    return false;
+}
+
 export class Orchestrator {
     #telegram;
     #acp;        // primary ACP instance (shorthand)
@@ -1534,6 +1573,19 @@ export class Orchestrator {
                     scope.pendingElicitation = null;
                     return;
                 }
+            } else if (isLikelyNewTopic(text, scope.pendingElicitation)) {
+                // Message looks like a new topic, not an answer — cancel elicitation
+                log.info(`elicitation disambiguation: treating "${text.slice(0, 40)}…" as new topic, cancelling pending elicitation`);
+                const { requestId } = scope.pendingElicitation;
+                scope.pendingElicitation.resolve(undefined);
+                scope.pendingElicitation = null;
+                // Notify ACP that elicitation is cancelled (prevent dangling request)
+                if (requestId && this.#acp?.alive) {
+                    try { this.#acp.respondElicitation(requestId, "cancel"); } catch {}
+                }
+                // Cancel stale Skip button if present
+                if (this.#buttons) this.#buttons.cancelForChat(chatId, "↩️ Processing new message");
+                // Fall through to normal prompt handling below
             } else {
                 const { resolve, schema } = scope.pendingElicitation;
                 let value = text;

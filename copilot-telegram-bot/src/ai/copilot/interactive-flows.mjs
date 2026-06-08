@@ -257,6 +257,7 @@ export class InteractiveFlows {
                 requestId,
                 propName,
                 schema,
+                message,  // original question text for disambiguation
                 resolve: (val) => {
                     scope.pendingElicitation = null;
                     resolve(val);

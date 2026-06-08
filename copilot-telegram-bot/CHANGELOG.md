@@ -2,6 +2,14 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.71.1] — 2026-06-08
+
+### Fixed — Ezra v6 Phase A1: Elicitation Disambiguation + Draft Assessment
+- **Elicitation disambiguation (UX-2)** — When ask_user/elicitation is pending, messages that look like new topics (questions, commands, 4+ word sentences starting with action verbs) now cancel the elicitation and are processed as new prompts instead of being swallowed as answers. Short replies (1-3 words), numeric answers, and enum/choice matches still resolve as answers.
+- **Bot add-on** — `orchestrator.mjs`: added `isLikelyNewTopic()` heuristic before consuming messages as elicitation answers; `interactive-flows.mjs`: stores question text in `pendingElicitation` for future disambiguation improvements
+- **CLI extension** — `extension.mjs`: added matching `isLikelyNewTopic()` function; stores `choices` and `question` in `awaitingInput` for disambiguation
+- **Draft blocking assessment (UX-1)** — Confirmed `sendMessageDraft` does NOT block user input. The API creates an ephemeral typing bubble that auto-disappears after 30s. User can always type and send messages. The "blocking" concern is cosmetic only on some clients. No code change needed.
+
 ## [0.71.0] — 2026-06-08
 
 ### Changed — PKM v2 Phase 6: Integration + Polish + Final Review
