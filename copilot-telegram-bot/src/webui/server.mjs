@@ -8,12 +8,10 @@ import http from "node:http";
 import { readFileSync, readdirSync, statSync, readFile, writeFile } from "node:fs";
 import { join, extname, resolve, basename, dirname } from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
-import { ACPClient } from "../ai/copilot/acp-client.mjs";
-import { AgentMemory } from "../core/agent-memory.mjs";
-import { metrics } from "../core/metrics.mjs";
 import { createLogger } from "../logger.mjs";
 
 const STATIC_DIR = new URL("./dist/", import.meta.url).pathname;
+const WEBUI_SCOPE_KEY = "webui:default";
 const log = createLogger("webui");
 
 const MIME_TYPES = {
@@ -36,13 +34,6 @@ export class WebUIServer {
     #logMaxLines = 500;
     #sseClients = new Set(); // SSE connections for live log streaming
     #addonSlug = null;     // resolved lazily
-    #chatAcp = null;       // dedicated ACP client for web chat
-    #chatSseClients = new Set(); // SSE connections for chat streaming
-    #chatBusy = false;     // true while a prompt is in progress
-    #chatSessionId = null; // current ACP session ID for web chat
-    #chatInitPromise = null; // deduplicates concurrent init calls
-    #chatInitFailures = 0; // count consecutive auto-init failures
-    static #MAX_INIT_FAILURES = 3; // disable auto-init after this many consecutive failures
 
     constructor({ port = 8099 } = {}) {
         this.#port = port;
@@ -52,8 +43,8 @@ export class WebUIServer {
      * Attach bot internals so API routes can access them.
      * Call this before start().
      */
-    attach({ bridge, orchestrator, scopeMgr, config, acp, telegram, startedAt, pairing, pkm }) {
-        this.#ctx = { bridge, orchestrator, scopeMgr, config, acp, telegram, startedAt, pairing, pkm };
+    attach({ pool, conversationManager, siOrchestrator, config, telegram, startedAt }) {
+        this.#ctx = { pool, conversationManager, siOrchestrator, config, telegram, startedAt };
     }
 
     /**
@@ -84,12 +75,6 @@ export class WebUIServer {
     }
 
     async stop() {
-        // Stop chat ACP if running
-        if (this.#chatAcp) {
-            try { await this.#chatAcp.stop(); } catch {}
-            this.#chatAcp = null;
-        }
-
         if (this.#server) {
             return new Promise((resolve) => {
                 this.#server.close(() => {
@@ -133,15 +118,14 @@ export class WebUIServer {
             return this.#apiStatus(res);
         }
 
-        // GET /api/metrics — cumulative metrics
+        // GET /api/metrics — cumulative pool metrics
         if (pathname === "/api/metrics" && method === "GET") {
-            return this.#json(res, 200, metrics.toJSON());
+            return this.#json(res, 200, this.#ctx.pool?.getMetrics?.() || null);
         }
 
-        // POST /api/metrics/reset — manual metrics reset
+        // POST /api/metrics/reset — unsupported in v7
         if (pathname === "/api/metrics/reset" && method === "POST") {
-            metrics.reset();
-            return this.#json(res, 200, { ok: true, message: "Metrics reset" });
+            return this.#json(res, 404, { error: "Not found" });
         }
 
         // GET /api/instructions — list standing instructions
@@ -270,112 +254,8 @@ export class WebUIServer {
             return this.#apiChatStop(res);
         }
 
-        // ── RBAC API ────────────────────────────────────────────────
-
-        // GET /api/rbac/roles — list all roles
-        if (pathname === "/api/rbac/roles" && method === "GET") {
-            return this.#apiRbacListRoles(res);
-        }
-
-        // POST /api/rbac/roles — create custom role
-        if (pathname === "/api/rbac/roles" && method === "POST") {
-            const body = await this.#readBody(req);
-            return this.#apiRbacCreateRole(res, body);
-        }
-
-        // /api/rbac/roles/:name
-        const roleMatch = pathname.match(/^\/api\/rbac\/roles\/([^/]+)$/);
-        if (roleMatch) {
-            const name = decodeURIComponent(roleMatch[1]);
-            if (method === "GET") return this.#apiRbacGetRole(res, name);
-            if (method === "PUT") {
-                const body = await this.#readBody(req);
-                return this.#apiRbacUpdateRole(res, name, body);
-            }
-            if (method === "DELETE") return this.#apiRbacDeleteRole(res, name);
-        }
-
-        // GET /api/rbac/users — list all users
-        if (pathname === "/api/rbac/users" && method === "GET") {
-            return this.#apiRbacListUsers(res);
-        }
-
-        // /api/rbac/users/:userId
-        const userMatch = pathname.match(/^\/api\/rbac\/users\/([^/]+)$/);
-        if (userMatch) {
-            const userId = decodeURIComponent(userMatch[1]);
-            if (method === "GET") return this.#apiRbacGetUser(res, userId);
-            if (method === "DELETE") return this.#apiRbacRevokeUser(res, userId);
-        }
-
-        // PUT /api/rbac/users/:userId/role
-        const userRoleMatch = pathname.match(/^\/api\/rbac\/users\/([^/]+)\/role$/);
-        if (userRoleMatch && method === "PUT") {
-            const userId = decodeURIComponent(userRoleMatch[1]);
-            const body = await this.#readBody(req);
-            return this.#apiRbacSetUserRole(res, userId, body);
-        }
-
-        // POST /api/rbac/check — debug permission check
-        if (pathname === "/api/rbac/check" && method === "POST") {
-            const body = await this.#readBody(req);
-            return this.#apiRbacCheckPermission(res, body);
-        }
-
-        // POST /api/rbac/invites — create invite
-        if (pathname === "/api/rbac/invites" && method === "POST") {
-            const body = await this.#readBody(req);
-            return this.#apiRbacCreateInvite(res, body);
-        }
-
-        // GET /api/rbac/invites — list invites
-        if (pathname === "/api/rbac/invites" && method === "GET") {
-            return this.#apiRbacListInvites(res, params);
-        }
-
-        // DELETE /api/rbac/invites — revoke invite
-        if (pathname === "/api/rbac/invites" && method === "DELETE") {
-            const body = await this.#readBody(req);
-            return this.#apiRbacRevokeInvite(res, body);
-        }
-
-        // GET /api/rbac/overrides — list overrides
-        if (pathname === "/api/rbac/overrides" && method === "GET") {
-            return this.#apiRbacListOverrides(res, params);
-        }
-
-        // POST /api/rbac/overrides — add/update override
-        if (pathname === "/api/rbac/overrides" && method === "POST") {
-            const body = await this.#readBody(req);
-            return this.#apiRbacSetOverride(res, body);
-        }
-
-        // DELETE /api/rbac/overrides — remove override
-        if (pathname === "/api/rbac/overrides" && method === "DELETE") {
-            const body = await this.#readBody(req);
-            return this.#apiRbacDeleteOverride(res, body);
-        }
-
-        // GET /api/rbac/audit — get audit log entries
-        if (pathname === "/api/rbac/audit" && method === "GET") {
-            return this.#apiRbacGetAudit(res, params);
-        }
-
-        // ── PKM API ────────────────────────────────────────────────
-        if (pathname.startsWith("/api/pkm/")) {
-            const pkm = this.#ctx.pkm;
-            if (!pkm) return this.#json(res, 503, { error: "PKM system not available" });
-
-            // Resolve user context from X-Scope-Key header (set by MCP server)
-            const scopeKey = req.headers["x-scope-key"] || "";
-            const pkmContext = this.#resolvePkmContext(scopeKey);
-
-            const body = (method === "POST" || method === "PUT" || method === "DELETE")
-                ? await this.#readBody(req)
-                : {};
-
-            const { status, data } = pkm.handleApi(method, pathname, body, pkmContext);
-            return this.#json(res, status, data);
+        if (pathname.startsWith("/api/rbac/") || pathname.startsWith("/api/pkm/")) {
+            return this.#json(res, 404, { error: "Not found" });
         }
 
         this.#json(res, 404, { error: "Not found" });
@@ -384,47 +264,39 @@ export class WebUIServer {
     // ── Status API ──────────────────────────────────────────────
 
     #apiStatus(res) {
-        const { bridge, orchestrator, scopeMgr, config, acp, startedAt } = this.#ctx;
-
+        const { pool, conversationManager, siOrchestrator, config, startedAt } = this.#ctx;
         const uptime = startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0;
-        const orchestratorStatus = orchestrator?.status() || {};
 
-        const status = {
+        this.#json(res, 200, {
             bot: {
                 version: config?.version || "unknown",
                 uptime,
                 startedAt: startedAt ? new Date(startedAt).toISOString() : null,
-                promptActive: bridge?.promptActive ?? false,
             },
-            copilot: {
-                connected: acp?.alive ?? false,
-                model: config?.model || "auto",
-            },
+            pool: pool?.status?.() || null,
+            conversations: conversationManager?.list?.() || [],
+            metrics: pool?.getMetrics?.() || null,
+            standing: siOrchestrator?.status?.() || null,
             homeAssistant: {
-                connected: config?.haConnected ?? false,
-                version: config?.haVersion || null,
+                connected: siOrchestrator?.eventListener?.connected || false,
             },
-            orchestrator: orchestratorStatus,
-            scopes: scopeMgr?.stats() || { dm: 0, group: 0, forum: 0, total: 0 },
-        };
-
-        this.#json(res, 200, status);
+        });
     }
 
     // ── Instructions API ────────────────────────────────────────
 
     #apiInstructionsList(res) {
-        const manager = this.#ctx.orchestrator?.manager;
+        const manager = this.#ctx.siOrchestrator?.manager;
         if (!manager) {
-            return this.#json(res, 503, { error: "Orchestrator not available" });
+            return this.#json(res, 503, { error: "Standing instruction manager not available" });
         }
         this.#json(res, 200, manager.list());
     }
 
     #apiInstructionsGet(res, id) {
-        const manager = this.#ctx.orchestrator?.manager;
+        const manager = this.#ctx.siOrchestrator?.manager;
         if (!manager) {
-            return this.#json(res, 503, { error: "Orchestrator not available" });
+            return this.#json(res, 503, { error: "Standing instruction manager not available" });
         }
         const instruction = manager.get(id);
         if (!instruction) {
@@ -434,9 +306,9 @@ export class WebUIServer {
     }
 
     #apiInstructionsCreate(res, body) {
-        const manager = this.#ctx.orchestrator?.manager;
+        const manager = this.#ctx.siOrchestrator?.manager;
         if (!manager) {
-            return this.#json(res, 503, { error: "Orchestrator not available" });
+            return this.#json(res, 503, { error: "Standing instruction manager not available" });
         }
         try {
             const instruction = manager.create(body);
@@ -447,9 +319,9 @@ export class WebUIServer {
     }
 
     #apiInstructionsUpdate(res, id, body) {
-        const manager = this.#ctx.orchestrator?.manager;
+        const manager = this.#ctx.siOrchestrator?.manager;
         if (!manager) {
-            return this.#json(res, 503, { error: "Orchestrator not available" });
+            return this.#json(res, 503, { error: "Standing instruction manager not available" });
         }
         try {
             const instruction = manager.update(id, body);
@@ -463,9 +335,9 @@ export class WebUIServer {
     }
 
     #apiInstructionsDelete(res, id) {
-        const manager = this.#ctx.orchestrator?.manager;
+        const manager = this.#ctx.siOrchestrator?.manager;
         if (!manager) {
-            return this.#json(res, 503, { error: "Orchestrator not available" });
+            return this.#json(res, 503, { error: "Standing instruction manager not available" });
         }
         const deleted = manager.delete(id);
         if (!deleted) {
@@ -475,9 +347,9 @@ export class WebUIServer {
     }
 
     #apiInstructionsToggle(res, id, action) {
-        const manager = this.#ctx.orchestrator?.manager;
+        const manager = this.#ctx.siOrchestrator?.manager;
         if (!manager) {
-            return this.#json(res, 503, { error: "Orchestrator not available" });
+            return this.#json(res, 503, { error: "Standing instruction manager not available" });
         }
         try {
             let instruction;
@@ -503,12 +375,12 @@ export class WebUIServer {
     }
 
     async #apiStandingReconnect(res) {
-        const orchestrator = this.#ctx.orchestrator;
-        if (!orchestrator) {
-            return this.#json(res, 503, { error: "Orchestrator not available" });
+        const siOrchestrator = this.#ctx.siOrchestrator;
+        if (!siOrchestrator) {
+            return this.#json(res, 503, { error: "Standing orchestrator not available" });
         }
         try {
-            const connected = await orchestrator.reconnectHA();
+            const connected = await siOrchestrator.reconnectHA();
             this.#json(res, 200, { reconnected: true, connected });
         } catch (err) {
             this.#json(res, 500, { error: `Reconnect failed: ${err.message}` });
@@ -518,7 +390,7 @@ export class WebUIServer {
     // ── Docs API ────────────────────────────────────────────────
 
     #apiDocsList(res) {
-        const agentDir = this.#ctx.config?.agentDir || "/config/copilot-telegram-bot";
+        const agentDir = this.#ctx.config?.agentDir || "/config/.agent";
         const docs = [];
 
         // Main docs
@@ -573,7 +445,7 @@ export class WebUIServer {
     }
 
     #apiDocsGet(res, name) {
-        const agentDir = this.#ctx.config?.agentDir || "/config/copilot-telegram-bot";
+        const agentDir = this.#ctx.config?.agentDir || "/config/.agent";
         const filePath = resolve(agentDir, name);
 
         // Security: ensure path stays within agent dir
@@ -594,7 +466,7 @@ export class WebUIServer {
     }
 
     #apiDocsPut(res, name, body) {
-        const agentDir = this.#ctx.config?.agentDir || "/config/copilot-telegram-bot";
+        const agentDir = this.#ctx.config?.agentDir || "/config/.agent";
         const filePath = resolve(agentDir, name);
 
         // Security: ensure path stays within agent dir
@@ -625,11 +497,11 @@ export class WebUIServer {
     // ── Scopes API ──────────────────────────────────────────────
 
     #apiScopesList(res) {
-        const scopeMgr = this.#ctx.scopeMgr;
-        if (!scopeMgr) {
-            return this.#json(res, 503, { error: "Scope manager not available" });
+        const conversationManager = this.#ctx.conversationManager;
+        if (!conversationManager) {
+            return this.#json(res, 503, { error: "Conversation manager not available" });
         }
-        this.#json(res, 200, scopeMgr.list());
+        this.#json(res, 200, conversationManager.list());
     }
 
     // ── Logs API ────────────────────────────────────────────────
@@ -858,154 +730,40 @@ export class WebUIServer {
 
     // ── Chat API (Copilot Web Chat) ─────────────────────────────
 
-    #chatSseEmit(event) {
-        for (const client of this.#chatSseClients) {
-            try {
-                client.write(`data: ${JSON.stringify(event)}\n\n`);
-            } catch {
-                this.#chatSseClients.delete(client);
-            }
-        }
+    #getWebuiConversation() {
+        return this.#ctx.conversationManager?.get?.(WEBUI_SCOPE_KEY) || null;
     }
 
-    async #ensureChatAcp() {
-        if (this.#chatAcp?.alive) return this.#chatAcp;
-
-        // Deduplicate concurrent initialization calls
-        if (this.#chatInitPromise) return this.#chatInitPromise;
-        this.#chatInitPromise = this.#doInitChatAcp().then((acp) => {
-            this.#chatInitFailures = 0; // reset on success
-            return acp;
-        }).finally(() => {
-            this.#chatInitPromise = null;
-        });
-        return this.#chatInitPromise;
+    #getWebuiConversationStatus() {
+        const conversation = this.#getWebuiConversation();
+        const status = conversation?.toStatus?.() || {
+            scopeKey: WEBUI_SCOPE_KEY,
+            state: "idle",
+            instanceId: null,
+            model: null,
+            promptCount: 0,
+            idleMs: 0,
+            lastActivity: null,
+        };
+        return {
+            ...status,
+            connected: !!conversation,
+            busy: conversation ? !["idle", "dead"].includes(conversation.state) : false,
+        };
     }
 
-    async #doInitChatAcp() {
-        const config = this.#ctx.config;
-        if (!config) throw new Error("Bot config not available");
+    #getWebuiRef(body = null) {
+        if (body?.ref && typeof body.ref === "object") return body.ref;
+        const existing = this.#getWebuiConversation()?.ref;
+        if (existing) return existing;
 
-        const acp = new ACPClient({
-            binary: config.copilotBinary,
-            cwd: config.workingDirectory,
-            model: config.model,
-            extraArgs: config.copilotExtraArgs,
-            copilotHome: config.copilotConfigDir,
-            permissionPolicy: "allow_all",
-            tag: "webchat",
-        });
-
-        // Wire ACP events to SSE
-        acp.on("text_chunk", (text) => {
-            this.#chatSseEmit({ type: "text_chunk", text });
-        });
-
-        acp.on("thought_chunk", (text) => {
-            this.#chatSseEmit({ type: "thought", text });
-        });
-
-        acp.on("message_start", () => {
-            this.#chatSseEmit({ type: "message_start" });
-        });
-
-        acp.on("message_end", () => {
-            this.#chatBusy = false;
-            this.#chatSseEmit({ type: "done" });
-        });
-
-        acp.on("tool_start", (tool) => {
-            this.#chatSseEmit({
-                type: "tool_start",
-                toolCallId: tool.toolCallId,
-                name: tool.toolName,
-                args: tool.arguments,
-            });
-        });
-
-        acp.on("tool_end", (tool) => {
-            this.#chatSseEmit({
-                type: "tool_end",
-                toolCallId: tool.toolCallId,
-                status: tool.status,
-            });
-        });
-
-        acp.on("plan", (entries) => {
-            this.#chatSseEmit({ type: "plan", entries });
-        });
-
-        // Auto-approve all permission requests for web chat
-        acp.on("permission_request", (req) => {
-            log.debug("Auto-approving permission request");
-            acp.respondPermission(req.requestId, "allow_always");
-        });
-
-        acp.on("exit", ({ code, signal }) => {
-            log.info(`ACP exited: code=${code} signal=${signal}`);
-            this.#chatBusy = false;
-            this.#chatSessionId = null;
-            this.#chatAcp = null;
-            this.#chatSseEmit({ type: "disconnected" });
-        });
-
-        acp.on("log", (text) => {
-            if (!text.includes("agent_message_chunk") && !text.includes("agent_thought_chunk")) {
-                log.debug(text);
-            }
-        });
-
-        // Start the ACP process — clean up on any failure
-        this.#chatSseEmit({ type: "connecting" });
-        try {
-            await acp.start();
-
-            const agentMemory = new AgentMemory({ agentDir: config.agentDir });
-            const session = await acp.newSession({
-                cwd: config.workingDirectory,
-                mcpServers: config.mcpServers || [],
-            });
-            this.#chatSessionId = session.sessionId;
-            this.#chatAcp = acp;
-
-            // Send preamble with agent context
-            const agentContext = agentMemory.buildContext();
-            const preamble = [
-                "You are an AI assistant connected via the Copilot Bot Web Dashboard.",
-                "You have the same tools and capabilities as via Telegram.",
-                "Use markdown formatting — the web UI renders it natively.",
-                `You have direct HA access: curl -s http://supervisor/core/api/... -H "Authorization: Bearer $SUPERVISOR_TOKEN".`,
-                agentContext ? `\n[Agent persistent memory — your identity and memory:\n${agentContext}\n]` : "",
-            ].filter(Boolean).join("\n");
-
-            this.#chatBusy = true;
-            this.#chatSseEmit({ type: "status", connected: true, busy: true });
-            try {
-                await acp.prompt(preamble, { mode: undefined });
-            } catch (err) {
-                log.warn(`Preamble failed: ${err.message}`);
-            }
-            this.#chatBusy = false;
-
-            this.#chatSseEmit({ type: "status", connected: true, busy: false });
-            return acp;
-        } catch (err) {
-            // Clean up on init failure so next call retries cleanly
-            log.error(`Init failed: ${err.message}`);
-            try { await acp.stop(); } catch {}
-            this.#chatAcp = null;
-            this.#chatSessionId = null;
-            this.#chatBusy = false;
-            throw err;
-        }
+        const fallbackChatId = this.#ctx.config?.allowedChatIds?.[0] ?? null;
+        if (fallbackChatId == null) return null;
+        return { chatId: fallbackChatId, chatType: "private", userId: fallbackChatId };
     }
 
     #apiChatStatus(res) {
-        this.#json(res, 200, {
-            connected: this.#chatAcp?.alive ?? false,
-            busy: this.#chatBusy,
-            sessionId: this.#chatSessionId,
-        });
+        this.#json(res, 200, this.#getWebuiConversationStatus());
     }
 
     #apiChatStream(req, res) {
@@ -1015,126 +773,65 @@ export class WebUIServer {
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         });
-
-        // Send current status
-        res.write(`data: ${JSON.stringify({
-            type: "status",
-            connected: this.#chatAcp?.alive ?? false,
-            busy: this.#chatBusy,
-        })}\n\n`);
-
-        this.#chatSseClients.add(res);
-        req.on("close", () => this.#chatSseClients.delete(res));
-
-        // Auto-initialize chat ACP on first SSE connection (with backoff on repeated failures)
-        if (!this.#chatAcp?.alive && !this.#chatInitPromise && this.#chatInitFailures < WebUIServer.#MAX_INIT_FAILURES) {
-            this.#ensureChatAcp().catch((err) => {
-                this.#chatInitFailures++;
-                log.warn(`Auto-init failed (${this.#chatInitFailures}/${WebUIServer.#MAX_INIT_FAILURES}): ${err.message}`);
-                if (this.#chatInitFailures >= WebUIServer.#MAX_INIT_FAILURES) {
-                    log.warn("Auto-init disabled after repeated failures. Use the chat UI to manually connect.");
-                }
-            });
-        }
+        res.write(`data: ${JSON.stringify({ type: "status", ...this.#getWebuiConversationStatus() })}\n\n`);
+        req.on("close", () => {
+            try { res.end(); } catch {}
+        });
     }
 
     async #apiChatSend(res, body) {
+        const conversationManager = this.#ctx.conversationManager;
+        if (!conversationManager) {
+            return this.#json(res, 503, { error: "Conversation manager not available" });
+        }
+
         const text = body?.text?.trim();
         if (!text) {
             return this.#json(res, 400, { error: "Message text is required" });
         }
 
-        if (this.#chatBusy) {
-            return this.#json(res, 409, { error: "A prompt is already in progress" });
+        const ref = this.#getWebuiRef(body);
+        if (!ref?.chatId) {
+            return this.#json(res, 503, { error: "WebUI chat ref is not available" });
         }
 
         try {
-            const acp = await this.#ensureChatAcp();
-            this.#chatBusy = true;
-            this.#chatSseEmit({ type: "user_message", text });
-            this.#json(res, 200, { sent: true });
-
-            // Run prompt async — responses stream via SSE
-            acp.prompt(text, { timeout: 0 }).catch((err) => {
-                this.#chatBusy = false;
-                this.#chatSseEmit({ type: "error", message: err.message });
-                log.warn(`Prompt error: ${err.message}`);
-            });
+            await conversationManager.route(WEBUI_SCOPE_KEY, text, ref, body?.opts || {});
+            this.#json(res, 200, { sent: true, conversation: this.#getWebuiConversationStatus() });
         } catch (err) {
-            this.#chatBusy = false;
             this.#json(res, 500, { error: `Chat error: ${err.message}` });
         }
     }
 
     async #apiChatNew(res) {
+        const conversationManager = this.#ctx.conversationManager;
+        if (!conversationManager) {
+            return this.#json(res, 503, { error: "Conversation manager not available" });
+        }
+
         try {
-            // If ACP is alive, create a new session
-            if (this.#chatAcp?.alive) {
-                if (this.#chatBusy) {
-                    try { await this.#chatAcp.cancel(); } catch {}
-                    this.#chatBusy = false;
-                }
-                const session = await this.#chatAcp.newSession({
-                    cwd: this.#ctx.config?.workingDirectory || "/config",
-                    mcpServers: this.#ctx.config?.mcpServers || [],
-                });
-                this.#chatSessionId = session.sessionId;
-                this.#chatSseEmit({ type: "new_session" });
-                this.#json(res, 200, { sessionId: this.#chatSessionId });
-            } else {
-                // Will be started on next send
-                this.#chatSessionId = null;
-                this.#json(res, 200, { sessionId: null });
-            }
+            const cleared = await conversationManager.destroy(WEBUI_SCOPE_KEY);
+            this.#json(res, 200, { cleared, conversation: this.#getWebuiConversationStatus() });
         } catch (err) {
-            this.#json(res, 500, { error: `Failed to create session: ${err.message}` });
+            this.#json(res, 500, { error: `Failed to reset conversation: ${err.message}` });
         }
     }
 
     async #apiChatStop(res) {
-        if (!this.#chatBusy || !this.#chatAcp?.alive) {
-            return this.#json(res, 200, { stopped: false });
+        const conversation = this.#getWebuiConversation();
+        if (!conversation || ["idle", "dead"].includes(conversation.state)) {
+            return this.#json(res, 200, { stopped: false, conversation: this.#getWebuiConversationStatus() });
         }
+
         try {
-            await this.#chatAcp.cancel();
-            this.#chatBusy = false;
-            this.#chatSseEmit({ type: "cancelled" });
-            this.#json(res, 200, { stopped: true });
+            await conversation.receive("/stop");
+            this.#json(res, 200, { stopped: true, conversation: this.#getWebuiConversationStatus() });
         } catch (err) {
             this.#json(res, 500, { error: `Failed to stop: ${err.message}` });
         }
     }
 
     // ── Helpers ─────────────────────────────────────────────────
-
-    /** Resolve PKM user context from a scope key (e.g. "dm:430432097" or "group:-123456") */
-    #resolvePkmContext(scopeKey) {
-        if (!scopeKey) {
-            // Fallback: try to get from active scope
-            const bridge = this.#ctx.bridge;
-            const ref = bridge?.getActiveRef?.();
-            return {
-                userId: ref?.userId ? String(ref.userId) : null,
-                chatId: ref?.chatId ? String(ref.chatId) : null,
-                chatType: ref?.chatType || "dm",
-            };
-        }
-        // Parse scope key: "dm:userId", "group:chatId", "standing:chatId"
-        const parts = scopeKey.split(":");
-        const scopeType = parts[0];
-        const scopeId = parts.slice(1).join(":");
-        if (scopeType === "dm") {
-            return { userId: scopeId, chatId: scopeId, chatType: "dm" };
-        }
-        if (scopeType === "group" || scopeType === "supergroup") {
-            return { userId: null, chatId: scopeId, chatType: scopeType };
-        }
-        // Standing instruction context — agent-only, no user
-        if (scopeType === "standing") {
-            return { userId: null, chatId: scopeId, chatType: "standing" };
-        }
-        return { userId: scopeId || null, chatId: null, chatType: "dm" };
-    }
 
     #json(res, status, data = null) {
         res.writeHead(status, {
@@ -1187,263 +884,6 @@ export class WebUIServer {
             });
             res.end(data);
         });
-    }
-
-    // ── RBAC API ──────────────────────────────────────────────
-
-    #apiRbacListRoles(res) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const roles = rbac.getAllRoles();
-        const result = Object.entries(roles).map(([name, role]) => ({
-            name,
-            ...role,
-            effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)],
-        }));
-        return this.#json(res, 200, result);
-    }
-
-    #apiRbacGetRole(res, name) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const role = rbac.getRoleConfig(name);
-        if (!role) return this.#json(res, 404, { error: `Role not found: ${name}` });
-
-        return this.#json(res, 200, {
-            name,
-            ...role,
-            effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)],
-        });
-    }
-
-    #apiRbacCreateRole(res, body) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        try {
-            const { name, rank, inherits, capabilities, icon, description } = body || {};
-            if (!name) return this.#json(res, 400, { error: "name is required" });
-            if (rank === undefined) return this.#json(res, 400, { error: "rank is required" });
-
-            rbac.createRole(name, { rank, inherits, capabilities, icon, description });
-            const role = rbac.getRoleConfig(name);
-            return this.#json(res, 201, {
-                name,
-                ...role,
-                effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)],
-            });
-        } catch (err) {
-            return this.#json(res, 400, { error: err.message });
-        }
-    }
-
-    #apiRbacUpdateRole(res, name, body) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        try {
-            rbac.updateRole(name, body || {});
-            const role = rbac.getRoleConfig(name);
-            return this.#json(res, 200, {
-                name,
-                ...role,
-                effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)],
-            });
-        } catch (err) {
-            return this.#json(res, 400, { error: err.message });
-        }
-    }
-
-    #apiRbacDeleteRole(res, name) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        try {
-            rbac.deleteRole(name);
-            return this.#json(res, 204, null);
-        } catch (err) {
-            return this.#json(res, 400, { error: err.message });
-        }
-    }
-
-    #apiRbacListUsers(res) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const users = rbac.getPairedUsers();
-        const result = users.map(u => ({
-            ...u,
-            effectiveCapabilities: u.role ? [...rbac.getEffectiveCapabilities(u.role)] : [],
-        }));
-        return this.#json(res, 200, result);
-    }
-
-    #apiRbacGetUser(res, userId) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const user = rbac.getUser(Number(userId));
-        if (!user) return this.#json(res, 404, { error: `User not found: ${userId}` });
-
-        return this.#json(res, 200, {
-            ...user,
-            effectiveCapabilities: user.role ? [...rbac.getEffectiveCapabilities(user.role)] : [],
-        });
-    }
-
-    #apiRbacSetUserRole(res, userId, body) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        try {
-            const { role, expiresAt, displayName, actorId } = body || {};
-            if (!role) return this.#json(res, 400, { error: "role is required" });
-
-            // Block owner role assignment via API — must be done via config
-            if (role === "owner") {
-                return this.#json(res, 403, { error: "Cannot assign owner role via API. Use allowed_chat_ids config." });
-            }
-
-            // If actorId provided, enforce delegation boundaries
-            if (actorId && !rbac.canGrantRole(Number(actorId), role)) {
-                return this.#json(res, 403, { error: `Insufficient rank to assign role: ${role}` });
-            }
-
-            rbac.setUserRole(Number(userId), role, { expiresAt, displayName });
-            const user = rbac.getUser(Number(userId));
-            return this.#json(res, 200, {
-                ...user,
-                effectiveCapabilities: [...rbac.getEffectiveCapabilities(user.role)],
-            });
-        } catch (err) {
-            return this.#json(res, 400, { error: err.message });
-        }
-    }
-
-    #apiRbacRevokeUser(res, userId) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const revoked = rbac.revoke(Number(userId));
-        if (!revoked) return this.#json(res, 400, { error: "Cannot revoke this user (may be a pre-approved admin)" });
-        return this.#json(res, 204, null);
-    }
-
-    #apiRbacCheckPermission(res, body) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const { userId, capability, entityId, toolName, toolArgs } = body || {};
-        if (!userId) return this.#json(res, 400, { error: "userId is required" });
-
-        if (toolName) {
-            const result = rbac.checkToolPermission(Number(userId), toolName, toolArgs || {});
-            return this.#json(res, 200, result);
-        }
-        if (capability) {
-            const result = rbac.canPerform(Number(userId), capability, entityId || null);
-            return this.#json(res, 200, result);
-        }
-        return this.#json(res, 400, { error: "Either capability or toolName is required" });
-    }
-
-    #apiRbacCreateInvite(res, body) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        try {
-            const { role, expiresAt, roleExpiresAt, createdBy } = body || {};
-            if (!role) return this.#json(res, 400, { error: "role is required" });
-
-            const token = rbac.createInvite(role, { createdBy, expiresAt, roleExpiresAt });
-            return this.#json(res, 201, { token, role, expiresAt, roleExpiresAt });
-        } catch (err) {
-            return this.#json(res, 400, { error: err.message });
-        }
-    }
-
-    #apiRbacListInvites(res, params) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const status = params.status || undefined;
-        return this.#json(res, 200, rbac.listInvites({ status }));
-    }
-
-    #apiRbacRevokeInvite(res, body) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const { token, id, revokedBy } = body || {};
-        const tokenOrPrefix = token || id;
-        if (!tokenOrPrefix) return this.#json(res, 400, { error: "token or id is required" });
-
-        try {
-            const revoked = rbac.revokeInvite(tokenOrPrefix, { revokedBy });
-            if (!revoked) return this.#json(res, 404, { error: "Invite not found" });
-            return this.#json(res, 204, null);
-        } catch (err) {
-            return this.#json(res, 400, { error: err.message });
-        }
-    }
-
-    #apiRbacListOverrides(res, params) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const filters = {};
-        if (params.entity_id) filters.entity_id = params.entity_id;
-        if (params.target_type) filters.target_type = params.target_type;
-        if (params.target_id) filters.target_id = params.target_id;
-        return this.#json(res, 200, rbac.getOverrides(filters));
-    }
-
-    #apiRbacSetOverride(res, body) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        try {
-            const { entity_id, target_type, target_id, grants, denies } = body || {};
-            if (!entity_id) return this.#json(res, 400, { error: "entity_id is required" });
-            if (!target_type) return this.#json(res, 400, { error: "target_type is required" });
-            if (!target_id) return this.#json(res, 400, { error: "target_id is required" });
-
-            rbac.addOverride({ entity_id, target_type, target_id, grants, denies });
-            return this.#json(res, 201, { entity_id, target_type, target_id, grants, denies });
-        } catch (err) {
-            return this.#json(res, 400, { error: err.message });
-        }
-    }
-
-    #apiRbacDeleteOverride(res, body) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const { entity_id, target_type, target_id } = body || {};
-        if (!entity_id || !target_type || !target_id) {
-            return this.#json(res, 400, { error: "entity_id, target_type, and target_id are required" });
-        }
-        const removed = rbac.removeOverride(entity_id, target_type, target_id);
-        if (!removed) return this.#json(res, 404, { error: "Override not found" });
-        return this.#json(res, 204, null);
-    }
-
-    #apiRbacGetAudit(res, params) {
-        const rbac = this.#ctx.pairing;
-        if (!rbac) return this.#json(res, 503, { error: "RBAC not available" });
-
-        const limit = Math.min(parseInt(params.limit) || 50, 200);
-        const offset = parseInt(params.offset) || 0;
-        const result = rbac.getAuditLog({
-            limit,
-            offset,
-            event: params.event || undefined,
-            actor: params.actor || undefined,
-            target: params.target || undefined,
-        });
-        return this.#json(res, 200, result);
     }
 
     async #readBody(req) {

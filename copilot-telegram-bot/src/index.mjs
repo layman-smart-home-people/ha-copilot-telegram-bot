@@ -15,6 +15,7 @@ import { SIBridge } from "./gateway/si-bridge.mjs";
 import { StandingInstructionManager } from "./ha/standing-instructions.mjs";
 import { StandingInstructionOrchestrator } from "./ha/orchestrator.mjs";
 import { HAEventListener } from "./ha/events.mjs";
+import { WebUIServer } from "./webui/server.mjs";
 import { loadConfig } from "./config.mjs";
 import { createLogger, setLogLevel } from "./logger.mjs";
 import { ensureCopilotBinary, ensureCopilotConfigDir } from "./copilot-bootstrap.mjs";
@@ -49,6 +50,7 @@ let _convMgr = null;
 let _telegram = null;
 let _router = null;
 let _siOrchestrator = null;
+let _webui = null;
 
 // --- Main ---
 async function main() {
@@ -168,6 +170,20 @@ async function main() {
         log.warn(`SI startup failed (non-fatal): ${err.message}`);
     }
 
+    // --- WebUI ---
+    const webui = new WebUIServer({ port: 8099 });
+    _webui = webui;
+    webui.attach({
+        pool,
+        conversationManager: convMgr,
+        siOrchestrator: _siOrchestrator,
+        config,
+        telegram,
+        startedAt: Date.now(),
+    });
+    await webui.start();
+    log.info("WebUI listening on :8099");
+
     // Notify owner
     if (ownerChatId) {
         const poolStatus = pool.status();
@@ -187,6 +203,7 @@ async function shutdown(signal) {
         if (_telegram) _telegram.stopPolling();
         if (_router) _router.stop();
         if (_siOrchestrator) await _siOrchestrator.stop();
+        if (_webui) await _webui.stop();
     } catch {}
 
     try {

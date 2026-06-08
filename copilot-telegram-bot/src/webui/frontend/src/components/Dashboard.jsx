@@ -43,7 +43,7 @@ export default function Dashboard({ toast, onVersion }) {
       initialRef.current = false;
       const data = await fetcher("/status");
       setStatus(data);
-      onVersion(data.bot.version);
+      onVersion(data.bot?.version || "1.0.0");
     } catch (err) {
       toast(`Failed to load status: ${err.message}`, "error");
     }
@@ -69,83 +69,88 @@ export default function Dashboard({ toast, onVersion }) {
   }
 
   const s = status;
-  const orch = s.orchestrator || {};
-
-  const modules = [
-    {
-      name: "Telegram Bot",
-      online: true,
-      detail: s.bot.promptActive ? "Processing prompt…" : "Idle",
-    },
-    {
-      name: "Copilot ACP",
-      online: s.copilot.connected,
-      detail: s.copilot.connected ? `Model: ${s.copilot.model || "auto"}` : "Not started",
-    },
-    {
-      name: "HA WebSocket",
-      online: orch.haConnected ?? false,
-      detail: orch.haConnected ? "Subscribed to events" : "Disconnected",
-    },
-    {
-      name: "Standing Instructions",
-      online: orch.started ?? false,
-      paused: orch.paused,
-      detail: orch.paused
-        ? "Paused"
-        : `${orch.enabled || 0}/${orch.total || 0} active · ${orch.triggerCount || 0} triggers`,
-    },
-  ];
+  const pool = s.pool || {};
+  const si = s.standing || {};
+  const metrics = s.metrics || {};
+  const convos = s.conversations || [];
 
   return (
     <>
       <div className="card-grid">
         <div className="card">
           <div className="card-title">⏱️ Uptime</div>
-          <div className="card-value">{formatUptime(s.bot.uptime)}</div>
-          <div className="card-sub">Since {formatTime(s.bot.startedAt)}</div>
+          <div className="card-value">{formatUptime(s.bot?.uptime)}</div>
+          <div className="card-sub">Since {formatTime(s.bot?.startedAt)}</div>
         </div>
 
         <div className="card">
-          <div className="card-title">🤖 Copilot</div>
-          <div className="card-value">
-            <StatusBadge online={s.copilot.connected} />
+          <div className="card-title">🤖 Pool</div>
+          <div className="card-value">{pool.claimed || 0} / {pool.maxSize || 5}</div>
+          <div className="card-sub">
+            {pool.idle || 0} idle · {pool.booting || 0} booting
           </div>
-          <div className="card-sub">Model: {s.copilot.model || "auto"}</div>
         </div>
 
         <div className="card">
           <div className="card-title">🏠 Home Assistant</div>
           <div className="card-value">
-            <StatusBadge online={s.homeAssistant.connected} />
+            <StatusBadge online={s.homeAssistant?.connected} />
           </div>
-          <div className="card-sub">
-            {s.homeAssistant.version ? `v${s.homeAssistant.version}` : "—"}
-          </div>
+          <div className="card-sub">WebSocket events</div>
         </div>
 
         <div className="card">
-          <div className="card-title">💬 Scopes</div>
-          <div className="card-value">{s.scopes.total}</div>
+          <div className="card-title">💬 Conversations</div>
+          <div className="card-value">{convos.length}</div>
           <div className="card-sub">
-            {s.scopes.dm} DM · {s.scopes.group} group · {s.scopes.forum} forum
+            {convos.filter(c => c.state === "prompting").length} active
           </div>
         </div>
       </div>
 
-      <div className="card" style={{ marginTop: "1rem" }}>
-        <div className="card-title">🔌 Modules</div>
-        <ul className="module-list">
-          {modules.map((m) => (
-            <li key={m.name} className="module-item">
-              <span
-                className={`status-dot ${m.paused ? "warning" : m.online ? "online" : "offline"}`}
-              />
-              <span className="module-name">{m.name}</span>
-              <span className="module-detail">{m.detail}</span>
-            </li>
-          ))}
-        </ul>
+      {/* Pool Instances */}
+      {pool.instances?.length > 0 && (
+        <div className="card" style={{ marginTop: "1rem" }}>
+          <div className="card-title">🔌 Pool Instances</div>
+          <ul className="module-list">
+            {pool.instances.map((inst) => (
+              <li key={inst.id} className="module-item">
+                <span className={`status-dot ${inst.state === "claimed" ? "online" : inst.state === "idle" ? "warning" : "offline"}`} />
+                <span className="module-name">{inst.id}</span>
+                <span className="module-detail">
+                  {inst.model === "fast" ? "⚡Haiku" : inst.model === "reasoning" ? "🧠Opus" : "🔵Sonnet"}
+                  {inst.claimedBy ? ` → ${inst.claimedBy}` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Metrics + SI */}
+      <div className="card-grid" style={{ marginTop: "1rem" }}>
+        <div className="card">
+          <div className="card-title">📈 Metrics</div>
+          <div className="card-value">{metrics.totalPrompts || 0}</div>
+          <div className="card-sub">
+            prompts · {((metrics.totalMs || 0) / 1000).toFixed(1)}s total
+            {metrics.totalCrashes > 0 && ` · ⚠️ ${metrics.totalCrashes} crashes`}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">📌 Standing Instructions</div>
+          <div className="card-value">
+            {si.started ? (
+              <StatusBadge online={true} paused={si.paused} />
+            ) : (
+              <StatusBadge online={false} />
+            )}
+          </div>
+          <div className="card-sub">
+            {si.enabled || 0}/{si.total || 0} active · {si.triggerCount || 0} triggers
+          </div>
+        </div>
       </div>
     </>
   );
