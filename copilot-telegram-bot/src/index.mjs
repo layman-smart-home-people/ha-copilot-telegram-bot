@@ -213,6 +213,14 @@ async function main() {
     await webui.start();
     log.info("WebUI listening on :8099");
 
+    // Hook console.log → WebUI SSE log stream
+    const origLog = console.log;
+    console.log = (...args) => {
+        origLog(...args);
+        const line = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+        webui.pushLog(line);
+    };
+
     // Notify owner
     if (ownerChatId) {
         const poolStatus = pool.status();

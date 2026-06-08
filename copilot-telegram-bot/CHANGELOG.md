@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.2] — 2026-06-08
+
+### Fixed
+
+- **WebUI logs empty** — v7 `index.mjs` never hooked `console.log` into `webui.pushLog()`. The log buffer and SSE stream were never fed. Ported the `console.log` intercept from `index-v6.mjs`.
+
 ## [1.3.1] — 2026-06-08
 
 ### Fixed
