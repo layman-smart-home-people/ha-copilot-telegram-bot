@@ -2,6 +2,13 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.8] — 2026-06-08
+
+### Added
+
+- **Cross-session history** — New `session-history` MCP server with 3 tools: `session_search` (keyword search across checkpoints/turns), `session_list_recent` (overview of recent work), `session_get_details` (full session deep-dive). Uses `node:sqlite` to read the shared session store directly. Agents can now check what other agents did — cloned repos, code changes, decisions.
+- **Shared session store** — Pool instances now symlink `session-store.db` and `session-state/` to the primary COPILOT_HOME instead of creating isolated copies. All agents share the same session history. Session data persists across pool instance lifecycles (no more lost in `/tmp/`).
+
 ## [1.3.7] — 2026-06-08
 
 ### Improved

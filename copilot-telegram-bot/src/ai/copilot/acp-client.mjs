@@ -112,6 +112,11 @@ export class ACPClient extends EventEmitter {
                 command: "node",
                 args: ["/app/src/pkm/pkm-mcp-server.mjs"],
             },
+            "session-history": {
+                type: "stdio",
+                command: "node",
+                args: ["--no-warnings", "/app/src/ai/copilot/session-history-mcp-server.mjs"],
+            },
         };
         const mcpConfig = JSON.stringify({ mcpServers });
         args.push("--additional-mcp-config", mcpConfig);

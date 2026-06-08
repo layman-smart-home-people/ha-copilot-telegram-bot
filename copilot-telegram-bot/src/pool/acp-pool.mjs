@@ -6,7 +6,7 @@
 // and MCP servers determined by permission profile (owner/guest).
 
 import { EventEmitter } from "node:events";
-import { mkdirSync, copyFileSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, copyFileSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { ACPClient } from "../ai/copilot/acp-client.mjs";
 import { PoolInstance } from "./pool-instance.mjs";
@@ -259,6 +259,16 @@ export class ACPPool extends EventEmitter {
         // 1. Create isolated COPILOT_HOME
         mkdirSync(home, { recursive: true });
 
+        // 1b. Share session store — symlink to primary so agents see each other's history
+        const primaryStore = join(this.#primaryAuthHome, "session-store.db");
+        const primaryState = join(this.#primaryAuthHome, "session-state");
+        if (existsSync(primaryStore)) {
+            try { symlinkSync(primaryStore, join(home, "session-store.db")); } catch {}
+        }
+        if (existsSync(primaryState)) {
+            try { symlinkSync(primaryState, join(home, "session-state")); } catch {}
+        }
+
         // 2. Copy auth tokens
         const srcConfig = join(this.#primaryAuthHome, "config.json");
         if (existsSync(srcConfig)) {
@@ -291,6 +301,11 @@ export class ACPPool extends EventEmitter {
                 type: "stdio",
                 command: "node",
                 args: ["/app/src/pkm/pkm-mcp-server.mjs"],
+            },
+            "session-history": {
+                type: "stdio",
+                command: "node",
+                args: ["--no-warnings", "/app/src/ai/copilot/session-history-mcp-server.mjs"],
             },
         } : {};
         // Merge: internal sidecar servers + external profile servers (e.g. ha-mcp)
