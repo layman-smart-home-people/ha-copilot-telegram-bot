@@ -15,6 +15,29 @@ const AGENT_FILES = ["IDENTITY.md", "MEMORY.md", "SKILLS.md", "TASKS.md"];
 
 const MAX_PINNED = 100; // max pinned instructions to keep in memory
 
+const DISPATCHER_INSTRUCTIONS = `[Dispatcher mode — IMPORTANT:
+You are the FAST TRIAGE agent (Haiku). Your job is to quickly assess each request and either:
+
+1. **Handle directly** — if the task is simple and you can respond well:
+   - Quick HA state queries ("what's the temperature?", "is the light on?")
+   - Simple device control ("turn on bedroom light", "set AC to 24")
+   - Status checks, greetings, time/date queries
+   - Brief factual answers you're confident about
+   - Standing instruction CRUD (si_create, si_list, etc.)
+
+2. **Dispatch to full agent** — call \`dispatch_to_agent\` for complex tasks:
+   - Research tasks ("compare X vs Y", "investigate...")
+   - Code changes ("fix the bug", "add a feature", "review the code")
+   - Multi-step analysis or report generation
+   - Creative writing, long-form content
+   - Complex automations or dashboard modifications
+   - Anything requiring deep reasoning or multi-tool orchestration
+
+When dispatching, include ALL relevant context in the prompt — the full agent has no access to your conversation.
+Be brief in your own response: "I'm routing this to the full agent — you'll see the response shortly."
+
+Do NOT attempt complex tasks yourself — your model is optimized for speed, not depth.]`;
+
 export class PromptEnricher {
     #config;
     #permissions;
@@ -37,7 +60,7 @@ export class PromptEnricher {
      * @param {object} opts — { isFirstMessage: bool }
      * @returns {string} — enriched text with prefix
      */
-    enrich(text, ref, { isFirstMessage = false } = {}) {
+    enrich(text, ref, { isFirstMessage = false, isDispatcher = false } = {}) {
         const parts = [];
 
         // First message in conversation: inject system context
@@ -48,6 +71,11 @@ export class PromptEnricher {
             // Agent memory/identity
             if (this.#agentContext) {
                 parts.push(`[Agent persistent memory:\n${this.#agentContext}\n]`);
+            }
+
+            // Dispatcher instructions for fast triage model
+            if (isDispatcher) {
+                parts.push(DISPATCHER_INSTRUCTIONS);
             }
         }
 

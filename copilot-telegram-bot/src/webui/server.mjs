@@ -43,8 +43,8 @@ export class WebUIServer {
      * Attach bot internals so API routes can access them.
      * Call this before start().
      */
-    attach({ pool, conversationManager, siOrchestrator, config, telegram, startedAt }) {
-        this.#ctx = { pool, conversationManager, siOrchestrator, config, telegram, startedAt };
+    attach({ pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher }) {
+        this.#ctx = { pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher };
     }
 
     /**
@@ -258,6 +258,12 @@ export class WebUIServer {
             return this.#json(res, 404, { error: "Not found" });
         }
 
+        // POST /api/dispatch — dispatch task to full-capability agent
+        if (pathname === "/api/dispatch" && method === "POST") {
+            const body = await this.#readBody(req);
+            return this.#apiDispatch(res, body);
+        }
+
         this.#json(res, 404, { error: "Not found" });
     }
 
@@ -385,6 +391,78 @@ export class WebUIServer {
         } catch (err) {
             this.#json(res, 500, { error: `Reconnect failed: ${err.message}` });
         }
+    }
+
+    // ── Dispatch API ────────────────────────────────────────────
+
+    async #apiDispatch(res, body) {
+        const { prompt, description, model } = body || {};
+        if (!prompt || typeof prompt !== "string") {
+            return this.#json(res, 400, { error: "prompt is required" });
+        }
+        if (!description || typeof description !== "string") {
+            return this.#json(res, 400, { error: "description is required" });
+        }
+
+        const convMgr = this.#ctx.conversationManager;
+        const config = this.#ctx.config;
+        const telegram = this.#ctx.telegram;
+        const enricher = this.#ctx.enricher;
+
+        if (!convMgr) {
+            return this.#json(res, 503, { error: "Conversation manager not available" });
+        }
+
+        const chatId = config.allowedChatIds?.[0];
+        if (!chatId) {
+            return this.#json(res, 400, { error: "No target chat configured" });
+        }
+
+        // Guard: limit concurrent dispatches to prevent recursive exhaustion
+        const activeDispatches = convMgr.list().filter(c => c.scopeKey.startsWith("dispatch:"));
+        if (activeDispatches.length >= 3) {
+            return this.#json(res, 429, { error: "Too many dispatched tasks in flight (max 3)" });
+        }
+
+        const scopeKey = `dispatch:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        // Determine chat type from chatId (groups have negative IDs in Telegram)
+        const chatType = chatId < 0 ? "supergroup" : "private";
+        const ref = {
+            chatId,
+            userId: 0,
+            chatType,
+            threadId: null,
+            isForum: false,
+            username: "dispatcher",
+            firstName: "Dispatched Agent",
+        };
+
+        // Enrich the prompt with system context (MEMORY.md, IDENTITY.md, etc.)
+        const enrichedPrompt = enricher
+            ? enricher.enrich(prompt, ref, { isFirstMessage: true, isDispatcher: false })
+            : prompt;
+
+        const requestedModel = model || "standard";
+        log.info(`Dispatch: "${description}" → ${requestedModel} [${scopeKey}]`);
+
+        // Fire-and-forget: create conversation and route prompt asynchronously
+        setImmediate(() => {
+            convMgr.route(scopeKey, enrichedPrompt, ref, {
+                model: requestedModel,
+                mcpProfile: "owner",
+            }).then(() => {
+                log.info(`Dispatch complete: "${description}"`);
+                // Clean up the dispatch conversation
+                convMgr.destroy(scopeKey).catch(() => {});
+            }).catch(err => {
+                log.error(`Dispatch failed: "${description}" — ${err.message}`);
+                if (telegram && chatId) {
+                    telegram.sendMessage(chatId, `❌ Dispatched task failed: ${description}\n${err.message}`).catch(() => {});
+                }
+            });
+        });
+
+        this.#json(res, 200, { status: "dispatched", scopeKey, model: requestedModel, description });
     }
 
     // ── Docs API ────────────────────────────────────────────────

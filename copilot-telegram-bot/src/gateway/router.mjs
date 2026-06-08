@@ -38,13 +38,13 @@ export class Router {
     #menus;
     #siOrchestrator = null; // set externally after boot
 
-    constructor({ telegram, conversationManager, pool, permissions, config }) {
+    constructor({ telegram, conversationManager, pool, permissions, config, enricher }) {
         this.#telegram = telegram;
         this.#conversationManager = conversationManager;
         this.#pool = pool;
         this.#permissions = permissions;
         this.#config = config;
-        this.#enricher = new PromptEnricher({ config, permissions });
+        this.#enricher = enricher || new PromptEnricher({ config, permissions });
         this.#fileHandler = new FileHandler({ telegram });
         this.#menus = new MenuManager({ telegram });
 
@@ -127,7 +127,7 @@ export class Router {
         if (!text || msg.photo || msg.document || msg.voice || msg.audio || msg.video || msg.sticker || msg.contact || msg.location || msg.animation || msg.video_note) {
             const fileResult = await this.#fileHandler.process(msg);
             if (fileResult.rejection) {
-                await this.#telegram.sendMessage(ref.chatId, fileResult.rejection).catch(() => {});
+                await this.#reply(ref, fileResult.rejection).catch(() => {});
                 return;
             }
             if (fileResult.text) {
@@ -152,21 +152,51 @@ export class Router {
         // Resolve scope key
         const scopeKey = this.#resolveScopeKey(ref);
 
+        // Progress query interception — if the agent is busy and user asks for progress,
+        // show status instead of steering (which would cancel the current operation)
+        const existingConv = this.#conversationManager.get(scopeKey);
+        if (existingConv?.state === "prompting" && this.#isProgressQuery(text)) {
+            const progress = existingConv.streamer?.getProgress();
+            if (progress) {
+                const lines = [`⏳ <b>Agent is working</b> (${progress.elapsedSec}s)`];
+                if (progress.toolsRunning.length > 0) {
+                    lines.push(`🔧 ${progress.toolsRunning.join(", ")}`);
+                }
+                if (progress.toolsDone > 0) {
+                    lines.push(`✅ ${progress.toolsDone} steps completed`);
+                }
+                if (progress.planStep) {
+                    lines.push(`📋 ${progress.planStep}`);
+                }
+                if (progress.hasText) {
+                    lines.push(`✍️ Writing response...`);
+                }
+                lines.push(`\n💡 Send a different message to redirect the agent.`);
+                await this.#reply(ref, lines.join("\n"), "HTML");
+                return;
+            }
+        }
+
         // Get role-based config
-        const model = this.#permissions.getModelTier(ref.userId, this.#config);
+        const roleModel = this.#permissions.getModelTier(ref.userId, this.#config);
+        // Use dispatcher model (fast triage) for user conversations if configured
+        const model = (this.#config.dispatcherModel && roleModel !== "fast")
+            ? this.#config.dispatcherModel
+            : roleModel;
         const mcpProfile = this.#permissions.getMcpProfile(ref.userId);
 
         // Check if conversation already exists (determines if first message)
-        const existingConv = this.#conversationManager.get(scopeKey);
         const isFirstMessage = !existingConv || existingConv.state === "dead";
 
         // Enrich text with context prefix
-        const enrichedText = this.#enricher.enrich(text, ref, { isFirstMessage });
+        const isDispatcher = model === "fast" && roleModel !== "fast";
+        const enrichedText = this.#enricher.enrich(text, ref, { isFirstMessage, isDispatcher });
 
         // Route to conversation manager
         try {
             await this.#conversationManager.route(scopeKey, enrichedText, ref, {
                 messageId: msg.message_id,
+                rawText: text,
                 model,
                 mcpProfile,
             });
@@ -175,7 +205,7 @@ export class Router {
             const errMsg = err.name === "PoolExhaustedError"
                 ? "⏳ All instances busy. Try again in a moment."
                 : `⚠️ ${err.message}`;
-            await this.#telegram.sendMessage(ref.chatId, errMsg).catch(() => {});
+            await this.#reply(ref, errMsg).catch(() => {});
         }
     }
 
@@ -256,6 +286,30 @@ export class Router {
         return `dm:${ref.userId}`;
     }
 
+    /** Detect if a message is asking about progress rather than a new instruction. */
+    #isProgressQuery(text) {
+        const lower = text.toLowerCase().trim();
+        const patterns = [
+            /^(progress|status|update)\??$/,
+            /^what('?s| is) (the )?(progress|status|happening)/,
+            /^how('?s| is) (it|that|the|things?) (going|coming|doing)/,
+            /^(are you|you) (still )?(working|busy|running|thinking)/,
+            /^(what are you|what're you) doing/,
+            /^(stream|show|give).*progress/,
+            /^eta\??$/,
+        ];
+        return patterns.some(p => p.test(lower));
+    }
+
+    /** Thread-aware reply — sends to correct thread/topic. */
+    async #reply(ref, text, parseMode = null, replyMarkup = null) {
+        const params = { chat_id: ref.chatId, text, link_preview_options: { is_disabled: true } };
+        if (parseMode) params.parse_mode = parseMode;
+        if (replyMarkup) params.reply_markup = replyMarkup;
+        if (ref.threadId) params.message_thread_id = ref.threadId;
+        return this.#telegram.call("sendMessage", params);
+    }
+
     // ── Command Dispatch ─────────────────────────────────────
 
     async #dispatchCommand(text, ref) {
@@ -284,12 +338,12 @@ export class Router {
         if (conv && conv.state === "prompting") {
             try {
                 await conv.receive("/stop");
-                await this.#telegram.sendMessage(ref.chatId, "⏹️ Stopped.");
+                await this.#reply(ref, "⏹️ Stopped.");
             } catch {
-                await this.#telegram.sendMessage(ref.chatId, "⏹️ Nothing to stop.");
+                await this.#reply(ref, "⏹️ Nothing to stop.");
             }
         } else {
-            await this.#telegram.sendMessage(ref.chatId, "⏹️ Nothing running.");
+            await this.#reply(ref, "⏹️ Nothing running.");
         }
     }
 
@@ -297,10 +351,30 @@ export class Router {
         const scopeKey = this.#resolveScopeKey(ref);
         const destroyed = await this.#conversationManager.destroy(scopeKey);
 
+        // Forum mode: create new topic for the conversation
+        if (ref.isForum) {
+            const title = `💬 Chat ${new Date().toLocaleString("en-SG", { timeZone: process.env.TZ || "Asia/Singapore", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
+            try {
+                const topic = await this.#telegram.call("createForumTopic", {
+                    chat_id: ref.chatId, name: title,
+                });
+                const newThreadId = topic?.result?.message_thread_id;
+                if (newThreadId) {
+                    await this.#telegram.call("sendMessage", {
+                        chat_id: ref.chatId, message_thread_id: newThreadId,
+                        text: "🆕 New conversation started. Send your first message here!",
+                    });
+                    return;
+                }
+            } catch (err) {
+                log.warn(`Failed to create topic: ${err.message}`);
+            }
+        }
+
         if (destroyed) {
-            await this.#telegram.sendMessage(ref.chatId, "🆕 Fresh conversation started.");
+            await this.#reply(ref, "🆕 Fresh conversation started.");
         } else {
-            await this.#telegram.sendMessage(ref.chatId, "🆕 Ready for new conversation.");
+            await this.#reply(ref, "🆕 Ready for new conversation.");
         }
     }
 
@@ -323,7 +397,7 @@ export class Router {
             ),
         ];
 
-        await this.#menus.show(ref.chatId, "help", text, keyboard);
+        await this.#menus.show(ref.chatId, "help", text, keyboard, { threadId: ref.threadId });
     }
 
     async #cmdStatus(ref) {
@@ -378,18 +452,20 @@ export class Router {
             ),
         ];
 
-        await this.#menus.show(ref.chatId, "status", lines.join("\n"), keyboard);
+        await this.#menus.show(ref.chatId, "status", lines.join("\n"), keyboard, { threadId: ref.threadId });
     }
 
     async #cmdSettings(ref) {
         const scopePrefix = this.#scopePrefix(ref);
         const currentModel = this.#config.defaultModel || "standard";
         const modelIcon = currentModel === "fast" ? "⚡" : currentModel === "reasoning" ? "🧠" : "🔵";
+        const permPolicy = this.#config.permissionPolicy || "interactive";
+        const permIcon = permPolicy === "allow_all" ? "🔓" : "🔐";
 
         const text = [
             `<b>⚙️ Settings</b>\n`,
             `<b>Model:</b> ${modelIcon} ${currentModel}`,
-            `<b>Permission:</b> 🔓 ${this.#config.permissionPolicy || "interactive"}`,
+            `<b>Permission:</b> ${permIcon} ${permPolicy}`,
             `\nTap to change:`,
         ].join("\n");
 
@@ -400,16 +476,20 @@ export class Router {
                 btn(`🧠 Reasoning${currentModel === "reasoning" ? " ✓" : ""}`, menuCallback(scopePrefix, "settings", "model:reasoning")),
             ),
             row(
+                btn(`🔐 Interactive${permPolicy === "interactive" ? " ✓" : ""}`, menuCallback(scopePrefix, "settings", "perm:interactive")),
+                btn(`🔓 Allow All${permPolicy === "allow_all" ? " ✓" : ""}`, menuCallback(scopePrefix, "settings", "perm:allow_all")),
+            ),
+            row(
                 btn("❌ Close", menuCallback(scopePrefix, "settings", "close")),
             ),
         ];
 
-        await this.#menus.show(ref.chatId, "settings", text, keyboard);
+        await this.#menus.show(ref.chatId, "settings", text, keyboard, { threadId: ref.threadId });
     }
 
     async #cmdStanding(ref) {
         if (!this.#siOrchestrator) {
-            await this.#telegram.sendMessage(ref.chatId, "📌 Standing instructions not available (SI engine not running).");
+            await this.#reply(ref, "📌 Standing instructions not available (SI engine not running).");
             return;
         }
 
@@ -437,7 +517,7 @@ export class Router {
         buttons.push(btn("❌ Close", menuCallback(scopePrefix, "standing", "close")));
 
         const keyboard = [row(...buttons)];
-        await this.#menus.show(ref.chatId, "standing", lines.join("\n"), keyboard);
+        await this.#menus.show(ref.chatId, "standing", lines.join("\n"), keyboard, { threadId: ref.threadId });
     }
 
     async #cmdMemory(ref) {
@@ -479,7 +559,7 @@ export class Router {
             ),
         ];
 
-        await this.#menus.show(ref.chatId, "memory", lines.join("\n"), keyboard);
+        await this.#menus.show(ref.chatId, "memory", lines.join("\n"), keyboard, { threadId: ref.threadId });
     }
 
     // ── Scope Prefix Helper ──────────────────────────────────
@@ -586,13 +666,13 @@ export class Router {
             await this.#handleStatusAction(action, ref);
             break;
         case "settings":
-            await this.#handleSettingsAction(action, { chatId, userId, messageId });
+            await this.#handleSettingsAction(action, { chatId, userId, messageId, ref });
             break;
         case "standing":
-            await this.#handleStandingAction(action, { chatId });
+            await this.#handleStandingAction(action, ref);
             break;
         case "memory":
-            await this.#handleMemoryAction(action, { chatId });
+            await this.#handleMemoryAction(action, ref);
             break;
         default:
             log.debug(`Unknown menu: ${menuName}`);
@@ -631,39 +711,43 @@ export class Router {
         }
     }
 
-    async #handleSettingsAction(action, { chatId, userId, messageId }) {
+    async #handleSettingsAction(action, { chatId, userId, messageId, ref }) {
         if (action === "close") {
             await this.#menus.close(chatId, "settings", "⚙️ Settings closed.");
             return;
         }
+        const settingsRef = ref || { chatId, userId, chatType: "private", isForum: false, threadId: null };
         if (action.startsWith("model:")) {
             const model = action.split(":")[1];
             this.#config.defaultModel = model;
             log.info(`Model changed to: ${model}`);
-            // Refresh the settings menu with correct userId
-            const ref = { chatId, userId, chatType: "private", isForum: false, threadId: null };
-            await this.#cmdSettings(ref);
+            await this.#cmdSettings(settingsRef);
+        } else if (action.startsWith("perm:")) {
+            const policy = action.split(":")[1];
+            this.#config.permissionPolicy = policy;
+            log.info(`Permission policy changed to: ${policy}`);
+            await this.#cmdSettings(settingsRef);
         }
     }
 
-    async #handleStandingAction(action, { chatId }) {
+    async #handleStandingAction(action, ref) {
         if (!this.#siOrchestrator) return;
         if (action === "close") {
-            await this.#menus.close(chatId, "standing", "📌 Standing closed.");
+            await this.#menus.close(ref.chatId, "standing", "📌 Standing closed.");
             return;
         }
         if (action === "pause") {
             this.#siOrchestrator.pause();
-            await this.#telegram.sendMessage(chatId, "⏸️ Standing instructions paused.");
+            await this.#reply(ref, "⏸️ Standing instructions paused.");
         } else if (action === "resume") {
             this.#siOrchestrator.resume();
-            await this.#telegram.sendMessage(chatId, "▶️ Standing instructions resumed.");
+            await this.#reply(ref, "▶️ Standing instructions resumed.");
         }
     }
 
-    async #handleMemoryAction(action, { chatId }) {
+    async #handleMemoryAction(action, ref) {
         if (action === "close") {
-            await this.#menus.close(chatId, "memory", "🧠 Memory closed.");
+            await this.#menus.close(ref.chatId, "memory", "🧠 Memory closed.");
             return;
         }
         if (action.startsWith("view:")) {
@@ -674,21 +758,21 @@ export class Router {
             const { resolve } = await import("node:path");
             const resolved = resolve(agentDir, fileName);
             if (!resolved.startsWith(resolve(agentDir) + "/")) {
-                await this.#telegram.sendMessage(chatId, "⛔ Invalid file path.");
+                await this.#reply(ref, "⛔ Invalid file path.");
                 return;
             }
 
             try {
                 const { readFileSync, existsSync } = await import("node:fs");
                 if (!existsSync(resolved)) {
-                    await this.#telegram.sendMessage(chatId, `📄 ${fileName} not found.`);
+                    await this.#reply(ref, `📄 ${fileName} not found.`);
                     return;
                 }
                 let content = readFileSync(resolved, "utf-8");
                 if (content.length > 3800) content = content.slice(0, 3800) + "\n\n... (truncated)";
-                await this.#telegram.sendMessage(chatId, `<b>📄 ${fileName}</b>\n\n<pre>${escapeHtml(content)}</pre>`, "HTML");
+                await this.#reply(ref, `<b>📄 ${fileName}</b>\n\n<pre>${escapeHtml(content)}</pre>`, "HTML");
             } catch (err) {
-                await this.#telegram.sendMessage(chatId, `⚠️ Error reading ${fileName}: ${err.message}`);
+                await this.#reply(ref, `⚠️ Error reading ${fileName}: ${err.message}`);
             }
         }
     }

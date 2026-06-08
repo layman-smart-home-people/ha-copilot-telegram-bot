@@ -2,6 +2,30 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.2.0] — 2026-06-08
+
+### Fixed
+
+- **MCP tools not loading (Bug #1)** — Pool passed empty `{}` as MCP servers config, which overrode the defaults in ACPClient. Result: agents had zero MCP sidecar tools (no si-tools, tg-ux, rbac-tools, pkm-tools). Fixed by checking for empty object before passing to ACPClient.
+- **Tool names not displayed (Bug #2)** — ACP emits `toolName` property but streamer destructured `name`. Tool progress showed "undefined" or generic labels. Fixed to resolve `toolName || name`.
+- **Tool end status ignored (Bug #3)** — ACP emits `status: "failed"` but streamer only checked `error` property. Failed tools showed as successful. Fixed to check both `error` and `status === "failed"`.
+- **Forum thread support** — Elicitation buttons, file rejections, and error messages now respect `threadId` for forum topic chats.
+- **Draft mode thread guard** — Draft streaming disabled for forum threads (Telegram drafts don't support `message_thread_id`).
+
+### Added
+
+- **Dispatcher architecture** — Pre-warm agent uses fast model (Haiku) as a triage/dispatcher. Simple tasks handled directly; complex tasks (research, code changes, reports) delegated to full-capability agent via `dispatch_to_agent` MCP tool. Dispatched agent uses standard (Sonnet) or reasoning (Opus) model and sends response directly to user.
+- **`dispatch_to_agent` tool** — New MCP tool for agent-initiated task delegation. Creates a separate conversation with a higher-tier model. Max 3 concurrent dispatches to prevent pool exhaustion.
+- **Progress query interception** — When the agent is busy and user asks "what's happening?" or similar, shows tool progress instead of cancelling the current operation.
+- **Auto-rename forum topics** — First user message in a forum topic automatically renames the topic with a meaningful title.
+- **Comprehensive tool labels** — Added friendly display names for 15+ tools (SI, PKM, tg-ux, dispatch) in the streaming progress UI.
+- **`dispatcherModel` config** — New config option to control which model the dispatcher uses (default: "fast").
+
+### Changed
+
+- **Enricher shared** — PromptEnricher created in main and shared between Router and WebUI for consistent enrichment of dispatched prompts.
+- **Adaptive elapsed timer** — Streamer periodically re-renders to keep elapsed timer accurate, with adaptive intervals (3s → 15s).
+
 ## [1.1.0] — 2026-06-08
 
 ### Added

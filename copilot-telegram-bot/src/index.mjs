@@ -11,6 +11,7 @@ import { ACPPool } from "./pool/index.mjs";
 import { ConversationManager } from "./conversation/index.mjs";
 import { Router } from "./gateway/router.mjs";
 import { Permissions } from "./gateway/permissions.mjs";
+import { PromptEnricher } from "./gateway/prompt-enricher.mjs";
 import { SIBridge } from "./gateway/si-bridge.mjs";
 import { StandingInstructionManager } from "./ha/standing-instructions.mjs";
 import { StandingInstructionOrchestrator } from "./ha/orchestrator.mjs";
@@ -109,6 +110,9 @@ async function main() {
     // --- Permissions ---
     const permissions = new Permissions({ config });
 
+    // --- Prompt Enricher ---
+    const enricher = new PromptEnricher({ config, permissions });
+
     // --- MCP Profiles ---
     // Owner profile: full tool access (ha-mcp + any configured MCP servers)
     const ownerMcpServers = {};
@@ -138,7 +142,7 @@ async function main() {
     convMgr.start();
 
     // --- Router ---
-    const router = new Router({ telegram, conversationManager: convMgr, pool, permissions, config });
+    const router = new Router({ telegram, conversationManager: convMgr, pool, permissions, config, enricher });
     _router = router;
     router.start();
 
@@ -180,6 +184,7 @@ async function main() {
         config,
         telegram,
         startedAt: Date.now(),
+        enricher,
     });
     await webui.start();
     log.info("WebUI listening on :8099");

@@ -39,6 +39,21 @@ const TOOL_LABELS = {
     create: "Creating file",
     web_search: "Searching the web",
     web_fetch: "Fetching page",
+    dispatch_to_agent: "Routing to full agent",
+    si_create: "Creating standing instruction",
+    si_list: "Listing standing instructions",
+    si_get: "Reading standing instruction",
+    si_update: "Updating standing instruction",
+    si_delete: "Deleting standing instruction",
+    si_toggle: "Toggling standing instruction",
+    ask_user: "Asking user",
+    background_task: "Dispatching background task",
+    notify_user: "Sending notification",
+    pkm_memory: "Managing memory",
+    pkm_search: "Searching memory",
+    pkm_navigate: "Browsing memory",
+    pkm_collection: "Managing collection",
+    pkm_manage: "Memory maintenance",
 };
 
 export class ResponseStreamer {
@@ -58,8 +73,10 @@ export class ResponseStreamer {
     #lastRendered = "";
     #lastRenderTime = 0;
     #renderTimer = null;
+    #elapsedTimer = null;
     #finalized = false;
     #startTime = null;
+    #inflightRender = null;  // Promise tracking in-flight edit
 
     // Draft tracking
     #draftFailures = 0;
@@ -76,11 +93,9 @@ export class ResponseStreamer {
 
     /** Start streaming for a new prompt. Returns the placeholder message ID. */
     async start(ref) {
-        // Clear any pending timer from previous session
-        if (this.#renderTimer) {
-            clearTimeout(this.#renderTimer);
-            this.#renderTimer = null;
-        }
+        // Clear any pending timers from previous session
+        if (this.#renderTimer) { clearTimeout(this.#renderTimer); this.#renderTimer = null; }
+        if (this.#elapsedTimer) { clearTimeout(this.#elapsedTimer); this.#elapsedTimer = null; }
 
         this.#ref = ref;
         this.#textBuffer = "";
@@ -96,19 +111,25 @@ export class ResponseStreamer {
         this.#messageId = null;
         this.#draftId = null;
 
-        // Use draft mode for private chats
-        if (ref.chatType === "private") {
+        // Use draft mode for private chats (drafts don't support threads)
+        if (ref.chatType === "private" && !ref.threadId) {
             this.#draftMode = true;
             this.#draftId = `stream-${Date.now()}`;
             this.#messageId = -1; // sentinel for draft mode
-            await this.#sendDraft("⚡ Working...");
+            await this.#sendDraft("🤔 Thinking...");
         } else {
             this.#draftMode = false;
-            const result = await this.#telegram.sendMessage(
-                ref.chatId, "⚡ Working...", null, null
-            );
+            const params = {
+                chat_id: ref.chatId, text: "🤔 <i>Thinking...</i>",
+                parse_mode: "HTML", disable_notification: true,
+            };
+            if (ref.threadId) params.message_thread_id = ref.threadId;
+            const result = await this.#telegram.call("sendMessage", params);
             this.#messageId = result?.result?.message_id ?? null;
         }
+
+        // Start elapsed timer for periodic re-renders (keeps timer updating)
+        this.#scheduleElapsedUpdate();
 
         return this.#messageId;
     }
@@ -128,11 +149,12 @@ export class ResponseStreamer {
     }
 
     /** Tool started. */
-    onToolStart({ name, toolCallId }) {
+    onToolStart({ toolName, name, toolCallId }) {
         if (this.#finalized) return;
-        const label = TOOL_LABELS[name] || name;
+        const resolvedName = toolName || name;
+        const label = TOOL_LABELS[resolvedName] || resolvedName || "Working";
         this.#toolSteps.push({
-            name, label, toolCallId,
+            name: resolvedName, label, toolCallId,
             status: "running",
             startTime: Date.now(),
             endTime: null,
@@ -141,11 +163,11 @@ export class ResponseStreamer {
     }
 
     /** Tool completed. */
-    onToolEnd({ toolCallId, error }) {
+    onToolEnd({ toolCallId, error, status }) {
         if (this.#finalized) return;
         const step = this.#toolSteps.find(s => s.toolCallId === toolCallId);
         if (step) {
-            step.status = error ? "error" : "done";
+            step.status = (error || status === "failed") ? "error" : "done";
             step.endTime = Date.now();
         }
         this.#scheduleRender();
@@ -162,10 +184,8 @@ export class ResponseStreamer {
     async finalize(replyMarkup = null) {
         if (this.#finalized) return;
         this.#finalized = true;
-        if (this.#renderTimer) {
-            clearTimeout(this.#renderTimer);
-            this.#renderTimer = null;
-        }
+        if (this.#renderTimer) { clearTimeout(this.#renderTimer); this.#renderTimer = null; }
+        if (this.#elapsedTimer) { clearTimeout(this.#elapsedTimer); this.#elapsedTimer = null; }
 
         const html = this.#renderFinal(replyMarkup);
         await this.#commitFinal(html, replyMarkup);
@@ -180,10 +200,8 @@ export class ResponseStreamer {
     async abort(errorMessage = "Something went wrong.") {
         if (this.#finalized) return;
         this.#finalized = true;
-        if (this.#renderTimer) {
-            clearTimeout(this.#renderTimer);
-            this.#renderTimer = null;
-        }
+        if (this.#renderTimer) { clearTimeout(this.#renderTimer); this.#renderTimer = null; }
+        if (this.#elapsedTimer) { clearTimeout(this.#elapsedTimer); this.#elapsedTimer = null; }
 
         const html = `⚠️ ${escapeHtml(errorMessage)}`;
         await this.#commitFinal(html, null);
@@ -194,12 +212,54 @@ export class ResponseStreamer {
         return this.#startTime ? Date.now() - this.#startTime : 0;
     }
 
+    /** Get a progress snapshot for external queries (e.g., "what's it doing?"). */
+    getProgress() {
+        const elapsed = this.elapsedMs;
+        const running = this.#toolSteps.filter(s => s.status === "running");
+        const done = this.#toolSteps.filter(s => s.status === "done").length;
+        const currentPlan = this.#planEntries.find(e => e.status === "in_progress");
+        return {
+            state: this.#finalized ? "done" : (this.#textBuffer ? "writing" : running.length > 0 ? "tools" : "thinking"),
+            elapsedSec: Math.round(elapsed / 1000),
+            toolsRunning: running.map(s => s.label),
+            toolsDone: done,
+            planStep: currentPlan?.content || null,
+            hasText: this.#textBuffer.length > 0,
+            textPreview: this.#textBuffer.slice(0, 100),
+        };
+    }
+
     // ── Private: Rendering ───────────────────────────────────
+
+    /** Periodically trigger re-render to keep elapsed timer fresh. */
+    #scheduleElapsedUpdate() {
+        if (this.#finalized) return;
+        const age = this.#startTime ? (Date.now() - this.#startTime) / 1000 : 0;
+        // Adaptive interval: fast initially, slow down as turn gets longer
+        let delay;
+        if (age < 10) delay = 3000;
+        else if (age < 30) delay = 5000;
+        else if (age < 60) delay = 8000;
+        else delay = 15000;
+
+        this.#elapsedTimer = setTimeout(() => {
+            this.#elapsedTimer = null;
+            if (!this.#finalized) {
+                this.#lastRendered = ""; // force re-render (timer changed)
+                this.#scheduleRender();
+                this.#scheduleElapsedUpdate();
+            }
+        }, delay);
+    }
 
     #scheduleRender() {
         if (this.#renderTimer || this.#finalized) return;
         const elapsed = Date.now() - this.#lastRenderTime;
-        const throttle = this.#draftMode ? DRAFT_THROTTLE_MS : EDIT_THROTTLE_MS;
+        // Adaptive throttling: faster early, slower as response gets long
+        const age = this.#startTime ? (Date.now() - this.#startTime) / 1000 : 0;
+        const throttle = this.#draftMode
+            ? DRAFT_THROTTLE_MS
+            : (age > 30 ? 3000 : EDIT_THROTTLE_MS);
         const delay = Math.max(0, throttle - elapsed);
         this.#renderTimer = setTimeout(() => {
             this.#renderTimer = null;
@@ -214,7 +274,9 @@ export class ResponseStreamer {
 
         const html = this.#buildProgressHtml();
         if (html === this.#lastRendered) return;
-        if (!this.#draftMode && html.length - this.#lastRendered.length < EDIT_MIN_CHARS) return;
+        // In draft mode, always send; in edit mode, require meaningful change
+        if (!this.#draftMode && Math.abs(html.length - this.#lastRendered.length) < EDIT_MIN_CHARS
+            && !html.includes("⏱")) return;
 
         this.#lastRendered = html;
         this.#lastRenderTime = Date.now();
@@ -226,33 +288,85 @@ export class ResponseStreamer {
         }
     }
 
-    /** Build progress HTML: text so far + active tool indicator. */
+    /** Build rich progress HTML — thinking, tools, plan, streaming text. */
     #buildProgressHtml() {
-        const parts = [];
+        const elapsed = this.#startTime ? Math.round((Date.now() - this.#startTime) / 1000) : 0;
+        const timer = elapsed > 0 ? ` <i>(${elapsed}s)</i>` : "";
 
-        // Active text
+        // Phase 1: Streaming text is present — show it with active tool indicator
         if (this.#textBuffer) {
+            const parts = [];
             const converted = markdownToTelegramHtml(this.#textBuffer);
             parts.push(converted);
+
+            // Show active tools below text
+            const running = this.#toolSteps.filter(s => s.status === "running");
+            if (running.length > 0) {
+                const toolLines = running.map(s => `⏳ ${escapeHtml(s.label)}...`).join("\n");
+                parts.push("");
+                parts.push(`<blockquote>${toolLines}</blockquote>`);
+            }
+            return this.#truncate(parts.join("\n"));
         }
 
-        // Active tools indicator (non-expandable during streaming)
+        // Phase 2: No text yet — show rich status
+        const parts = [];
+
+        // Header: current status indicator
         const running = this.#toolSteps.filter(s => s.status === "running");
-        if (running.length > 0) {
-            const toolLines = running.map(s => `⏳ ${escapeHtml(s.label)}...`).join("\n");
-            if (parts.length > 0) parts.push("");
-            parts.push(`<blockquote>${toolLines}</blockquote>`);
-        } else if (!this.#textBuffer && this.#toolSteps.length > 0) {
-            // No text yet but tools have run — show what just finished
-            const last = this.#toolSteps[this.#toolSteps.length - 1];
-            const icon = last.status === "done" ? "✅" : "⚠️";
-            parts.push(`<blockquote>${icon} ${escapeHtml(last.label)}</blockquote>`);
-        } else if (!this.#textBuffer && this.#thoughtBuffer) {
-            // Only thoughts — show thinking indicator
-            parts.push("💭 Thinking...");
+        const doneCount = this.#toolSteps.filter(s => s.status === "done").length;
+
+        if (this.#thoughtBuffer && elapsed >= 2) {
+            // Show live reasoning (last meaningful line)
+            const lines = this.#thoughtBuffer.split("\n").filter(l => l.trim());
+            const lastLine = lines.length > 0 ? lines[lines.length - 1].trim() : "";
+            const display = lastLine.length > 180 ? "…" + lastLine.slice(-180) : lastLine;
+            if (display) {
+                parts.push(`🧠 <i>${escapeHtml(display)}</i>${timer}`);
+            } else {
+                parts.push(`🤔 <i>Thinking...</i>${timer}`);
+            }
+        } else if (running.length > 0) {
+            // Active tool with name
+            const current = running[running.length - 1];
+            parts.push(`🔧 <i>${escapeHtml(current.label)}...</i>${timer}`);
+        } else if (doneCount > 0) {
+            // Between tools — processing results
+            parts.push(`🤔 <i>Processing results...</i>${timer}`);
+        } else {
+            parts.push(`🤔 <i>Thinking...</i>${timer}`);
         }
 
-        const html = parts.join("\n") || "⚡ Working...";
+        // Tool progress summary (compact)
+        if (this.#toolSteps.length > 0) {
+            const statusParts = [];
+            if (doneCount > 0) statusParts.push(`✅ ${doneCount} done`);
+            if (running.length > 0) statusParts.push(`🔄 ${running.length} running`);
+            if (statusParts.length > 0) {
+                parts.push(statusParts.join(" · "));
+            }
+
+            // Show last few tools as blockquote
+            const recent = this.#toolSteps.slice(-4);
+            const toolLines = recent.map(s => {
+                const icon = s.status === "done" ? "✅" : s.status === "error" ? "⚠️" : "⏳";
+                const dur = s.endTime ? ` ${((s.endTime - s.startTime) / 1000).toFixed(1)}s` : "";
+                return `${icon} ${escapeHtml(s.label)}${dur}`;
+            }).join("\n");
+            parts.push(`<blockquote>${toolLines}</blockquote>`);
+        }
+
+        // Plan entries (if any)
+        if (this.#planEntries.length > 0) {
+            const current = this.#planEntries.find(e => e.status === "in_progress");
+            if (current) {
+                let desc = current.content || "";
+                if (desc.length > 80) desc = desc.slice(0, 77) + "…";
+                parts.push(`📋 <i>${escapeHtml(desc)}</i>`);
+            }
+        }
+
+        const html = parts.join("\n") || `🤔 <i>Thinking...</i>${timer}`;
         return this.#truncate(html);
     }
 
@@ -290,7 +404,10 @@ export class ResponseStreamer {
             // Fallback to regular message on repeated failures
             if (this.#draftFailures >= 3 && this.#messageId === -1) {
                 this.#draftMode = false;
-                const result = await this.#telegram.sendMessage(this.#ref.chatId, html, "HTML");
+                const params = { chat_id: this.#ref.chatId, text: html, parse_mode: "HTML",
+                    link_preview_options: { is_disabled: true } };
+                if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+                const result = await this.#telegram.call("sendMessage", params);
                 this.#messageId = result?.result?.message_id ?? null;
             }
             return;
@@ -342,7 +459,10 @@ export class ResponseStreamer {
                 log.warn(`Final send failed: ${err.message}`);
                 // Fallback: try plain text
                 const plain = stripHtmlKeepStructure(html);
-                const result = await this.#telegram.sendMessage(this.#ref.chatId, plain);
+                const fallbackParams = { chat_id: this.#ref.chatId, text: plain,
+                    link_preview_options: { is_disabled: true } };
+                if (this.#ref.threadId) fallbackParams.message_thread_id = this.#ref.threadId;
+                const result = await this.#telegram.call("sendMessage", fallbackParams);
                 this.#messageId = result?.result?.message_id ?? null;
             }
         } else if (this.#messageId) {

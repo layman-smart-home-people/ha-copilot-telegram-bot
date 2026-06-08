@@ -31,6 +31,7 @@ export class Conversation extends EventEmitter {
 
     // Turn tracking
     #currentPromptText = null;
+    #rawUserText = null;  // Original user text (before enrichment)
 
     constructor({ scopeKey, poolInstance, telegram, ref, mcpProfile }) {
         super();
@@ -58,6 +59,8 @@ export class Conversation extends EventEmitter {
     get createdAt() { return this.#createdAt; }
     get promptCount() { return this.#promptCount; }
     get streamer() { return this.#streamer; }
+    get currentPromptText() { return this.#currentPromptText; }
+    get rawUserText() { return this.#rawUserText; }
 
     get idleMs() {
         return this.#state === "idle" ? Date.now() - this.#lastActivity : 0;
@@ -73,6 +76,7 @@ export class Conversation extends EventEmitter {
      */
     async receive(text, opts = {}) {
         this.#lastActivity = Date.now();
+        if (opts.rawText) this.#rawUserText = opts.rawText;
 
         switch (this.#state) {
             case "idle":
@@ -255,14 +259,16 @@ export class Conversation extends EventEmitter {
     /** Send elicitation question with accept/decline buttons. */
     async #sendElicitationButtons(message) {
         const text = `❓ ${message || "The agent needs your input."}\n\n<i>Reply with text, or tap a button:</i>`;
-        // Scope key is used directly as callback prefix — router parses by colon delimiter
         const replyMarkup = {
             inline_keyboard: [[
                 { text: "✅ Accept", callback_data: `${this.#scopeKey}:elicit:accept` },
                 { text: "❌ Decline", callback_data: `${this.#scopeKey}:elicit:decline` },
             ]],
         };
-        await this.#telegram.sendMessage(this.#ref.chatId, text, "HTML", replyMarkup);
+        const params = { chat_id: this.#ref.chatId, text, parse_mode: "HTML",
+            reply_markup: replyMarkup, link_preview_options: { is_disabled: true } };
+        if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+        await this.#telegram.call("sendMessage", params);
     }
 
     // ── Private: ACP Event Listeners ─────────────────────────

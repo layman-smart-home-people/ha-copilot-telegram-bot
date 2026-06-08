@@ -118,6 +118,7 @@ export async function loadConfig() {
         poolIdleMinutes: Number(options.pool_idle_minutes) || 5,
         poolWaitTimeoutSeconds: Number(options.pool_wait_timeout_seconds) || 30,
         defaultModel: options.default_model || "standard",
+        dispatcherModel: options.dispatcher_model || "fast",
         guestModel: options.guest_model || "fast",
         siDefaultModel: options.si_default_model || "standard",
     };

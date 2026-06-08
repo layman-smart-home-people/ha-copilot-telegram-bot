@@ -200,6 +200,34 @@ const TOOLS = [
             properties: {},
         },
     },
+    {
+        name: "dispatch_to_agent",
+        description:
+            "Delegate a complex task to a full-capability agent session (Sonnet/Opus). " +
+            "Use when the task requires deep reasoning, research, code changes, multi-step analysis, or report generation. " +
+            "The dispatched agent will handle the task and send its response directly to the user as a new message. " +
+            "Include ALL relevant context in the prompt — the dispatched agent has no access to your conversation. " +
+            "Returns immediately — you don't need to wait for the result.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                prompt: {
+                    type: "string",
+                    description: "Complete, self-contained task description with all context the agent needs",
+                },
+                description: {
+                    type: "string",
+                    description: "Short description for tracking (e.g., 'Research OpenClaw comparison')",
+                },
+                model: {
+                    type: "string",
+                    enum: ["standard", "reasoning"],
+                    description: "Model tier: standard (Sonnet, default) or reasoning (Opus, for very complex tasks)",
+                },
+            },
+            required: ["prompt", "description"],
+        },
+    },
 ];
 
 function apiCall(method, path, body) {
@@ -319,6 +347,18 @@ async function handleTool(name, args) {
                     return ok(`🔄 HA WebSocket reconnect initiated — ${state}`);
                 }
                 return err(`Reconnect failed (${status}): ${data?.error || JSON.stringify(data)}`);
+            }
+
+            case "dispatch_to_agent": {
+                const { prompt, description: desc, model: m } = args || {};
+                if (!prompt) return err("prompt is required");
+                if (!desc) return err("description is required");
+                const body = { prompt, description: desc, model: m || "standard" };
+                const { status, data } = await apiCall("POST", "/api/dispatch", body);
+                if (status === 200 || status === 202) {
+                    return ok(`✅ Dispatched: "${desc}"\nModel: ${m || "standard"}\nThe full agent will send its response to the user directly.`);
+                }
+                return err(`Dispatch failed (${status}): ${data?.error || JSON.stringify(data)}`);
             }
 
             default:

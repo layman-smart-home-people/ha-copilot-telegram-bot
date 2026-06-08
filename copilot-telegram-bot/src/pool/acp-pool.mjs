@@ -78,10 +78,10 @@ export class ACPPool extends EventEmitter {
 
         // Pre-warm instances in parallel
         if (this.#preWarmCount > 0) {
-            const defaultModel = this.#resolveModelTier(this.#config.defaultModel);
+            const dispatcherModel = this.#resolveModelTier(this.#config.dispatcherModel || "fast");
             const promises = Array.from({ length: this.#preWarmCount }, (_, i) =>
-                this.#spawn(defaultModel, "owner")
-                    .then(inst => log.info(`Pre-warm ${i + 1}/${this.#preWarmCount}: ${inst.id} ready`))
+                this.#spawn(dispatcherModel, "owner")
+                    .then(inst => log.info(`Pre-warm ${i + 1}/${this.#preWarmCount}: ${inst.id} ready (${dispatcherModel})`))
                     .catch(err => log.warn(`Pre-warm ${i + 1} failed: ${err.message}`))
             );
             await Promise.allSettled(promises);
@@ -271,7 +271,8 @@ export class ACPPool extends EventEmitter {
 
         // 4. Build MCP server config for this profile
         const profileConfig = this.#mcpProfiles[mcpProfile] || this.#mcpProfiles.owner || {};
-        const mcpServers = profileConfig.mcpServers || null;
+        const mcpServers = (profileConfig.mcpServers && Object.keys(profileConfig.mcpServers).length > 0)
+            ? profileConfig.mcpServers : null;
 
         // 5. Create ACP client
         const acp = new ACPClient({
@@ -329,7 +330,10 @@ export class ACPPool extends EventEmitter {
             cwd: this.#config.workingDirectory || "/config",
             copilotHome: inst.copilotHome,
             permissionPolicy: "allow_all",
-            stdioMcpServers: (this.#mcpProfiles[inst.mcpProfile] || {}).mcpServers || null,
+            stdioMcpServers: (() => {
+                const s = (this.#mcpProfiles[inst.mcpProfile] || {}).mcpServers;
+                return (s && Object.keys(s).length > 0) ? s : null;
+            })(),
             tag: inst.id,
         });
 

@@ -155,6 +155,13 @@ export class ConversationManager {
     #setupConvListeners(conv) {
         conv.on("prompt_complete", ({ elapsed, scopeKey }) => {
             log.debug(`${scopeKey} prompt done in ${elapsed}ms`);
+
+            // Auto-rename forum topic after first prompt (asynchronous, non-blocking)
+            if (conv.promptCount === 1 && scopeKey.startsWith("forum:")) {
+                this.#autoRenameTopic(conv).catch(err =>
+                    log.debug(`Topic rename skipped: ${err.message}`)
+                );
+            }
         });
 
         conv.on("error", (err) => {
@@ -194,6 +201,33 @@ export class ConversationManager {
             this.#pool.release(conv.instanceId);
         }
         log.debug(`Conversation ${conv.scopeKey} released`);
+    }
+
+    /** Rename a forum topic based on the user's first message. */
+    async #autoRenameTopic(conv) {
+        const ref = conv.ref;
+        if (!ref?.threadId) return;
+
+        // Use raw user text (before enrichment) for a meaningful title
+        const firstPrompt = conv.rawUserText || "";
+        let title = firstPrompt.replace(/\n/g, " ").trim();
+        if (!title) return;
+
+        // Skip commands
+        if (title.startsWith("/")) return;
+
+        // Truncate intelligently
+        if (title.length > 64) {
+            title = title.slice(0, 61) + "…";
+        }
+        title = `💬 ${title}`;
+
+        await this.#telegram.call("editForumTopic", {
+            chat_id: ref.chatId,
+            message_thread_id: ref.threadId,
+            name: title,
+        });
+        log.debug(`Topic renamed: ${title}`);
     }
 
     #reapIdle() {
