@@ -190,6 +190,8 @@ export class ACPPool extends EventEmitter {
         inst.claimedAt = null;
         inst.state = "idle";
         inst.lastActiveAt = Date.now();
+        // Clear scopeKey file
+        try { writeFileSync(join(inst.copilotHome, ".scope-key"), ""); } catch {}
         log.debug(`Released ${instanceId}`);
 
         // Check wait queue first — give slot to a waiter before starting idle timer
@@ -412,6 +414,8 @@ export class ACPPool extends EventEmitter {
         inst.claimedBy = scopeKey;
         inst.claimedAt = Date.now();
         inst.lastActiveAt = Date.now();
+        // Write scopeKey to file so MCP sidecars can read it dynamically
+        try { writeFileSync(join(inst.copilotHome, ".scope-key"), scopeKey); } catch {}
         log.debug(`Claimed ${inst.id} for ${scopeKey}`);
     }
 

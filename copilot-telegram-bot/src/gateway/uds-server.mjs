@@ -112,10 +112,12 @@ export class UdsServer {
         return true;
     }
 
-    /** Try to resolve a pending free-text question for this chatId. Returns true if consumed. */
-    tryResolveText(chatId, text) {
+    /** Try to resolve a pending free-text question for this chat/thread. Returns true if consumed. */
+    tryResolveText(chatId, text, threadId = null) {
         for (const [qId, q] of this.#pending) {
             if (String(q.chatId) === String(chatId) && q.freeText) {
+                // If question was sent to a specific thread, only match that thread
+                if (q.threadId && threadId && String(q.threadId) !== String(threadId)) continue;
                 // Update the button message to show the answer
                 if (q.messageId) {
                     this.#telegram.call("editMessageText", {
@@ -145,7 +147,7 @@ export class UdsServer {
     async #route(method, params, scopeKey) {
         switch (method) {
             case "ask_user":       return this.#askUser(params, scopeKey);
-            case "notify_user":    return this.#notifyUser(params);
+            case "notify_user":    return this.#notifyUser(params, scopeKey);
             case "background_task": return this.#backgroundTask(params, scopeKey);
             case "telegram_call":  return this.#telegramCall(params);
             default:               return { error: `Unknown method: ${method}` };
@@ -208,7 +210,7 @@ export class UdsServer {
 
         return new Promise((resolve) => {
             const timer = setTimeout(() => this.#resolve(qId, { error: "Question timed out" }), QUESTION_TIMEOUT_MS);
-            const entry = { resolve, chatId, options: options || [], freeText: !hasButtons, timer };
+            const entry = { resolve, chatId, threadId, options: options || [], freeText: !hasButtons, timer };
             this.#pending.set(qId, entry);
 
             this.#telegram.call("sendMessage", sendParams)
@@ -220,15 +222,18 @@ export class UdsServer {
         });
     }
 
-    #notifyUser({ message }) {
+    #notifyUser({ message }, scopeKey) {
         if (!message?.trim()) return Promise.resolve({ error: "message is required" });
-        const chatId = this.#config.allowedChatIds?.[0];
+        const { chatId, threadId } = this.#resolveChatId(scopeKey);
         if (!chatId) return Promise.resolve({ error: "No chat available" });
         log.info(`notify_user: "${message.substring(0, 80)}"`);
-        this.#telegram.call("sendMessage", {
+        const params = {
             chat_id: chatId, text: message,
             link_preview_options: { is_disabled: true },
-        }).catch(err => log.warn(`notify_user failed: ${err.message}`));
+        };
+        if (threadId) params.message_thread_id = threadId;
+        this.#telegram.call("sendMessage", params)
+            .catch(err => log.warn(`notify_user failed: ${err.message}`));
         return Promise.resolve({ status: "sent" });
     }
 

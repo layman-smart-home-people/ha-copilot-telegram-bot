@@ -2,6 +2,21 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.4.4] — 2026-06-08
+
+### Fixed — Thread routing for all MCP tools
+
+- **Scope key via file** — Pool writes `.scope-key` to instance's COPILOT_HOME on claim/release. MCP sidecar reads it dynamically on each tool call. Fixes ask_user, notify_user, background_task all going to main chat instead of the active thread.
+- **notify_user thread support** — Now routes to the correct thread (was hardcoded to owner chatId without threadId).
+- **tryResolveText thread-aware** — Free-text ask_user answers now match by threadId, preventing cross-thread answer leaks.
+- **Auto-rename DM topics** — Topic rename after first prompt now fires for all threaded conversations (was forum-only). Uses existing icon + title heuristic.
+
+## [1.4.3] — 2026-06-08
+
+### Changed
+
+- Removed startup "Bot online" notification. Shutdown notification kept for active sessions only.
+
 ## [1.4.2] — 2026-06-08
 
 ### Fixed — ask_user 180s delay

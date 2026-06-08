@@ -4,9 +4,21 @@
 // No npm dependencies.
 
 import { createConnection } from "net";
+import { readFileSync } from "fs";
+import { join } from "path";
 
 const SOCKET_PATH = process.env.TG_UX_SOCK || "/run/tg-ux.sock";
-const SCOPE_KEY = process.env.TG_UX_SCOPE_KEY || null;
+const COPILOT_HOME = process.env.COPILOT_HOME || "";
+const SCOPE_KEY_FILE = COPILOT_HOME ? join(COPILOT_HOME, ".scope-key") : "";
+
+/** Read current scope key from file (written by pool on claim). */
+function getScopeKey() {
+    if (!SCOPE_KEY_FILE) return null;
+    try {
+        const key = readFileSync(SCOPE_KEY_FILE, "utf8").trim();
+        return key || null;
+    } catch { return null; }
+}
 
 function log(msg) { process.stderr.write(`[telegram-mcp] ${msg}\n`); }
 
@@ -232,7 +244,7 @@ async function handleAskUser(id, args) {
     log(`ask_user called: "${args.message.substring(0, 80)}"`);
     pendingCalls++;
     try {
-        const result = await callBot({ method: "ask_user", params: args, scopeKey: SCOPE_KEY });
+        const result = await callBot({ method: "ask_user", params: args, scopeKey: getScopeKey() });
         if (result.error) {
             send(id, {
                 content: [{ type: "text", text: result.error }],
@@ -287,7 +299,7 @@ async function handleBackgroundTask(id, args) {
         const result = await callBot({
             method: "background_task",
             params,
-            scopeKey: SCOPE_KEY,
+            scopeKey: getScopeKey(),
         });
         if (result.error) {
             send(id, {
@@ -322,7 +334,7 @@ async function handleNotifyUser(id, args) {
     log(`notify_user called: "${args.message.substring(0, 80)}"`);
     pendingCalls++;
     try {
-        const result = await callBot({ method: "notify_user", params: { message: args.message }, scopeKey: SCOPE_KEY });
+        const result = await callBot({ method: "notify_user", params: { message: args.message }, scopeKey: getScopeKey() });
         if (result.error) {
             send(id, {
                 content: [{ type: "text", text: `Error: ${result.error}` }],
@@ -358,7 +370,7 @@ async function handleTelegramCall(id, args) {
         const result = await callBot({
             method: "telegram_call",
             params: { method: args.method, params: args.params || {} },
-            scopeKey: SCOPE_KEY,
+            scopeKey: getScopeKey(),
         });
         if (result.error) {
             send(id, {

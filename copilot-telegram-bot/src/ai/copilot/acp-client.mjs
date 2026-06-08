@@ -138,10 +138,8 @@ export class ACPClient extends EventEmitter {
         if (copilotHome) {
             spawnEnv.COPILOT_HOME = copilotHome;
         }
-        // Pass scope key to MCP child processes (for UDS routing)
-        if (this.#config.scopeKey) {
-            spawnEnv.TG_UX_SCOPE_KEY = this.#config.scopeKey;
-        }
+        // Scope key propagation moved to file-based (.scope-key in COPILOT_HOME)
+        // written by pool on claim, read by MCP sidecar on each tool call
         this.emit("log", `ACP spawn: COPILOT_HOME=${spawnEnv.COPILOT_HOME || "unset"} tag=${this.tag} args=[${args.join(" ")}]`);
         await new Promise((resolve, reject) => {
             this.#process = spawn(this.#config.binary, args, {

@@ -198,8 +198,8 @@ export class ConversationManager {
         conv.on("prompt_complete", ({ elapsed, scopeKey }) => {
             log.debug(`${scopeKey} prompt done in ${elapsed}ms`);
 
-            // Auto-rename forum topic after first prompt (asynchronous, non-blocking)
-            if (conv.promptCount === 1 && scopeKey.startsWith("forum:")) {
+            // Auto-rename topic after first prompt (forum threads + DM threads)
+            if (conv.promptCount === 1 && conv.ref?.threadId) {
                 this.#autoRenameTopic(conv).catch(err =>
                     log.debug(`Topic rename skipped: ${err.message}`)
                 );

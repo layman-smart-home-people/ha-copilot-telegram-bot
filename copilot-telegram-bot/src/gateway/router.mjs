@@ -199,8 +199,8 @@ export class Router {
         }
 
         // Intercept text for pending UDS ask_user questions (MCP sidecar)
-        if (this.#udsServer?.tryResolveText(ref.chatId, text)) {
-            log.debug(`Text resolved pending UDS question for chat ${ref.chatId}`);
+        if (this.#udsServer?.tryResolveText(ref.chatId, text, ref.threadId)) {
+            log.debug(`Text resolved pending UDS question for chat ${ref.chatId}:${ref.threadId || "main"}`);
             return;
         }
 
