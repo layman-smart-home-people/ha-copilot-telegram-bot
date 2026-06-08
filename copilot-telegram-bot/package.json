@@ -1,6 +1,6 @@
 {
   "name": "copilot-telegram-bot",
-  "version": "0.75.0",
+  "version": "1.0.0",
   "type": "module",
   "private": true,
   "engines": { "node": ">=20" },

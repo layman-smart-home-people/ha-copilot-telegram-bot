@@ -2,6 +2,57 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.0.0] — 2026-06-08
+
+### 🚀 Major — Ezra v7: Multi-Session ACP Pool Architecture
+
+Complete rewrite of the bot's core. Replaces the single-instance orchestrator with an N-instance pool that supports concurrent conversations, model routing, and mid-conversation steering.
+
+### Added
+
+- **ACP Pool** (`src/pool/`) — Configurable pool of Copilot CLI instances (1–10)
+  - 6-step acquire algorithm: sticky → matching idle → spawn → reconfigure → evict → wait queue
+  - Model tiers: fast (Haiku 4.5), standard (Sonnet 4.5), reasoning (Opus 4.6)
+  - MCP profiles: owner (full tools) vs guest (restricted)
+  - Isolated COPILOT_HOME per instance with separate auth tokens
+  - Health checks, idle reaping, crash supervision with auto-replace
+- **Conversation layer** (`src/conversation/`) — State machine per user session
+  - States: idle → prompting → idle (with eliciting and dead)
+  - Steering: send new message mid-prompt → cancels old, starts new
+  - Crash recovery: instance dies → acquire new → auto-retry (2× limit)
+  - ResponseStreamer: 4-layer progressive rendering (content + code + expandable details + buttons)
+- **Gateway** (`src/gateway/`) — Clean routing layer
+  - Router: Telegram update parsing, permission gate, command dispatch
+  - Permissions: 3-role gate (owner/member/guest) from config + RBAC
+  - PromptEnricher: injects agent memory, sender context, pinned instructions
+  - Scope keys: `dm:{userId}`, `group:{chatId}:{userId}`, `forum:{chatId}:{threadId}`
+- **7 clean commands**: /stop, /new, /help, /status, /settings, /standing, /memory
+- **Config options**: pool_size, pool_pre_warm, pool_idle_minutes, pool_wait_timeout_seconds, default_model, guest_model, si_default_model
+
+### Security (from 3-agent Opus critique)
+
+- Callback button auth: verify clicking user owns the conversation
+- Pinned message injection: require permission before storing as context
+- MCP profile preservation through crash recovery (no privilege escalation)
+
+### Fixed (15 findings from critique)
+
+- Race condition: concurrent spawns no longer exceed maxSize
+- Sticky check: won't return dead instances
+- Wait queue: exact model+profile match only (no silent downgrades)
+- Reconfigure failure: proper cleanup instead of corrupt state
+- HTML truncation: safe cut point (no mid-tag/entity breaks)
+- Elicitation on dead instance: graceful failure
+- Render timer leak: cleared on streamer restart
+- Listener detach: works even if old ACP is dead
+- Router: proper stop() with listener cleanup
+- Pinned map: LRU eviction at 100 entries
+
+### Changed
+
+- Entry point is now v7 architecture (`src/index.mjs`)
+- Old v6 preserved as `src/index-v6.mjs` for rollback
+
 ## [0.75.0] — 2026-06-08
 
 ### Added — Ezra v6 Phase B: Embedded SDK Spike (ER-1)
