@@ -114,6 +114,29 @@ const SELF_TEST_TOOL = {
     },
 };
 
+const TELEGRAM_CALL_TOOL = {
+    name: "telegram_call",
+    description:
+        "Call any Telegram Bot API method through the bot. " +
+        "Use for forum topic management (editForumTopic, createForumTopic, closeForumTopic, deleteForumTopic, getForumTopicIconStickers), " +
+        "sending messages (sendMessage), editing messages (editMessageText), and other Bot API methods. " +
+        "Returns the API response. Example: method='editForumTopic', params={chat_id: 123, message_thread_id: 456, name: 'New Name'}.",
+    inputSchema: {
+        type: "object",
+        properties: {
+            method: {
+                type: "string",
+                description: "Telegram Bot API method name (e.g. 'editForumTopic', 'sendMessage', 'getForumTopicIconStickers')",
+            },
+            params: {
+                type: "object",
+                description: "Parameters for the API method (e.g. {chat_id: 123, message_thread_id: 456, name: 'New Name'})",
+            },
+        },
+        required: ["method"],
+    },
+};
+
 // --- JSON-RPC helpers ---
 
 function send(id, result) {
@@ -175,7 +198,7 @@ function handleInitialize(id, params) {
 }
 
 function handleToolsList(id) {
-    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL, SELF_TEST_TOOL] });
+    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL, SELF_TEST_TOOL, TELEGRAM_CALL_TOOL] });
 }
 
 async function handleToolsCall(id, params) {
@@ -193,6 +216,8 @@ async function handleToolsCall(id, params) {
         return handleNotifyUser(id, args);
     } else if (name === "self_test") {
         return handleSelfTest(id, args);
+    } else if (name === "telegram_call") {
+        return handleTelegramCall(id, args);
     } else {
         sendError(id, -32602, `Unknown tool: ${name}`);
     }
@@ -308,6 +333,43 @@ async function handleNotifyUser(id, args) {
         } else {
             send(id, {
                 content: [{ type: "text", text: "Notification sent" }],
+            });
+        }
+    } catch (err) {
+        send(id, {
+            content: [{ type: "text", text: `Error: ${err.message}` }],
+            isError: true,
+        });
+    } finally {
+        pendingCalls--;
+        checkExit();
+    }
+}
+
+async function handleTelegramCall(id, args) {
+    if (!args?.method || typeof args.method !== "string") {
+        send(id, {
+            content: [{ type: "text", text: "Error: method parameter is required (Telegram Bot API method name)" }],
+            isError: true,
+        });
+        return;
+    }
+    log(`telegram_call: ${args.method}(${JSON.stringify(args.params || {}).substring(0, 120)})`);
+    pendingCalls++;
+    try {
+        const result = await callBot({
+            method: "telegram_call",
+            params: { method: args.method, params: args.params || {} },
+            scopeKey: SCOPE_KEY,
+        });
+        if (result.error) {
+            send(id, {
+                content: [{ type: "text", text: `Telegram API error: ${result.error}` }],
+                isError: true,
+            });
+        } else {
+            send(id, {
+                content: [{ type: "text", text: JSON.stringify(result.data ?? result, null, 2) }],
             });
         }
     } catch (err) {

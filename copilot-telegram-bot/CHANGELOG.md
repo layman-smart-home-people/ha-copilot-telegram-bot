@@ -2,6 +2,12 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.3.11] — 2026-06-08
+
+### Added
+
+- **`telegram_call` MCP tool** — Agents can now call any Telegram Bot API method directly. Enables forum topic management (rename, create, close, set icons), message operations, and chat administration. Security: blocks sensitive methods (webhook, logout). Documented in `copilot-instructions.md` with examples.
+
 ## [1.3.10] — 2026-06-08
 
 ### Fixed

@@ -344,6 +344,8 @@ export class InteractiveFlows {
                 return this.#handleNotifyUser(params);
             case "self_test":
                 return this.#handleSelfTest(params);
+            case "telegram_call":
+                return this.#handleTelegramCall(params);
             default:
                 return { error: `Unknown UDS method: ${method}` };
         }
@@ -419,6 +421,26 @@ export class InteractiveFlows {
             return await this.#onSelfTest(params);
         } catch (err) {
             log.warn(`self_test error: ${err.message}`);
+            return { error: err.message };
+        }
+    }
+
+    async #handleTelegramCall(params) {
+        const { method, params: apiParams } = params || {};
+        if (!method || typeof method !== "string") {
+            return { error: "method is required (Telegram Bot API method name)" };
+        }
+        // Security: block sensitive methods
+        const blocked = /^(set|delete)webhook|getme|logout|close$/i;
+        if (blocked.test(method)) {
+            return { error: `Method '${method}' is not allowed for security reasons` };
+        }
+        log.info(`telegram_call: ${method}`);
+        try {
+            const result = await this.#telegram.call(method, apiParams || {});
+            return { data: result };
+        } catch (err) {
+            log.warn(`telegram_call ${method} failed: ${err.message}`);
             return { error: err.message };
         }
     }
