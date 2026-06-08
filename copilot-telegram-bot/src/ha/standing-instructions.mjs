@@ -347,6 +347,7 @@ export class StandingInstructionManager {
                 return {
                     type: "wake_agent",
                     prompt: this.#requireString(action.prompt, "Wake-agent action.prompt is required."),
+                    silent: action.silent === true,
                 };
             case "notify":
                 return {

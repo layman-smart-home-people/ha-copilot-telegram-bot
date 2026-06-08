@@ -357,12 +357,13 @@ export class StandingInstructionOrchestrator {
                 `Instruction: "${instruction.description}"\n` +
                 `Trigger: ${contextSummary}\n` +
                 `Agent prompt: ${action.prompt}`;
+            const isSilent = action.silent === true;
 
             // Route through background pipeline (overflow ACP) if available,
             // otherwise fall back to primary queue via injectSystemPrompt
             const useBackground = typeof this.#bridge.injectBackgroundPrompt === "function";
             if (useBackground) {
-                if (this.#ownerChatId) {
+                if (!isSilent && this.#ownerChatId) {
                     this.#telegram.enqueue(() =>
                         this.#telegram.sendMessage(this.#ownerChatId, `🔔 ${instruction.description}\n⏳ Processing...`)
                     ).catch(err => {
@@ -372,8 +373,13 @@ export class StandingInstructionOrchestrator {
                 this.#bridge.injectBackgroundPrompt(prompt, this.#ownerChatId, {
                     priority: 1,
                     description: instruction.description,
+                    silent: isSilent,
                 });
             } else {
+                if (isSilent) {
+                    log.info(`Silent SI skipped — overflow not available for "${instruction.description}"`);
+                    return;
+                }
                 if (this.#ownerChatId) {
                     const isBusy = this.#bridge.promptActive;
                     const statusMsg = isBusy

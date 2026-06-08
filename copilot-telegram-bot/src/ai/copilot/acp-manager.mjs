@@ -51,14 +51,25 @@ export class ACPManager {
         this.#overflowIdleMs = overflowIdleMinutes * 60 * 1000;
         this.#backgroundModel = backgroundModel || "";
 
-        // Overflow MCP config: default to si-tools only (no tg-ux, no rbac-tools)
+        // Overflow MCP config: tg-ux (for notify_user), si-tools, pkm-tools
         // RBAC tools excluded: overflow uses --allow-all, bypassing permission checks.
         // Including rbac-tools would allow privilege escalation via background_task.
+        // tg-ux added for notify_user — one-way alerts from autonomous agents.
         this.#overflowMcpServers = overflowMcpServers || {
+            "tg-ux": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/mcp-server.mjs"],
+            },
             "si-tools": {
                 type: "stdio",
                 command: "node",
                 args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
+            },
+            "pkm-tools": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/pkm/pkm-mcp-server.mjs"],
             },
         };
 

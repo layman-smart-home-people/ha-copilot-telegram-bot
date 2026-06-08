@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [0.72.0] — 2026-06-08
+
+### Added — Ezra v6 Phase A2: Silent SI + notify_user
+
+- **Silent mode for wake_agent (SI-1)** — `silent: true` on wake_agent actions suppresses ALL auto-delivery: no "🔔 Processing..." notification, no result delivery, no typing indicators. Silent tasks only run on overflow ACP (never fall back to primary). Errors still deliver (by design — errors are actionable).
+- **`notify_user` MCP tool (SI-2)** — New fire-and-forget tool for autonomous agents to send one-way Telegram notifications. Available on overflow via tg-ux MCP server. Returns immediately after queuing message.
+- **Autonomous preamble** — Silent tasks get a dedicated preamble instructing them to work silently, use `notify_user` for alerts, and prohibiting `ask_user`/`background_task`.
+- **Overflow MCP expansion** — Overflow ACP now has tg-ux (for notify_user), si-tools, and pkm-tools (for memory access). RBAC tools remain excluded.
+- **`silent` field in SI schema** — Exposed in si-mcp-server.mjs ACTION_SCHEMA for agent-created SIs.
+- **Status visibility** — `backgroundStatus` getter now exposes `silent` flag per task.
+
 ## [0.71.1] — 2026-06-08
 
 ### Fixed — Ezra v6 Phase A1: Elicitation Disambiguation + Draft Assessment

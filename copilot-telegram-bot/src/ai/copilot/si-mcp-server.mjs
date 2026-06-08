@@ -43,6 +43,7 @@ const ACTION_SCHEMA = {
             description: "Action type: wake_agent (start agent conversation), notify (send Telegram message), ha_service (call HA service), evaluate (evaluate HA Jinja2 template, optionally check condition, send notification)",
         },
         prompt: { type: "string", description: "Agent prompt (wake_agent)" },
+        silent: { type: "boolean", description: "If true, run autonomously — no Telegram notifications unless agent calls notify_user (wake_agent only)" },
         message: { type: "string", description: "Notification text (notify, ha_service, evaluate). For evaluate, use {{ result }} to include template output." },
         domain: { type: "string", description: "HA service domain (ha_service). Example: 'light'" },
         service: { type: "string", description: "HA service name (ha_service). Example: 'turn_on'" },

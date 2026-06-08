@@ -337,6 +337,8 @@ export class InteractiveFlows {
                 return this.handleMcpAskUser(params, scopeKey);
             case "background_task":
                 return this.#handleBackgroundTask(params, scopeKey);
+            case "notify_user":
+                return this.#handleNotifyUser(params);
             default:
                 return { error: `Unknown UDS method: ${method}` };
         }
@@ -379,6 +381,22 @@ export class InteractiveFlows {
         }
 
         return Promise.resolve({ taskId, status: "queued" });
+    }
+
+    #handleNotifyUser(params) {
+        const { message } = params || {};
+        if (!message || typeof message !== "string" || !message.trim()) {
+            return Promise.resolve({ error: "message is required (non-empty string)" });
+        }
+        const chatId = this.#getAllowedChatIds()[0]; // owner DM
+        if (!chatId) {
+            return Promise.resolve({ error: "No chat available for notification" });
+        }
+        log.info(`notify_user: "${message.substring(0, 80)}"`);
+        this.#telegram.enqueue(() =>
+            this.#telegram.sendMessage(chatId, message)
+        ).catch(err => log.warn(`notify_user send failed: ${err.message}`));
+        return Promise.resolve({ status: "sent" });
     }
 
     stopUdsServer() {

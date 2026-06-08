@@ -60,6 +60,22 @@ const BACKGROUND_TASK_TOOL = {
     },
 };
 
+const NOTIFY_TOOL = {
+    name: "notify_user",
+    description:
+        "Send a one-way notification to the user via Telegram. " +
+        "Does NOT wait for a reply — returns immediately. " +
+        "Use this in autonomous/silent mode when you find something the user should know about. " +
+        "Keep messages concise and actionable.",
+    inputSchema: {
+        type: "object",
+        properties: {
+            message: { type: "string", description: "The notification message to send" },
+        },
+        required: ["message"],
+    },
+};
+
 // --- JSON-RPC helpers ---
 
 function send(id, result) {
@@ -121,7 +137,7 @@ function handleInitialize(id, params) {
 }
 
 function handleToolsList(id) {
-    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL] });
+    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL] });
 }
 
 async function handleToolsCall(id, params) {
@@ -135,6 +151,8 @@ async function handleToolsCall(id, params) {
         return handleAskUser(id, args);
     } else if (name === "background_task") {
         return handleBackgroundTask(id, args);
+    } else if (name === "notify_user") {
+        return handleNotifyUser(id, args);
     } else {
         sendError(id, -32602, `Unknown tool: ${name}`);
     }
@@ -204,6 +222,39 @@ async function handleBackgroundTask(id, args) {
         } else {
             send(id, {
                 content: [{ type: "text", text: `Task dispatched: ${result.taskId}\nStatus: ${result.status}\nResults will be delivered via Telegram when complete.` }],
+            });
+        }
+    } catch (err) {
+        send(id, {
+            content: [{ type: "text", text: `Error: ${err.message}` }],
+            isError: true,
+        });
+    } finally {
+        pendingCalls--;
+        checkExit();
+    }
+}
+
+async function handleNotifyUser(id, args) {
+    if (!args?.message || typeof args.message !== "string" || !args.message.trim()) {
+        send(id, {
+            content: [{ type: "text", text: "Error: message parameter is required (non-empty string)" }],
+            isError: true,
+        });
+        return;
+    }
+    log(`notify_user called: "${args.message.substring(0, 80)}"`);
+    pendingCalls++;
+    try {
+        const result = await callBot({ method: "notify_user", params: { message: args.message }, scopeKey: SCOPE_KEY });
+        if (result.error) {
+            send(id, {
+                content: [{ type: "text", text: `Error: ${result.error}` }],
+                isError: true,
+            });
+        } else {
+            send(id, {
+                content: [{ type: "text", text: "Notification sent" }],
             });
         }
     } catch (err) {

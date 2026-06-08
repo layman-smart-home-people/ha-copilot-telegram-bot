@@ -392,15 +392,19 @@ export class Orchestrator {
      * @param {number} [options.priority=2] - 1=high (SI), 2=normal (agent)
      * @param {string} [options.description=""] - Short description for status
      */
-    injectBackgroundPrompt(prompt, chatId, { priority = 2, description = "Background task", taskId: providedTaskId } = {}) {
+    injectBackgroundPrompt(prompt, chatId, { priority = 2, description = "Background task", taskId: providedTaskId, silent = false } = {}) {
         if (!this.#acpMgr?.overflowEnabled) {
+            if (silent) {
+                log.warn(`Silent task rejected — overflow disabled`);
+                return;
+            }
             log.info("Background task falling back to primary queue (overflow disabled)");
             return this.injectSystemPrompt(prompt, chatId);
         }
 
         if (this.#backgroundQueue.length >= Orchestrator.#BACKGROUND_QUEUE_MAX) {
             log.warn("Background queue full, rejecting task");
-            if (chatId) {
+            if (chatId && !silent) {
                 this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(chatId, `⚠️ Background queue full (${Orchestrator.#BACKGROUND_QUEUE_MAX}) — task rejected.\n${description}`)
                 ).catch(() => {});
@@ -409,7 +413,7 @@ export class Orchestrator {
         }
 
         const taskId = providedTaskId || `bg-${Date.now().toString(36)}`;
-        const task = { prompt, chatId, priority, description, taskId, createdAt: Date.now() };
+        const task = { prompt, chatId, priority, description, taskId, silent, createdAt: Date.now() };
 
         // Insert by priority (lower number = higher priority, jump ahead of lower-priority items)
         const insertIdx = this.#backgroundQueue.findIndex(t => t.priority > priority);
@@ -438,6 +442,7 @@ export class Orchestrator {
                 taskId: t.taskId,
                 description: t.description,
                 priority: t.priority,
+                silent: t.silent || false,
                 age: Math.floor((Date.now() - t.createdAt) / 1000),
             })),
         };
@@ -458,14 +463,18 @@ export class Orchestrator {
     }
 
     async #executeBackgroundTask(task) {
-        const { prompt, chatId, taskId, description } = task;
+        const { prompt, chatId, taskId, description, silent: isSilent } = task;
         const startTime = Date.now();
-        log.info(`Background task starting: ${taskId} "${description}"`);
+        log.info(`Background task starting: ${taskId} "${description}"${isSilent ? " [SILENT]" : ""}`);
 
         try {
             // Acquire overflow ACP (spawns if needed)
             const result = await this.#acpMgr.acquireOrSpawn("background:task");
             if (!result) {
+                if (isSilent) {
+                    log.warn(`Silent task ${taskId} skipped — no overflow ACP available`);
+                    return;
+                }
                 log.warn(`No overflow ACP available for ${taskId} — falling back to primary`);
                 this.injectSystemPrompt(prompt, chatId);
                 return;
@@ -482,6 +491,10 @@ export class Orchestrator {
             } catch (err) {
                 log.warn(`Failed to create overflow session for ${taskId}: ${err.message}`);
                 this.#acpMgr.release(tag);
+                if (isSilent) {
+                    log.warn(`Silent task ${taskId} abandoned — session creation failed`);
+                    return;
+                }
                 this.injectSystemPrompt(prompt, chatId);
                 return;
             }
@@ -492,7 +505,8 @@ export class Orchestrator {
             overflowAcp.on("text_chunk", onText);
 
             // Build preamble with agent context
-            const fullPrompt = this.#buildBackgroundPreamble() + "\n\n" + prompt;
+            const preamble = isSilent ? this.#buildSilentPreamble() : this.#buildBackgroundPreamble();
+            const fullPrompt = preamble + "\n\n" + prompt;
 
             // 5-minute watchdog
             let timedOut = false;
@@ -507,7 +521,7 @@ export class Orchestrator {
                 await overflowAcp.prompt(fullPrompt, {});
             } catch (err) {
                 if (timedOut) {
-                    if (chatId) {
+                    if (chatId && !isSilent) {
                         this.#telegram.enqueue(() =>
                             this.#telegram.sendMessage(chatId, `⚠️ Background task timed out (5 min)\n_${description}_`)
                         ).catch(() => {});
@@ -524,9 +538,11 @@ export class Orchestrator {
             // Deliver results
             const fullText = textChunks.join("");
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-            log.info(`Background task completed: ${taskId} in ${elapsed}s (${fullText.length} chars)`);
+            log.info(`Background task completed: ${taskId} in ${elapsed}s (${fullText.length} chars)${isSilent ? " [SILENT]" : ""}`);
 
-            if (fullText.trim() && chatId) {
+            if (isSilent) {
+                log.info(`Silent task ${taskId} output suppressed (${fullText.length} chars)`);
+            } else if (fullText.trim() && chatId) {
                 const header = `📋 *Background Task* (${elapsed}s)\n_${description}_\n\n`;
                 const content = header + fullText;
                 const chunks = chunkMessage(content);
@@ -541,6 +557,7 @@ export class Orchestrator {
             }
 
         } catch (err) {
+            // Errors ALWAYS deliver, even for silent tasks — errors are actionable info (per R3 design)
             log.error(`Background task ${taskId} failed: ${err.message}`);
             if (chatId) {
                 this.#telegram.enqueue(() =>
@@ -554,6 +571,23 @@ export class Orchestrator {
         const parts = [
             "You are running in background mode. Do not attempt user interaction — no ask_user, no questions, no confirmations. Report findings directly and concisely.",
             "You have access to HA MCP tools (ha-mcp) and standing instruction tools (si_*). Use them to complete your task.",
+        ];
+        const agentContext = this.#agentMemory.buildContext();
+        if (agentContext) {
+            parts.push("---\nAgent context:\n" + agentContext);
+        }
+        return parts.join("\n\n");
+    }
+
+    #buildSilentPreamble() {
+        const parts = [
+            "You are running as an AUTONOMOUS background agent. " +
+            "Do your work silently. Do NOT produce a final report or summary — your text output will be discarded. " +
+            "If you find something the user needs to know about, call the notify_user tool with a concise alert. " +
+            "If everything is normal, just finish — no notification needed.",
+            "PROHIBITED TOOLS: Do NOT call ask_user (will hang and timeout) or background_task (not available in silent mode). " +
+            "You have notify_user for one-way alerts and HA MCP tools for home control.",
+            "You have access to HA MCP tools (ha-mcp), standing instruction tools (si_*), and PKM tools (pkm_*).",
         ];
         const agentContext = this.#agentMemory.buildContext();
         if (agentContext) {
