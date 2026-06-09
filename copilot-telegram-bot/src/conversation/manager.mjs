@@ -14,6 +14,26 @@ import { createLogger } from "../logger.mjs";
 const log = createLogger("conv-mgr");
 const REAP_INTERVAL_MS = 60_000;
 const DEFAULT_IDLE_REAP_MS = 30 * 60_000; // 30 min
+const DEFAULT_TIME_ZONE = process.env.TZ || "Asia/Singapore";
+
+function getCurrentDateTime(timeZone = DEFAULT_TIME_ZONE) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23",
+        timeZoneName: "longOffset",
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts
+        .filter(part => part.type !== "literal")
+        .map(part => [part.type, part.value]));
+    const offset = (values.timeZoneName || "GMT+00:00").replace("GMT", "");
+    return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}:${values.second}${offset}`;
+}
 
 export class ConversationManager {
     #conversations = new Map(); // scopeKey → Conversation
@@ -166,6 +186,7 @@ export class ConversationManager {
         log.info(`Creating conversation for ${scopeKey} (model=${model}, profile=${mcpProfile})`);
 
         const inst = await this.#pool.acquire(scopeKey, { model, mcpProfile });
+        let resumeContext = null;
 
         // Try to resume previous session from ledger
         const previousSessionId = this.#ledger.get(scopeKey);
@@ -173,6 +194,7 @@ export class ConversationManager {
             try {
                 await inst.acp.loadSession(previousSessionId);
                 inst.sessionId = previousSessionId;
+                resumeContext = this.#buildResumeContext();
                 log.info(`Resumed session ${previousSessionId} for ${scopeKey}`);
             } catch (err) {
                 log.debug(`Could not resume session ${previousSessionId}: ${err.message} — using fresh session`);
@@ -181,7 +203,7 @@ export class ConversationManager {
 
         const conv = new Conversation({
             scopeKey, poolInstance: inst, telegram: this.#telegram, ref,
-            config: this.#config,
+            config: this.#config, resumeContext,
         });
         this.#setupConvListeners(conv);
         this.#conversations.set(scopeKey, conv);
@@ -224,13 +246,28 @@ export class ConversationManager {
             try {
                 const model = conv.model || this.#config.defaultModel || "standard";
                 const mcpProfile = conv.mcpProfile || "owner";
+                const previousSessionId = conv.sessionId;
                 // Release the old (dead) instance before acquiring a new one
                 const oldInstanceId = conv.instanceId;
                 if (oldInstanceId) {
                     this.#pool.release(oldInstanceId);
                 }
                 const newInst = await this.#pool.acquire(scopeKey, { model, mcpProfile });
+                let resumeContext = null;
+                if (previousSessionId) {
+                    try {
+                        await newInst.acp.loadSession(previousSessionId);
+                        newInst.sessionId = previousSessionId;
+                        resumeContext = this.#buildResumeContext();
+                        log.info(`Crash recovery resumed session ${previousSessionId} for ${scopeKey}`);
+                    } catch (loadErr) {
+                        log.warn(`Crash recovery could not resume session ${previousSessionId}: ${loadErr.message}`);
+                    }
+                }
                 conv.replaceInstance(newInst);
+                if (resumeContext) {
+                    conv.setResumeContext(resumeContext);
+                }
                 log.info(`Crash recovery: ${scopeKey} got new instance ${newInst.id}`);
                 // Retry the prompt
                 await conv.receive(text, opts);
@@ -239,6 +276,10 @@ export class ConversationManager {
                 conv.kill();
             }
         });
+    }
+
+    #buildResumeContext() {
+        return `[Session recovery context — the conversation was resumed from saved or compacted context, so any timestamps in the recovered summary may be historical. Current time: ${getCurrentDateTime()}]`;
     }
 
     #releaseConversation(conv, { skipLedger = false } = {}) {
