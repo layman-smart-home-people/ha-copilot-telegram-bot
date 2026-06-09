@@ -224,6 +224,11 @@ export class ConversationManager {
             try {
                 const model = conv.model || this.#config.defaultModel || "standard";
                 const mcpProfile = conv.mcpProfile || "owner";
+                // Release the old (dead) instance before acquiring a new one
+                const oldInstanceId = conv.instanceId;
+                if (oldInstanceId) {
+                    this.#pool.release(oldInstanceId);
+                }
                 const newInst = await this.#pool.acquire(scopeKey, { model, mcpProfile });
                 conv.replaceInstance(newInst);
                 log.info(`Crash recovery: ${scopeKey} got new instance ${newInst.id}`);
