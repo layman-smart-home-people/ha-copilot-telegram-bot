@@ -860,6 +860,7 @@ export class Router {
         const formatResult = ({ scope, data, error }) => {
             const label = scope === "agent" ? "🤖 Agent" : "👤 User";
             if (error) return `${label}: ⚠️ ${error}`;
+            if (!data) return `${label}: ⚠️ Empty response`;
             const parts = [];
             if (data.harvested) parts.push(`📥 ${data.harvested} harvested`);
             if (data.curated)   parts.push(`🧹 ${data.curated} curated`);

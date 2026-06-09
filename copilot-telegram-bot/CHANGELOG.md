@@ -6,6 +6,7 @@ All notable changes to the Copilot Telegram Bot add-on.
 
 ### Fixed — `/dream` Command Crash
 - **`await` missing on PKM API call** — `pkm.handleApi()` returns a Promise for async routes (like `/dream`), but the WebUI server wasn't awaiting it. The response body became `null`, causing `Cannot read properties of null (reading 'harvested')` crash on every `/dream` invocation.
+- **Null-safety in `formatResult`** — `#cmdDream` now guards against null/undefined `data` before accessing result fields, preventing crashes from malformed API responses.
 
 ## [2.3.3] — 2026-06-09
 
