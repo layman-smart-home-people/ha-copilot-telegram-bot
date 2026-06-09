@@ -8,6 +8,7 @@
 // 4. Final answer with collapsed tool steps
 
 import { escapeHtml, markdownToTelegramHtml, chunkMessage, stripHtmlKeepStructure } from "./formatter.mjs";
+import { withThread } from "./thread.mjs";
 import { createLogger } from "../../logger.mjs";
 
 const EDIT_MIN_CHARS = 50;          // min new chars before editing (private chat)
@@ -121,13 +122,12 @@ export class ResponseComposer {
         }
 
         // Fallback: send a real placeholder message (edit-based flow)
-        const params = {
+        const params = withThread({
             chat_id: ref.chatId,
             text: "🤔 <i>Thinking...</i>",
             parse_mode: "HTML",
             disable_notification: true,
-        };
-        if (ref.threadId) params.message_thread_id = ref.threadId;
+        }, ref);
         if (ref.triggerMessageId && (ref.chatType === "group" || ref.chatType === "supergroup")) {
             params.reply_to_message_id = ref.triggerMessageId;
         }
@@ -371,8 +371,7 @@ export class ResponseComposer {
      */
     async #sendFinalMessage(text, parseMode) {
         if (!this.#ref) return null;
-        const params = { chat_id: this.#ref.chatId, text, link_preview_options: { is_disabled: true } };
-        if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+        const params = withThread({ chat_id: this.#ref.chatId, text, link_preview_options: { is_disabled: true } }, this.#ref);
         if (parseMode) params.parse_mode = parseMode;
         try {
             const sent = await this.#telegram.call("sendMessage", params);
@@ -1039,13 +1038,12 @@ export class ResponseComposer {
 
         const elapsed = this.#startTime ? Math.round((Date.now() - this.#startTime) / 1000) : 0;
         const timer = elapsed > 0 ? ` <i>(${elapsed}s)</i>` : "";
-        const params = {
+        const params = withThread({
             chat_id: this.#ref.chatId,
             text: `🤔 <i>Thinking...</i>${timer}`,
             parse_mode: "HTML",
             disable_notification: true,
-        };
-        if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+        }, this.#ref);
 
         try {
             const sent = await this.#telegram.call("sendMessage", params);

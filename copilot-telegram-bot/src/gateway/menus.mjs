@@ -7,6 +7,7 @@
 // - Callback routing by menu ID
 // - Builder helpers for common patterns
 
+import { withThread } from "../transport/telegram/thread.mjs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("menus");
@@ -58,13 +59,12 @@ export class MenuManager {
         }
 
         // Send new message
-        const params = {
+        const params = withThread({
             chat_id: chatId,
             text,
             parse_mode: "HTML",
             reply_markup: replyMarkup,
-        };
-        if (opts.threadId) params.message_thread_id = opts.threadId;
+        }, opts.threadId);
 
         const sent = await this.#telegram.call("sendMessage", params);
         this.#track(menuKey, chatId, sent.message_id);

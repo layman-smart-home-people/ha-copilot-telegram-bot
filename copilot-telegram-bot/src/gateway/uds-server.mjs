@@ -8,6 +8,7 @@ import { createServer as createNetServer } from "node:net";
 import { unlinkSync, chmodSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, extname, resolve as resolvePath } from "node:path";
+import { withThread } from "../transport/telegram/thread.mjs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("uds");
@@ -220,13 +221,12 @@ export class UdsServer {
             ]};
         }
 
-        const sendParams = {
+        const sendParams = withThread({
             chat_id: chatId,
             text: `❓ ${message}${!hasButtons ? "\n\nType your answer below:" : ""}`,
             reply_markup: replyMarkup,
             link_preview_options: { is_disabled: true },
-        };
-        if (threadId) sendParams.message_thread_id = threadId;
+        }, threadId);
 
         return new Promise((resolve) => {
             const timer = setTimeout(() => {
@@ -251,11 +251,10 @@ export class UdsServer {
         const { chatId, threadId } = this.#resolveChatId(scopeKey);
         if (!chatId) return Promise.resolve({ error: "No chat available" });
         log.info(`notify_user: "${message.substring(0, 80)}"`);
-        const params = {
+        const params = withThread({
             chat_id: chatId, text: message,
             link_preview_options: { is_disabled: true },
-        };
-        if (threadId) params.message_thread_id = threadId;
+        }, threadId);
         this.#telegram.call("sendMessage", params)
             .catch(err => log.warn(`notify_user failed: ${err.message}`));
         return Promise.resolve({ status: "sent" });
@@ -376,7 +375,7 @@ export class UdsServer {
         const merged = { ...(apiParams || {}) };
         if (THREAD_METHODS.has(method.toLowerCase()) && !merged.message_thread_id && scopeKey) {
             const { threadId } = this.#resolveChatId(scopeKey);
-            if (threadId) merged.message_thread_id = threadId;
+            withThread(merged, threadId);
         }
 
         log.info(`telegram_call: ${method}`);
