@@ -76,12 +76,12 @@ export class ACPPool extends EventEmitter {
 
         mkdirSync(this.#baseCopilotHome, { recursive: true });
 
-        // Pre-warm instances in parallel
+        // Pre-warm instances in parallel (use user's default model, not dispatcher)
         if (this.#preWarmCount > 0) {
-            const dispatcherModel = this.#resolveModelTier(this.#config.dispatcherModel || "fast");
+            const defaultModel = this.#resolveModelTier(this.#config.defaultModel || "standard");
             const promises = Array.from({ length: this.#preWarmCount }, (_, i) =>
-                this.#spawn(dispatcherModel, "owner")
-                    .then(inst => log.info(`Pre-warm ${i + 1}/${this.#preWarmCount}: ${inst.id} ready (${dispatcherModel})`))
+                this.#spawn(defaultModel, "owner")
+                    .then(inst => log.info(`Pre-warm ${i + 1}/${this.#preWarmCount}: ${inst.id} ready (${defaultModel})`))
                     .catch(err => log.warn(`Pre-warm ${i + 1} failed: ${err.message}`))
             );
             await Promise.allSettled(promises);
@@ -367,16 +367,45 @@ export class ACPPool extends EventEmitter {
             await inst.acp.stop().catch(() => {});
         }
 
-        // Respawn with same COPILOT_HOME
+        // Respawn with same COPILOT_HOME — merge internal sidecar + external profile servers
+        const internalMcpServers = inst.mcpProfile !== "guest" ? {
+            "telegram": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/mcp-server.mjs"],
+            },
+            "standing-instructions": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
+            },
+            "access-control": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/rbac-mcp-server.mjs"],
+            },
+            "memory": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/pkm/pkm-mcp-server.mjs"],
+            },
+            "session-history": {
+                type: "stdio",
+                command: "node",
+                args: ["--no-warnings", "/app/src/ai/copilot/session-history-mcp-server.mjs"],
+            },
+        } : {};
+        const profileConfig = this.#mcpProfiles[inst.mcpProfile] || this.#mcpProfiles.owner || {};
+        const mcpServers = {
+            ...internalMcpServers,
+            ...(profileConfig.mcpServers || {}),
+        };
         const acp = new ACPClient({
             binary: this.#config.copilotBinary,
             cwd: this.#config.workingDirectory || "/config",
             copilotHome: inst.copilotHome,
             permissionPolicy: "allow_all",
-            stdioMcpServers: (() => {
-                const s = (this.#mcpProfiles[inst.mcpProfile] || {}).mcpServers;
-                return (s && Object.keys(s).length > 0) ? s : null;
-            })(),
+            stdioMcpServers: mcpServers,
             tag: inst.id,
         });
 

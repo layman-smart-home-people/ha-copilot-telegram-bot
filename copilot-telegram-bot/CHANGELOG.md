@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.4.11] — 2026-06-09
+
+### Fixed
+- **Pool reconfigure: MCP servers restored** — When pool reconfigured an idle instance to a different model tier, internal sidecar MCP servers (telegram, standing-instructions, access-control, memory, session-history) were lost, leaving only external servers (ha-mcp). Now properly merges internal + external servers, matching the initial spawn path.
+- **dispatch_to_agent model fallthrough** — Dispatcher tool no longer hardcodes `model: "standard"` as default. When the agent doesn't specify a model, the API dispatch falls through to the user's `defaultModel` from `/settings`.
+- **background_task model/profile** — Background tasks now inherit the user's `defaultModel` and `mcpProfile: "owner"` instead of empty defaults.
+- **Pre-warm uses defaultModel** — Pool pre-warm now spawns instances with the user's preferred model instead of the dispatcher model, reducing needless reconfigures.
+- **Router: direct model routing** — Removed dispatcher model indirection; user messages now route directly to the user's preferred model tier.
+
 ## [1.4.10] — 2026-06-09
 
 ### Fixed

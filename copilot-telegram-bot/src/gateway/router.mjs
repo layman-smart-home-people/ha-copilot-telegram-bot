@@ -281,20 +281,15 @@ export class Router {
             return;
         }
 
-        // Get role-based config
-        const roleModel = this.#permissions.getModelTier(ref.userId, this.#config);
-        // Use dispatcher model (fast triage) for user conversations if configured
-        const model = (this.#config.dispatcherModel && roleModel !== "fast")
-            ? this.#config.dispatcherModel
-            : roleModel;
+        // Get role-based model (respects user's /settings model preference)
+        const model = this.#permissions.getModelTier(ref.userId, this.#config);
         const mcpProfile = this.#permissions.getMcpProfile(ref.userId);
 
         // Check if conversation already exists (determines if first message)
         const isFirstMessage = !existingConv || existingConv.state === "dead";
 
         // Enrich text with context prefix
-        const isDispatcher = model === "fast" && roleModel !== "fast";
-        const enrichedText = this.#enricher.enrich(text, ref, { isFirstMessage, isDispatcher });
+        const enrichedText = this.#enricher.enrich(text, ref, { isFirstMessage });
 
         // Route to conversation manager
         try {

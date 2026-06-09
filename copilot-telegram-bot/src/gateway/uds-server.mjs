@@ -320,7 +320,9 @@ export class UdsServer {
 
         const ref = { chatId, chatType: "private", userId: chatId };
         try {
-            await this.#conversationManager.route(`bg:${taskId}`, prompt, ref, {});
+            // Use user's default model preference for background tasks
+            const model = this.#config.defaultModel || "standard";
+            await this.#conversationManager.route(`bg:${taskId}`, prompt, ref, { model, mcpProfile: "owner" });
             const result = { taskId, status: "completed" };
             if (groupId) { result.groupId = groupId; result.groupSize = groupSize; }
             return result;

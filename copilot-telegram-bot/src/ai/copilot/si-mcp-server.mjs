@@ -353,10 +353,11 @@ async function handleTool(name, args) {
                 const { prompt, description: desc, model: m } = args || {};
                 if (!prompt) return err("prompt is required");
                 if (!desc) return err("description is required");
-                const body = { prompt, description: desc, model: m || "standard" };
+                const body = { prompt, description: desc };
+                if (m) body.model = m;
                 const { status, data } = await apiCall("POST", "/api/dispatch", body);
                 if (status === 200 || status === 202) {
-                    return ok(`✅ Dispatched: "${desc}"\nModel: ${m || "standard"}\nThe full agent will send its response to the user directly.`);
+                    return ok(`✅ Dispatched: "${desc}"\nModel: ${body.model || "(user default)"}\nThe full agent will send its response to the user directly.`);
                 }
                 return err(`Dispatch failed (${status}): ${data?.error || JSON.stringify(data)}`);
             }
