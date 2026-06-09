@@ -564,46 +564,44 @@ export class Router {
         const convos = this.#conversationManager.list();
         const metrics = this.#pool.getMetrics();
 
+        const activeConvos = convos.filter(c => c.state === "prompting");
+        const modelLabel = this.#config.defaultModel === "fast" ? "⚡ Fast" :
+            this.#config.defaultModel === "reasoning" ? "🧠 Reasoning" : "🔵 Standard";
+
         const lines = [
-            "<b>📊 Status — v" + this.#config.version + "</b>\n",
-            `<b>🤖 Pool</b>`,
-            `  ${poolStatus.claimed} active · ${poolStatus.idle} idle · ${poolStatus.booting} booting (max ${poolStatus.maxSize})`,
+            `<b>📊 Status</b> — v${this.#config.version}\n`,
+            `<b>Model:</b> ${modelLabel}`,
+            `<b>Active chats:</b> ${activeConvos.length} working, ${convos.length - activeConvos.length} idle`,
+            `<b>Capacity:</b> ${poolStatus.claimed + poolStatus.idle} of ${poolStatus.maxSize} slots used`,
         ];
 
-        if (poolStatus.instances.length > 0) {
-            for (const inst of poolStatus.instances) {
-                const icon = inst.state === "claimed" ? "⚡" : inst.state === "idle" ? "💤" : "🔄";
-                const model = inst.model === "fast" ? "⚡H" : inst.model === "reasoning" ? "🧠O" : "🔵S";
-                const claim = inst.claimedBy ? ` → ${inst.claimedBy}` : "";
-                lines.push(`  ${icon} ${inst.id} [${model}]${claim}`);
-            }
+        // HA connection
+        if (this.#config.haConnected) {
+            lines.push(`<b>Home Assistant:</b> ✅ connected (${this.#config.haVersion || "unknown"})`);
+        } else {
+            lines.push(`<b>Home Assistant:</b> ❌ disconnected`);
         }
 
-        lines.push(`\n<b>💬 Conversations</b> (${convos.length})`);
-        if (convos.length > 0) {
-            for (const c of convos.slice(0, 6)) {
-                const icon = c.state === "prompting" ? "⚡" : c.state === "eliciting" ? "❓" : "💤";
-                lines.push(`  ${icon} ${c.scopeKey} · ${c.model} · ${c.promptCount}p`);
-            }
-            if (convos.length > 6) lines.push(`  ...+${convos.length - 6} more`);
-        }
-
-        // SI status
+        // SI status — this is the core feature, show prominently
         if (this.#siOrchestrator) {
             const siStatus = this.#siOrchestrator.status();
-            lines.push(`\n<b>📌 Standing</b> ${siStatus.enabled}/${siStatus.total} enabled · ${siStatus.triggerCount} triggers`);
-            if (siStatus.paused) lines.push(`  ⏸️ Paused`);
+            const siLine = siStatus.paused
+                ? `⏸️ Paused (${siStatus.enabled} rules ready)`
+                : `✅ ${siStatus.enabled} active rules, ${siStatus.triggerCount} triggers today`;
+            lines.push(`<b>Standing Instructions:</b> ${siLine}`);
         }
 
-        // Metrics
-        lines.push(`\n<b>📈 Metrics</b>`);
-        lines.push(`  ${metrics.totalPrompts} prompts · ${(metrics.totalMs / 1000).toFixed(1)}s total`);
-        if (metrics.totalCrashes > 0) lines.push(`  ⚠️ ${metrics.totalCrashes} crashes`);
-        if (poolStatus.waitQueueLength > 0) lines.push(`  ⏳ Wait queue: ${poolStatus.waitQueueLength}`);
+        // Simple metrics
+        if (metrics.totalPrompts > 0) {
+            lines.push(`\n<i>${metrics.totalPrompts} prompts served · avg ${metrics.totalPrompts > 0 ? ((metrics.totalMs / metrics.totalPrompts) / 1000).toFixed(1) : 0}s</i>`);
+        }
+        if (poolStatus.waitQueueLength > 0) {
+            lines.push(`⏳ ${poolStatus.waitQueueLength} request${poolStatus.waitQueueLength > 1 ? "s" : ""} waiting`);
+        }
 
         const keyboard = [
             row(
-                btn("🆕 New", menuCallback(scopePrefix, "status", "new")),
+                btn("🆕 New Chat", menuCallback(scopePrefix, "status", "new")),
                 btn("⏹ Stop", menuCallback(scopePrefix, "status", "stop")),
                 btn("🔄 Refresh", menuCallback(scopePrefix, "status", "refresh")),
             ),
@@ -696,17 +694,27 @@ export class Router {
         const { readFileSync, existsSync, readdirSync } = await import("node:fs");
         const agentDir = this.#config.agentDir || "/config/.agent";
 
-        const files = ["IDENTITY.md", "MEMORY.md", "SKILLS.md", "TASKS.md"];
-        const lines = [`<b>🧠 Agent Memory</b>\n`];
+        const fileLabels = {
+            "IDENTITY.md": "🤖 Personality",
+            "MEMORY.md": "📝 Key Facts",
+            "SKILLS.md": "🔧 Capabilities",
+            "TASKS.md": "📋 Current Tasks",
+        };
+        const files = Object.keys(fileLabels);
+        const lines = [
+            `<b>🧠 Agent Memory</b>`,
+            `<i>These files shape how I behave. Tap to view.</i>\n`,
+        ];
 
         for (const f of files) {
             const path = `${agentDir}/${f}`;
+            const label = fileLabels[f];
             if (existsSync(path)) {
                 const size = readFileSync(path).length;
-                const sizeStr = size > 1024 ? `${(size / 1024).toFixed(1)}K` : `${size}`;
-                lines.push(`📄 ${f} (${sizeStr})`);
+                const sizeStr = size > 1024 ? `${(size / 1024).toFixed(1)}K` : `${size}B`;
+                lines.push(`${label} · ${sizeStr}`);
             } else {
-                lines.push(`📄 ${f} <i>missing</i>`);
+                lines.push(`${label} · <i>not set</i>`);
             }
         }
 
@@ -718,22 +726,22 @@ export class Router {
                 const entries = readdirSync(memDir);
                 const dirs = entries.filter(f => { try { return statSync(`${memDir}/${f}`).isDirectory(); } catch { return false; } });
                 const flatFiles = entries.filter(f => f.endsWith(".md"));
-                if (dirs.length > 0) lines.push(`📁 memory/ (${dirs.length} day dirs)`);
-                else if (flatFiles.length > 0) lines.push(`📁 memory/ (${flatFiles.length} daily logs)`);
+                const count = dirs.length || flatFiles.length;
+                if (count > 0) lines.push(`📁 Daily Notes · ${count} day${count > 1 ? "s" : ""}`);
             } catch {}
         }
 
         const keyboard = [
             row(
-                btn("📄 Identity", menuCallback(scopePrefix, "memory", "view:IDENTITY.md")),
-                btn("📄 Memory", menuCallback(scopePrefix, "memory", "view:MEMORY.md")),
+                btn("🤖 Personality", menuCallback(scopePrefix, "memory", "view:IDENTITY.md")),
+                btn("📝 Key Facts", menuCallback(scopePrefix, "memory", "view:MEMORY.md")),
             ),
             row(
-                btn("📄 Tasks", menuCallback(scopePrefix, "memory", "view:TASKS.md")),
-                btn("📄 Skills", menuCallback(scopePrefix, "memory", "view:SKILLS.md")),
+                btn("📋 Tasks", menuCallback(scopePrefix, "memory", "view:TASKS.md")),
+                btn("🔧 Capabilities", menuCallback(scopePrefix, "memory", "view:SKILLS.md")),
             ),
             row(
-                btn("🔄 Reset (keep identity)", menuCallback(scopePrefix, "memory", "reset")),
+                btn("🔄 Reset (keep personality)", menuCallback(scopePrefix, "memory", "reset")),
                 btn("❌ Close", menuCallback(scopePrefix, "memory", "close")),
             ),
         ];
