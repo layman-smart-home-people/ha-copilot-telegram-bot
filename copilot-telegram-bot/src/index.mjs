@@ -89,23 +89,43 @@ async function main() {
     const telegram = new TelegramClient({ token: config.botToken });
     _telegram = telegram;
 
-    try {
-        const me = await telegram.getMe();
-        log.info(`Telegram: @${me.username} (${me.first_name})`);
-        if (me.has_topics_enabled) {
-            log.info("Bot has Threaded Mode enabled (BotFather)");
+    // Validate bot token with retry — options.json may not be ready at boot
+    const MAX_TOKEN_RETRIES = 3;
+    const TOKEN_RETRY_DELAY_MS = 5000;
+    for (let attempt = 1; attempt <= MAX_TOKEN_RETRIES; attempt++) {
+        try {
+            if (!config.botToken) {
+                throw new Error("bot_token is empty — check add-on configuration");
+            }
+            const me = await telegram.getMe();
+            log.info(`Telegram: @${me.username} (${me.first_name})`);
+            break;
+        } catch (err) {
+            if (attempt < MAX_TOKEN_RETRIES) {
+                log.warn(`Telegram connection attempt ${attempt}/${MAX_TOKEN_RETRIES} failed: ${err.message} — retrying in ${TOKEN_RETRY_DELAY_MS / 1000}s`);
+                await new Promise(r => setTimeout(r, TOKEN_RETRY_DELAY_MS));
+                // Re-read config in case options.json appeared
+                if (!config.botToken) {
+                    const reloaded = await loadConfig();
+                    if (reloaded.botToken) {
+                        config.botToken = reloaded.botToken;
+                        telegram.setToken(reloaded.botToken);
+                    }
+                }
+            } else {
+                log.error(`Invalid bot token after ${MAX_TOKEN_RETRIES} attempts: ${err.message}`);
+                process.exit(1);
+            }
         }
-    } catch (err) {
-        log.error(`Invalid bot token: ${err.message}`);
-        process.exit(1);
     }
 
     // Register commands
     await telegram.call("setMyCommands", {
         commands: [
-            { command: "stop", description: "Cancel current operation" },
-            { command: "new", description: "Start fresh conversation" },
+            { command: "start", description: "Welcome & quick start" },
             { command: "help", description: "Show available commands" },
+            { command: "new", description: "Start fresh conversation" },
+            { command: "stop", description: "Cancel current operation" },
             { command: "status", description: "Bot & pool status" },
             { command: "settings", description: "Configure bot settings" },
             { command: "standing", description: "Standing instructions" },

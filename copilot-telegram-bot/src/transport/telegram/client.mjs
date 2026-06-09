@@ -35,6 +35,9 @@ export class TelegramClient extends EventEmitter {
     set offset(v) { this.#offset = v; }
     get offset() { return this.#offset; }
 
+    /** Update the bot token (e.g., after re-reading config on boot retry). */
+    setToken(token) { this.#token = token; }
+
     // --- Core API ---
 
     async call(method, params = {}) {
