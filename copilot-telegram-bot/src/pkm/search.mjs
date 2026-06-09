@@ -83,10 +83,12 @@ export class PkmSearch {
             if (topicId) {
                 topicNoteIds = new Set();
                 const topicNotes = this.#store.db.prepare(
-                    `SELECT id FROM notes WHERE primary_topic_id = ?
+                    `SELECT id FROM notes WHERE primary_topic_id = ? AND user_id = ?
                      UNION
-                     SELECT note_id AS id FROM note_topics WHERE topic_id = ?`
-                ).all(topicId, topicId);
+                     SELECT nt.note_id AS id FROM note_topics nt
+                       JOIN notes n ON n.id = nt.note_id
+                       WHERE nt.topic_id = ? AND n.user_id = ?`
+                ).all(topicId, userId, topicId, userId);
                 for (const row of topicNotes) topicNoteIds.add(row.id);
             }
         }
@@ -96,10 +98,12 @@ export class PkmSearch {
             if (entityResults.length > 0) {
                 entityNoteIds = new Set();
                 const entityStmt = this.#store.db.prepare(
-                    "SELECT note_id FROM entity_notes WHERE entity_id = ?"
+                    `SELECT en.note_id FROM entity_notes en
+                     JOIN notes n ON n.id = en.note_id
+                     WHERE en.entity_id = ? AND n.user_id = ?`
                 );
                 for (const ent of entityResults) {
-                    const linkedNotes = entityStmt.all(ent.id);
+                    const linkedNotes = entityStmt.all(ent.id, userId);
                     for (const row of linkedNotes) entityNoteIds.add(row.note_id);
                 }
             }

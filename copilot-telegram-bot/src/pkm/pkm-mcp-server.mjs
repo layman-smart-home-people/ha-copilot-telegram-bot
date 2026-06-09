@@ -233,142 +233,104 @@ const TOOLS_V1 = [
 
 const TOOLS = [
     {
-        name: "pkm_memory",
+        name: "remember",
         description:
-            "Read, write, update, delete, or link memories. " +
+            "Save a memory. Just provide the content — title, type, tags, and keywords are generated automatically. " +
+            "Use for facts, preferences, events, people details, decisions. " +
             "Use scope='agent' for your own private operational notes. " +
-            "Use scope='household' for shared family memories (requires membership).",
+            "Use scope='household' for shared family memories.",
         inputSchema: {
             type: "object",
             properties: {
-                action: {
+                content: {
                     type: "string",
-                    enum: ["write", "update", "delete", "get", "link"],
-                    description: "Action to perform. write: save new memory. update: modify existing. delete: secure delete. get: retrieve by ID. link: link two notes.",
+                    description: "The memory to save — a factual, self-contained statement. Examples: " +
+                        "\"Alice's birthday is March 15\", \"User prefers dark roast coffee\", " +
+                        "\"Had dinner at Maison with Bob, he loved the grouper\"",
                 },
                 scope: {
                     type: "string",
                     enum: ["user", "agent", "household"],
-                    description: "Memory scope (default: user). 'agent' for your private notes, 'household' for shared.",
+                    description: "Memory scope (default: user). 'agent' for private notes, 'household' for shared.",
                 },
-                content: { type: "string", description: "[write] The memory content — factual and self-contained" },
-                title: { type: "string", description: "[write/update] Short summary (10-15 words)" },
-                type: { type: "string", enum: ["fact", "preference", "event", "meeting", "health", "journal", "reflection"], description: "[write] Memory type (default: fact)" },
-                tags: { type: "array", items: { type: "string" }, description: "[write/update] Category tags" },
-                search_keywords: { type: "array", items: { type: "string" }, description: "[write] Keywords for search discoverability" },
-                topics: { type: "array", items: { type: "string" }, description: "[write] Topic names to assign (max 2)" },
-                importance: { type: "number", description: "[write] 0-1 importance score" },
-                durability: { type: "string", enum: ["permanent", "normal", "ephemeral"], description: "[write] How long to keep (default: normal)" },
-                id: { type: "string", description: "[update/delete/get] Memory note ID" },
-                archive: { type: "boolean", description: "[update] Set true to archive (soft-retire)" },
-                source_id: { type: "string", description: "[link] Source note ID" },
-                target_id: { type: "string", description: "[link] Target note ID" },
-                relation: { type: "string", description: "[link] Relation type (default: related)" },
+                title: { type: "string", description: "Optional — auto-generated if omitted" },
+                type: { type: "string", enum: ["fact", "preference", "event", "meeting", "health", "journal", "reflection"], description: "Optional — auto-classified if omitted" },
+                importance: { type: "number", description: "Optional 0-1 — auto-estimated if omitted" },
             },
-            required: ["action"],
+            required: ["content"],
         },
     },
     {
-        name: "pkm_navigate",
+        name: "recall",
         description:
-            "Navigate the user's memory structure. " +
-            "map: overview of topic tree + stats. browse: list notes in a topic. " +
-            "context: find related notes (neighbors). timeline: notes grouped by period.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                action: {
-                    type: "string",
-                    enum: ["map", "browse", "context", "timeline"],
-                    description: "map: topic tree overview. browse: notes in a topic. context: neighbors of a note. timeline: time-grouped notes.",
-                },
-                scope: { type: "string", enum: ["user", "agent"], description: "Whose memories to navigate (default: user)" },
-                topic_id: { type: "string", description: "[browse] Topic ID to browse" },
-                sort: { type: "string", enum: ["activation", "date", "title"], description: "[browse] Sort order (default: activation)" },
-                include_secondary: { type: "boolean", description: "[browse] Include notes with secondary topic assignment (default: true)" },
-                note_id: { type: "string", description: "[context] Note ID to find neighbors for" },
-                period: { type: "string", enum: ["week", "month", "year"], description: "[timeline] Grouping period (default: week)" },
-                limit: { type: "number", description: "Max results" },
-            },
-            required: ["action"],
-        },
-    },
-    {
-        name: "pkm_search",
-        description:
-            "Search memories using full-text search with optional filters. " +
-            "Supports entity search via entity_query parameter. " +
+            "Search memories using natural language. Entity-aware: automatically finds and includes " +
+            "notes linked to mentioned people, places, and organizations. " +
             "Use scope='agent' to search your own private notes.",
         inputSchema: {
             type: "object",
             properties: {
-                query: { type: "string", description: "Search query — use natural language" },
-                entity_query: { type: "string", description: "Search by entity (person/place) name instead of full-text" },
-                scope: { type: "string", enum: ["user", "agent", "household"], description: "Search scope (default: user)" },
-                type: { type: "string", enum: ["fact", "preference", "event", "meeting", "health", "journal", "reflection"], description: "Filter by memory type" },
-                topic: { type: "string", description: "Filter by topic name" },
-                date_from: { type: "string", description: "ISO date — only memories after this" },
-                date_to: { type: "string", description: "ISO date — only memories before this" },
-                tags: { type: "array", items: { type: "string" }, description: "Filter by tags" },
+                query: {
+                    type: "string",
+                    description: "Natural language search query. Examples: " +
+                        "\"Alice's preferences\", \"restaurants we visited\", \"health measurements\"",
+                },
+                scope: {
+                    type: "string",
+                    enum: ["user", "agent", "household"],
+                    description: "Search scope (default: user)",
+                },
                 limit: { type: "number", description: "Max results (default: 7)" },
-                queries: { type: "array", items: { type: "string" }, description: "Multiple queries (1-5) — results merged and deduplicated. Use instead of query for broader recall." },
-                entity: { type: "string", description: "Filter results to notes linked to this entity name" },
-                expand_context: { type: "boolean", description: "If true, also return related notes (neighbors of top results). Default: false" },
             },
+            required: ["query"],
         },
     },
     {
-        name: "pkm_collection",
+        name: "memory_admin",
         description:
-            "Manage structured data collections (e.g., reading lists, recipes, workout logs). " +
-            "Collections have schemas and queryable items.",
+            "Advanced memory management: get/update/delete notes, navigate topics, manage collections, " +
+            "view stats, link notes, run maintenance. Use remember/recall for everyday operations.",
         inputSchema: {
             type: "object",
             properties: {
                 action: {
                     type: "string",
-                    enum: ["create", "add", "query", "update", "remove", "list"],
-                    description: "create: new collection. add: add item. query: search items. update: modify item. remove: delete item. list: all collections.",
+                    enum: [
+                        "get", "update", "delete", "link",
+                        "map", "browse", "context", "timeline",
+                        "stats", "settings", "topic_create", "topic_move", "topic_merge", "maintain",
+                        "collection_create", "collection_add", "collection_query", "collection_list",
+                        "entity_search",
+                    ],
+                    description: "Action to perform.",
                 },
-                name: { type: "string", description: "[create] Collection name" },
-                schema: { type: "object", description: "[create] Schema definition (field names + types)" },
-                description: { type: "string", description: "[create] Collection description" },
-                topic_id: { type: "string", description: "[create] Link to a topic" },
-                collection_id: { type: "string", description: "[add/query] Collection ID" },
-                data: { type: "object", description: "[add/update] Item data matching schema" },
-                title: { type: "string", description: "[add] Item title" },
-                filter: { type: "object", description: "[query] Filter by field values" },
-                sort_by: { type: "string", description: "[query] Sort by field name" },
-                item_id: { type: "string", description: "[update/remove] Item (note) ID" },
-                limit: { type: "number", description: "[query] Max results" },
-            },
-            required: ["action"],
-        },
-    },
-    {
-        name: "pkm_manage",
-        description:
-            "System management: stats, settings, topic management, and maintenance. " +
-            "Topic actions create/move/merge topics in the hierarchy.",
-        inputSchema: {
-            type: "object",
-            properties: {
-                action: {
-                    type: "string",
-                    enum: ["stats", "settings", "topic_create", "topic_move", "topic_merge", "maintain"],
-                    description: "stats: memory stats. settings: get/set PKM config. topic_create/move/merge: manage topics. maintain: run maintenance.",
-                },
-                settings_action: { type: "string", enum: ["get", "set"], description: "[settings] Get or set" },
+                scope: { type: "string", enum: ["user", "agent", "household"], description: "Scope (default: user)" },
+                id: { type: "string", description: "[get/update/delete/context] Note ID" },
+                content: { type: "string", description: "[update] New content" },
+                title: { type: "string", description: "[update/collection_create/collection_add] Title/name" },
+                tags: { type: "array", items: { type: "string" }, description: "[update] New tags" },
+                archive: { type: "boolean", description: "[update] Soft-retire" },
+                source_id: { type: "string", description: "[link/topic_merge] Source ID" },
+                target_id: { type: "string", description: "[link/topic_merge] Target ID" },
+                relation: { type: "string", description: "[link] Relation type" },
+                topic_id: { type: "string", description: "[browse/topic_move] Topic ID" },
+                sort: { type: "string", enum: ["activation", "date", "title"], description: "[browse] Sort order" },
+                period: { type: "string", enum: ["week", "month", "year"], description: "[timeline] Grouping" },
+                name: { type: "string", description: "[topic_create/collection_create] Name" },
+                parent_id: { type: "string", description: "[topic_create] Parent topic ID" },
+                icon: { type: "string", description: "[topic_create] Emoji icon" },
+                description: { type: "string", description: "[topic_create/collection_create] Description" },
+                new_parent_id: { type: "string", description: "[topic_move] New parent" },
+                settings_action: { type: "string", enum: ["get", "set"], description: "[settings]" },
                 key: { type: "string", description: "[settings:set] Setting key" },
                 value: { description: "[settings:set] New value" },
-                name: { type: "string", description: "[topic_create] Topic name" },
-                parent_id: { type: "string", description: "[topic_create/topic_move] Parent topic ID (null for root)" },
-                icon: { type: "string", description: "[topic_create] Emoji icon" },
-                description: { type: "string", description: "[topic_create] Topic description" },
-                topic_id: { type: "string", description: "[topic_move/topic_merge] Topic ID" },
-                new_parent_id: { type: "string", description: "[topic_move] New parent (null for root)" },
-                source_id: { type: "string", description: "[topic_merge] Source topic to merge from" },
-                target_id: { type: "string", description: "[topic_merge] Target topic to merge into" },
+                collection_id: { type: "string", description: "[collection_add/query] Collection ID" },
+                schema: { type: "object", description: "[collection_create] Schema" },
+                data: { type: "object", description: "[collection_add] Item data" },
+                filter: { type: "object", description: "[collection_query] Filter" },
+                sort_by: { type: "string", description: "[collection_query] Sort field" },
+                item_id: { type: "string", description: "[collection item ops] Item ID" },
+                query: { type: "string", description: "[entity_search] Entity name query" },
+                limit: { type: "number", description: "Max results" },
             },
             required: ["action"],
         },
@@ -534,25 +496,50 @@ function renderMemoryMap(data) {
 async function handleTool(name, args) {
     try {
         switch (name) {
-            case "pkm_memory": {
+            // ── remember: simplified write ──────────────────
+            case "remember": {
+                const { content, scope, title, type, importance } = args || {};
+                if (!content) return err("content is required");
+                const payload = { content, scope, title, type, importance };
+                const { status, data } = await apiCall("POST", "/api/pkm/remember", payload);
+                if (status === 201 || status === 200) {
+                    return ok(`📝 Remembered: ${data?.title || "(untitled)"}\nType: ${data?.type || "fact"} | ID: ${data?.id}`);
+                }
+                return err(data?.error || `API error (${status})`);
+            }
+
+            // ── recall: simplified search ───────────────────
+            case "recall": {
+                const { query, scope = "user", limit } = args || {};
+                if (!query) return err("query is required");
+                const { status, data } = await apiCall("POST", "/api/pkm/recall", { query, scope, limit });
+                if (status === 200) {
+                    const results = Array.isArray(data) ? data : data?.results;
+                    const expanded = data?.expanded;
+                    if (!results?.length) return ok("No memories found.");
+                    const lines = results.map((note, i) => {
+                        const linked = note._entityLinked ? " 🔗" : "";
+                        return `${i + 1}. [${note.type}] ${note.title || "(untitled)"}${linked}\n   ${note.content?.substring(0, 200) || ""}\n   📅 ${note.created_at?.substring(0, 10)} | ID: ${note.id}`;
+                    });
+                    let text = `Found ${results.length} memories:\n\n${lines.join("\n\n")}`;
+                    if (expanded?.length) {
+                        const expLines = expanded.map((note, i) =>
+                            `${i + 1}. [${note.type}] ${note.title || "(untitled)"}\n   ${note.content?.substring(0, 200) || ""}`
+                        );
+                        text += `\n\n── Related ──\n\n${expLines.join("\n\n")}`;
+                    }
+                    return ok(text);
+                }
+                return err(data?.error || `API error (${status})`);
+            }
+
+            // ── memory_admin: all other operations ──────────
+            case "memory_admin": {
                 const { action, scope = "user" } = args || {};
                 if (!action) return err("action is required");
+                const isAgent = scope === "agent";
 
-                if (action === "write") {
-                    const { content, title, type, tags, search_keywords, topics, importance, durability } = args || {};
-                    if (!content) return err("content is required");
-                    const path = scope === "agent" ? "/api/pkm/agent/write" : "/api/pkm/write";
-                    const payload = scope === "agent"
-                        ? { content, title, type, tags, search_keywords, durability, source_type: args?.source_type, topics }
-                        : { content, title, type, tags, search_keywords, scope, topics, importance };
-                    const { status, data } = await apiCall("POST", path, payload);
-                    if (status === 201 || status === 200) {
-                        return ok(`📝 Memory saved: ${title || data?.title || "(untitled)"}
-ID: ${data?.id}`);
-                    }
-                    return err(data?.error || `API error (${status})`);
-                }
-
+                // get/update/delete/link
                 if (action === "get") {
                     const { id } = args || {};
                     if (!id) return err("id is required");
@@ -561,279 +548,169 @@ ID: ${data?.id}`);
                     if (status === 404) return err("Memory not found");
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "update") {
                     const { id, title, content, tags, archive } = args || {};
                     if (!id) return err("id is required");
-                    const path = scope === "agent"
-                        ? `/api/pkm/agent/notes/${encodeURIComponent(id)}`
-                        : `/api/pkm/notes/${encodeURIComponent(id)}`;
+                    const path = isAgent ? `/api/pkm/agent/notes/${encodeURIComponent(id)}` : `/api/pkm/notes/${encodeURIComponent(id)}`;
                     const { status, data } = await apiCall("PUT", path, { title, content, tags, archive });
-                    if (status === 200) return ok(`✅ Memory updated: ${id}`);
-                    if (status === 404) return err("Memory not found");
+                    if (status === 200) return ok(`✅ Updated: ${id}`);
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "delete") {
                     const { id } = args || {};
                     if (!id) return err("id is required");
-                    const path = scope === "agent"
-                        ? `/api/pkm/agent/notes/${encodeURIComponent(id)}`
-                        : `/api/pkm/notes/${encodeURIComponent(id)}`;
+                    const path = isAgent ? `/api/pkm/agent/notes/${encodeURIComponent(id)}` : `/api/pkm/notes/${encodeURIComponent(id)}`;
                     const { status, data } = await apiCall("DELETE", path);
-                    if (status === 200 || status === 204) return ok(`🗑️ Memory securely deleted: ${id}`);
-                    if (status === 404) return err("Memory not found");
+                    if (status === 200 || status === 204) return ok(`🗑️ Deleted: ${id}`);
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "link") {
                     const { source_id, target_id, relation } = args || {};
-                    if (!source_id || !target_id) return err("source_id and target_id are required");
+                    if (!source_id || !target_id) return err("source_id and target_id required");
                     const { status, data } = await apiCall("POST", "/api/pkm/link", { source_id, target_id, relation });
-                    if (status === 201 || status === 200) return ok("🔗 Notes linked");
+                    if (status === 201 || status === 200) return ok("🔗 Linked");
                     return err(data?.error || `API error (${status})`);
                 }
 
-                return err(`Unsupported pkm_memory action: ${action}`);
-            }
-
-            case "pkm_navigate": {
-                const { action } = args || {};
-                if (!action) return err("action is required");
-
+                // navigate: map, browse, context, timeline
                 if (action === "map") {
                     const { status, data } = await apiCall("GET", "/api/pkm/map");
                     if (status === 200) return ok(renderMemoryMap(data));
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "browse") {
-                    const { topic_id, sort, include_secondary, limit } = args || {};
-                    if (!topic_id) return err("topic_id is required");
-                    const { status, data } = await apiCall("POST", "/api/pkm/navigate/browse", { topic_id, sort, include_secondary, limit });
+                    const { topic_id, sort, limit } = args || {};
+                    if (!topic_id) return err("topic_id required");
+                    const { status, data } = await apiCall("POST", "/api/pkm/navigate/browse", { topic_id, sort, limit });
                     if (status === 200) {
-                        if (!data?.results?.length) return ok("No notes found in that topic.");
-                        const lines = data.results.map((note, i) =>
-                            `${i + 1}. [${note.type}] ${note.title || "(untitled)"}
-   📅 ${note.created_at?.substring(0, 10)} | ID: ${note.id}`
-                        );
-                        return ok(`Topic notes:\n\n${lines.join("\n\n")}`);
+                        if (!data?.results?.length) return ok("No notes in topic.");
+                        return ok(data.results.map((n, i) => `${i + 1}. [${n.type}] ${n.title || "(untitled)"}\n   📅 ${n.created_at?.substring(0, 10)} | ID: ${n.id}`).join("\n\n"));
                     }
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "context") {
-                    const { note_id, limit } = args || {};
-                    if (!note_id) return err("note_id is required");
-                    const { status, data } = await apiCall("POST", "/api/pkm/navigate/context", { note_id, limit });
+                    const { id, limit } = args || {};
+                    if (!id) return err("id required");
+                    const { status, data } = await apiCall("POST", "/api/pkm/navigate/context", { note_id: id, limit });
                     if (status === 200) {
-                        if (!data?.results?.length) return ok("No related notes found.");
-                        const lines = data.results.map((note, i) =>
-                            `${i + 1}. [${note.type}] ${note.title || "(untitled)"}
-   via ${note.relation_source} | activation: ${note.activation ?? 0} | ID: ${note.id}`
-                        );
-                        return ok(`Related notes:\n\n${lines.join("\n\n")}`);
+                        if (!data?.results?.length) return ok("No related notes.");
+                        return ok(data.results.map((n, i) => `${i + 1}. [${n.type}] ${n.title || "(untitled)"}\n   via ${n.relation_source} | ID: ${n.id}`).join("\n\n"));
                     }
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "timeline") {
                     const { period, limit } = args || {};
                     const { status, data } = await apiCall("POST", "/api/pkm/navigate/timeline", { period, limit });
                     if (status === 200) {
-                        if (!data?.results?.length) return ok("No timeline data available.");
-                        const lines = data.results.map((entry, i) =>
-                            `${i + 1}. ${entry.period} — ${entry.noteCount} notes${entry.types?.length ? ` (${entry.types.join(", ")})` : ""}`
-                        );
-                        return ok(`Timeline:\n\n${lines.join("\n")}`);
+                        if (!data?.results?.length) return ok("No timeline data.");
+                        return ok(data.results.map((e, i) => `${i + 1}. ${e.period} — ${e.noteCount} notes`).join("\n"));
                     }
                     return err(data?.error || `API error (${status})`);
                 }
 
-                return err(`Unsupported pkm_navigate action: ${action}`);
-            }
-
-            case "pkm_search": {
-                const { entity_query, query, queries, entity, expand_context, scope = "user", type, topic, date_from, date_to, tags, limit } = args || {};
-
-                if (entity_query) {
-                    const { status, data } = await apiCall("POST", "/api/pkm/entities", { query: entity_query, limit });
-                    if (status === 200) {
-                        if (!data?.results?.length) return ok("No entities found matching that name.");
-                        const lines = data.results.map((entity, i) =>
-                            `${i + 1}. ${entity.name}${entity.type ? ` [${entity.type}]` : ""}
-   ${entity.note_count} linked notes | ID: ${entity.id}`
-                        );
-                        return ok(`Found ${data.results.length} entities:\n\n${lines.join("\n\n")}`);
-                    }
-                    return err(data?.error || `API error (${status})`);
-                }
-
-                if (!query && (!queries || !queries.length)) return err("query or queries is required");
-                const path = scope === "agent" ? "/api/pkm/agent/search" : "/api/pkm/search";
-                const payload = scope === "agent"
-                    ? { query, type, limit }
-                    : { query, queries, type, date_from, date_to, tags, limit, topic, entity, scope, expand_context };
-                const { status, data } = await apiCall("POST", path, payload);
-                if (status === 200) {
-                    const results = Array.isArray(data) ? data : data?.results;
-                    const expanded = data?.expanded;
-                    if (!results?.length) return ok("No memories found matching that query.");
-                    const lines = results.map((note, i) =>
-                        `${i + 1}. [${note.type}] ${note.title || "(untitled)"}
-   ${note.content?.substring(0, 200) || ""}
-   📅 ${note.created_at?.substring(0, 10)} | ID: ${note.id}`
-                    );
-                    let text = `Found ${results.length} memories:\n\n${lines.join("\n\n")}`;
-                    if (expanded?.length) {
-                        const expLines = expanded.map((note, i) =>
-                            `${i + 1}. [${note.type}] ${note.title || "(untitled)"}
-   ${note.content?.substring(0, 200) || ""}
-   📅 ${note.created_at?.substring(0, 10)} | from: ${note._expandedFrom}`
-                        );
-                        text += `\n\n── Related (expanded context) ──\n\n${expLines.join("\n\n")}`;
-                    }
-                    return ok(text);
-                }
-                return err(data?.error || `API error (${status})`);
-            }
-
-            case "pkm_collection": {
-                const { action } = args || {};
-                if (!action) return err("action is required");
-
-                if (action === "create") {
-                    const { name, schema, description, topic_id } = args || {};
-                    if (!name || !schema) return err("name and schema are required");
-                    const { status, data } = await apiCall("POST", "/api/pkm/collection/create", { name, schema, description, topic_id });
-                    if (status === 201 || status === 200) return ok(`📦 Collection created: ${data?.name || name}
-ID: ${data?.id}`);
-                    return err(data?.error || `API error (${status})`);
-                }
-
-                if (action === "add") {
-                    const { collection_id, data: itemData, title } = args || {};
-                    if (!collection_id || !itemData) return err("collection_id and data are required");
-                    const { status, data } = await apiCall("POST", "/api/pkm/collection/add", { collection_id, data: itemData, title });
-                    if (status === 201 || status === 200) return ok(`📝 Collection item added: ${title || "(untitled)"}
-ID: ${data?.id}`);
-                    return err(data?.error || `API error (${status})`);
-                }
-
-                if (action === "query") {
-                    const { collection_id, filter, sort_by, limit } = args || {};
-                    if (!collection_id) return err("collection_id is required");
-                    const { status, data } = await apiCall("POST", "/api/pkm/collection/query", { collection_id, filter, sort_by, limit });
-                    if (status === 200) {
-                        if (!data?.results?.length) return ok("No collection items matched.");
-                        const lines = data.results.map((item, i) =>
-                            `${i + 1}. ${item.title || "(untitled)"}
-   ID: ${item.id}`
-                        );
-                        return ok(`Collection results:\n\n${lines.join("\n\n")}`);
-                    }
-                    return err(data?.error || `API error (${status})`);
-                }
-
-                if (action === "update") {
-                    const { item_id, data: itemData } = args || {};
-                    if (!item_id || !itemData) return err("item_id and data are required");
-                    const { status, data } = await apiCall("PUT", `/api/pkm/collection/item/${encodeURIComponent(item_id)}`, { data: itemData });
-                    if (status === 200) return ok(`✅ Collection item updated: ${item_id}`);
-                    return err(data?.error || `API error (${status})`);
-                }
-
-                if (action === "remove") {
-                    const { item_id } = args || {};
-                    if (!item_id) return err("item_id is required");
-                    const { status, data } = await apiCall("DELETE", `/api/pkm/collection/item/${encodeURIComponent(item_id)}`);
-                    if (status === 200 || status === 204) return ok(`🗑️ Collection item removed: ${item_id}`);
-                    return err(data?.error || `API error (${status})`);
-                }
-
-                if (action === "list") {
-                    const { status, data } = await apiCall("GET", "/api/pkm/collections");
-                    if (status === 200) {
-                        if (!data?.results?.length) return ok("No collections found.");
-                        const lines = data.results.map((collection, i) =>
-                            `${i + 1}. ${collection.name}
-   ${collection.item_count} items | ID: ${collection.id}`
-                        );
-                        return ok(`Collections:\n\n${lines.join("\n\n")}`);
-                    }
-                    return err(data?.error || `API error (${status})`);
-                }
-
-                return err(`Unsupported pkm_collection action: ${action}`);
-            }
-
-            case "pkm_manage": {
-                const { action } = args || {};
-                if (!action) return err("action is required");
-
+                // stats, settings, topics, maintenance
                 if (action === "stats") {
                     const { status, data } = await apiCall("GET", "/api/pkm/stats");
                     if (status === 200) {
-                        const typeStr = data.byType
-                            ? Object.entries(data.byType).map(([key, value]) => `  ${key}: ${value}`).join("\n")
-                            : "  (none)";
-                        return ok(`📊 Memory Statistics:
-
-Total: ${data.total}
-
-By type:
-${typeStr}`);
+                        const typeStr = data.byType ? Object.entries(data.byType).map(([k, v]) => `  ${k}: ${v}`).join("\n") : "  (none)";
+                        return ok(`📊 Total: ${data.total}\n\nBy type:\n${typeStr}`);
                     }
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "settings") {
                     const { settings_action, key, value } = args || {};
                     if (settings_action === "set") {
-                        if (!key) return err("key is required");
+                        if (!key) return err("key required");
                         const { status, data } = await apiCall("PUT", "/api/pkm/settings", { [key]: value });
-                        if (status === 200) return ok(`✅ Setting updated: ${key} = ${value}`);
+                        if (status === 200) return ok(`✅ ${key} = ${value}`);
                         return err(data?.error || `API error (${status})`);
                     }
                     const { status, data } = await apiCall("GET", "/api/pkm/settings");
                     if (status === 200) return ok(JSON.stringify(data, null, 2));
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "topic_create") {
                     const { name, parent_id, icon, description } = args || {};
-                    if (!name) return err("name is required");
+                    if (!name) return err("name required");
                     const { status, data } = await apiCall("POST", "/api/pkm/topics/create", { name, parent_id, icon, description });
-                    if (status === 201 || status === 200) return ok(`📁 Topic created: ${data?.name || name}
-ID: ${data?.id}`);
+                    if (status === 201 || status === 200) return ok(`📁 Topic: ${data?.name || name} | ID: ${data?.id}`);
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "topic_move") {
                     const { topic_id, new_parent_id } = args || {};
-                    if (!topic_id) return err("topic_id is required");
+                    if (!topic_id) return err("topic_id required");
                     const { status, data } = await apiCall("POST", "/api/pkm/topics/move", { topic_id, new_parent_id });
-                    if (status === 200) return ok(`✅ Topic moved: ${topic_id}`);
+                    if (status === 200) return ok(`✅ Moved: ${topic_id}`);
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "topic_merge") {
                     const { source_id, target_id } = args || {};
-                    if (!source_id || !target_id) return err("source_id and target_id are required");
+                    if (!source_id || !target_id) return err("source_id and target_id required");
                     const { status, data } = await apiCall("POST", "/api/pkm/topics/merge", { source_id, target_id });
-                    if (status === 200) return ok(`✅ Topics merged: ${source_id} → ${target_id}${data?.notes_moved != null ? `
-Notes moved: ${data.notes_moved}` : ""}`);
+                    if (status === 200) return ok(`✅ Merged: ${source_id} → ${target_id}`);
                     return err(data?.error || `API error (${status})`);
                 }
-
                 if (action === "maintain") {
                     const { status, data } = await apiCall("POST", "/api/pkm/maintain");
                     if (status === 200) return ok("🛠️ Maintenance complete");
                     return err(data?.error || `API error (${status})`);
                 }
 
-                return err(`Unsupported pkm_manage action: ${action}`);
+                // collections
+                if (action === "collection_create") {
+                    const { name, schema, description, topic_id } = args || {};
+                    if (!name || !schema) return err("name and schema required");
+                    const { status, data } = await apiCall("POST", "/api/pkm/collection/create", { name, schema, description, topic_id });
+                    if (status === 201 || status === 200) return ok(`📦 Collection: ${data?.name || name} | ID: ${data?.id}`);
+                    return err(data?.error || `API error (${status})`);
+                }
+                if (action === "collection_add") {
+                    const { collection_id, data: itemData, title } = args || {};
+                    if (!collection_id || !itemData) return err("collection_id and data required");
+                    const { status, data } = await apiCall("POST", "/api/pkm/collection/add", { collection_id, data: itemData, title });
+                    if (status === 201 || status === 200) return ok(`📝 Added: ${title || "(untitled)"} | ID: ${data?.id}`);
+                    return err(data?.error || `API error (${status})`);
+                }
+                if (action === "collection_query") {
+                    const { collection_id, filter, sort_by, limit } = args || {};
+                    if (!collection_id) return err("collection_id required");
+                    const { status, data } = await apiCall("POST", "/api/pkm/collection/query", { collection_id, filter, sort_by, limit });
+                    if (status === 200) {
+                        if (!data?.results?.length) return ok("No items matched.");
+                        return ok(data.results.map((item, i) => `${i + 1}. ${item.title || "(untitled)"} | ID: ${item.id}`).join("\n"));
+                    }
+                    return err(data?.error || `API error (${status})`);
+                }
+                if (action === "collection_list") {
+                    const { status, data } = await apiCall("GET", "/api/pkm/collections");
+                    if (status === 200) {
+                        if (!data?.results?.length) return ok("No collections.");
+                        return ok(data.results.map((c, i) => `${i + 1}. ${c.name} (${c.item_count} items) | ID: ${c.id}`).join("\n"));
+                    }
+                    return err(data?.error || `API error (${status})`);
+                }
+
+                // entity search
+                if (action === "entity_search") {
+                    const { query, limit } = args || {};
+                    if (!query) return err("query required");
+                    const { status, data } = await apiCall("POST", "/api/pkm/entities", { query, limit });
+                    if (status === 200) {
+                        if (!data?.results?.length) return ok("No entities found.");
+                        return ok(data.results.map((e, i) => `${i + 1}. ${e.name}${e.type ? ` [${e.type}]` : ""} — ${e.note_count} notes | ID: ${e.id}`).join("\n"));
+                    }
+                    return err(data?.error || `API error (${status})`);
+                }
+
+                return err(`Unknown action: ${action}`);
             }
+
+            // Backward compatibility: route old tool names to new handlers
+            case "pkm_memory": return handleTool("memory_admin", { ...args, action: args?.action === "write" ? null : args?.action });
+            case "pkm_search": return handleTool("recall", { query: args?.query, scope: args?.scope, limit: args?.limit });
+            case "pkm_navigate": return handleTool("memory_admin", args);
+            case "pkm_collection": return handleTool("memory_admin", { ...args, action: `collection_${args?.action}` });
+            case "pkm_manage": return handleTool("memory_admin", args);
 
             default:
                 return err(`Unknown tool: ${name}`);
@@ -860,7 +737,7 @@ function handleInitialize(id, params) {
     if (params?.protocolVersion) clientProtocolVersion = params.protocolVersion;
     send(id, {
         protocolVersion: clientProtocolVersion,
-        serverInfo: { name: "memory", version: "3.0.0" },
+        serverInfo: { name: "memory", version: "4.0.0" },
         capabilities: { tools: {} },
     });
 }

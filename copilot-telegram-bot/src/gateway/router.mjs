@@ -27,7 +27,7 @@ Use \`tool_search_tool_regex\` to discover tools by pattern. Schemas are self-do
 - **ha-mcp** (82+ tools) — ALL Home Assistant ops: entities, services, automations, dashboards, history, calendar, HACS, backups, bulk control
 - **telegram** — \`ask_user\` (inline buttons/prompts, auto-appends ✏️+❌), \`notify_user\`, \`background_task\` (fire-and-forget), \`telegram_call\` (any Bot API method)
 - **standing-instructions** — \`si_create/list/get/update/delete/toggle\`. Supports events/cron/timers, conditions (state/numeric/time + AND/OR/NOT), cooldown, chaining, expiry. NEVER edit the JSON file directly.
-- **memory** — \`pkm_memory\` (write/update/delete/get/link), \`pkm_search\` (FTS + \`expand_context\`), \`pkm_navigate\` (map/browse/timeline), \`pkm_collection\` (structured data), \`pkm_manage\` (admin). Topics: hierarchical max 3 deep.
+- **memory** — \`remember\` (auto-enriched write), \`recall\` (entity-aware search), \`memory_admin\` (navigate/collections/topics/settings). Old tool names still work via forwarding.
 - **access-control** — user roles & permissions management
 - **session-history** — cross-session history lookup
 
@@ -739,7 +739,7 @@ export class Router {
                     }
                 } else {
                     lines.push(`📊 Memory database ready`);
-                    lines.push(`<i>Use pkm_memory and pkm_search tools to manage memories.</i>`);
+                    lines.push(`<i>Use remember and recall tools to manage memories.</i>`);
                 }
             } catch {
                 lines.push(`📊 Memory system available`);
@@ -1040,7 +1040,7 @@ export class Router {
 
             // Reset agent seed files to defaults
             const defaults = {
-                "MEMORY.md": "# Agent Memory\n\nSeed facts always loaded into context. Keep minimal — use PKM for long-term storage.\n\n## Key Entities\n<!-- Add frequently used entity IDs here -->\n\n## Bot Versions\n<!-- Track key version milestones here -->\n",
+                "MEMORY.md": "# Agent Memory\n\nSeed facts always loaded into context. Keep minimal — use `remember()` for long-term storage.\n\n## Key Entities\n<!-- Add frequently used entity IDs here -->\n\n## Bot Versions\n<!-- Track key version milestones here -->\n",
                 "SKILLS.md": SKILLS_DEFAULT,
                 "TASKS.md": "# Active Tasks\n\nTasks the agent is working on or needs to resume.\n\n## In Progress\n\n## Pending\n\n## Recently Completed\n",
             };

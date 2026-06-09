@@ -234,6 +234,19 @@ CREATE TABLE IF NOT EXISTS pkm_cache (
     value      TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS household_invites (
+    id            TEXT PRIMARY KEY,
+    household_id  TEXT NOT NULL,
+    token         TEXT NOT NULL,
+    created_by    TEXT NOT NULL,
+    expires_at    TEXT NOT NULL,
+    used          INTEGER DEFAULT 0,
+    used_by       TEXT,
+    used_at       TEXT,
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hhi_lookup ON household_invites(household_id, token, used);
 `;
 
 const MIGRATION_V2_ALTERS = [
@@ -621,10 +634,16 @@ export class PkmStore {
     /**
      * Join an existing household.
      */
-    joinHousehold(userId, householdId) {
+    joinHousehold(userId, householdId, inviteToken) {
         const hh = this.#db.prepare("SELECT * FROM households WHERE id = ?").get(householdId);
         if (!hh) throw new Error("Household not found");
-        // Check not already a member
+
+        // Require valid invite token — owner must share this
+        const invite = this.#db.prepare(
+            "SELECT * FROM household_invites WHERE household_id = ? AND token = ? AND used = 0 AND expires_at > ?"
+        ).get(householdId, inviteToken || "", new Date().toISOString());
+        if (!invite) throw new Error("Invalid or expired invite token");
+
         const existing = this.#db.prepare(
             "SELECT * FROM household_members WHERE household_id = ? AND user_id = ?"
         ).get(householdId, userId);
@@ -637,7 +656,30 @@ export class PkmStore {
         this.#db.prepare(
             `UPDATE pkm_settings SET household_id = ?, updated_at = ? WHERE user_id = ?`
         ).run(householdId, now, userId);
+        // Mark invite as used
+        this.#db.prepare("UPDATE household_invites SET used = 1, used_by = ?, used_at = ? WHERE id = ?")
+            .run(userId, now, invite.id);
         this.logEvent(null, userId, "household_joined", { household_id: householdId });
+    }
+
+    /**
+     * Create an invite token for a household. Only owner/admin can create.
+     */
+    createHouseholdInvite(userId, householdId, expiresInHours = 24) {
+        const member = this.#db.prepare(
+            "SELECT role FROM household_members WHERE household_id = ? AND user_id = ?"
+        ).get(householdId, userId);
+        if (!member || (member.role !== "owner" && member.role !== "admin")) {
+            throw new Error("Only owner or admin can create invites");
+        }
+        const token = randomUUID().replace(/-/g, "").substring(0, 16);
+        const now = new Date().toISOString();
+        const expiresAt = new Date(Date.now() + expiresInHours * 3600000).toISOString();
+        this.#db.prepare(
+            `INSERT INTO household_invites (id, household_id, token, created_by, expires_at, used, created_at)
+             VALUES (?, ?, ?, ?, ?, 0, ?)`
+        ).run(randomUUID(), householdId, token, userId, expiresAt, now);
+        return { token, expiresAt };
     }
 
     /**
@@ -1389,20 +1431,14 @@ export class PkmStore {
      * Get all notes linked to a specific entity.
      */
     getNotesForEntity(entityId, { userId, limit = 20 } = {}) {
-        let sql = `
+        if (!userId) throw new Error("userId is required for getNotesForEntity");
+        return this.#db.prepare(`
             SELECT n.*
             FROM notes n
             JOIN entity_notes en ON en.note_id = n.id
-            WHERE en.entity_id = ? AND n.valid_to IS NULL
-        `;
-        const params = [entityId];
-        if (userId) {
-            sql += " AND n.user_id = ?";
-            params.push(userId);
-        }
-        sql += " ORDER BY n.created_at DESC LIMIT ?";
-        params.push(limit);
-        return this.#db.prepare(sql).all(...params);
+            WHERE en.entity_id = ? AND n.valid_to IS NULL AND n.user_id = ?
+            ORDER BY n.created_at DESC LIMIT ?
+        `).all(entityId, userId, limit);
     }
 
     // ── Topics ─────────────────────────────────────────────

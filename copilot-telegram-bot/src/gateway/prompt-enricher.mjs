@@ -135,10 +135,10 @@ export class PromptEnricher {
         // Sender identity (every message)
         parts.push(this.#buildSenderLine(ref));
 
-        // PKM prefetch — inject relevant memories for recall-type queries
+        // Smart prefetch — scan every message for entities/keywords, inject relevant memories
         if (this.#pkm && ref.userId && text) {
             try {
-                const prefetched = this.#pkm.getUserPrefetch(text, String(ref.userId), ref.chatType || "private");
+                const prefetched = this.#pkm.getSmartPrefetch(text, String(ref.userId), ref.chatType || "private");
                 if (prefetched) {
                     parts.push(prefetched);
                 }
@@ -205,14 +205,14 @@ export class PromptEnricher {
             }
         }
 
-        // Daily logs NOT injected — agent can use pkm_search or session-history tools for continuity
+        // Daily logs NOT injected — agent can use recall or session-history tools for continuity
 
         // Add self-maintenance instructions
         if (sections.length > 0) {
             sections.push([
                 "\n## Agent Memory",
                 `Files at ${dir}/. IDENTITY.md + MEMORY.md loaded. SKILLS.md + TASKS.md available on disk.`,
-                "- Use `pkm_search` to recall past facts. Use `pkm_memory(action=\"write\")` for durable knowledge.",
+                "- Use `recall(query)` to search past facts. Use `remember(content)` to save durable knowledge.",
                 `- Daily logs: \`${dir}/memory/YYYY-MM-DD/<topic>.md\` — use \`view\` tool to read when needed.`,
             ].join("\n"));
         }

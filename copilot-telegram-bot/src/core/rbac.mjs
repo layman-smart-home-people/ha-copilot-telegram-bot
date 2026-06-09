@@ -118,9 +118,11 @@ const CAPABILITY_TOOLS = {
         // Reminder tools — checked contextually
     ],
     "pkm:read": [
+        "recall", "memory_admin",
         "pkm_search", "pkm_get", "pkm_recent", "pkm_stats", "pkm_settings",
     ],
     "pkm:write": [
+        "remember",
         "pkm_write", "pkm_update", "pkm_delete",
     ],
     "pkm:admin": [

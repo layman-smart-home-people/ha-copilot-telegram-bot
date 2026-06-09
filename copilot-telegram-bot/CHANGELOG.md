@@ -2,6 +2,47 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.2.2] — 2026-06-09
+
+### Changed — Streaming UX Overhaul
+- **Phase-based rendering** — streamer now tracks thinking/tool/response phases like VSCode Copilot. During tool use: shows compact tool status. After tools complete: streams clean response text. Reasoning text no longer pollutes the draft.
+- **Collapsed thinking blocks** — completed tool phases render as expandable `<blockquote>` during streaming and in final message. Tap to expand.
+- **No more "poof"** — draft only contains current status or response text, not a growing wall of reasoning. Finalized message matches what user was reading.
+- **Multi-message splitting** — long responses (>4096 chars) split at paragraph boundaries into follow-up messages instead of truncating. Tool summary appended to last page.
+- **Multi-phase support** — agent can think → tools → write → think → tools → write. Each cycle gets its own collapsed block.
+
+## [2.2.1] — 2026-06-09
+
+### Fixed
+- **Stale tool references** — updated streamer status labels, RBAC permission groups, router MCP docs, `/memory` menu hint, and MEMORY.md seed to reference `remember`/`recall`/`memory_admin` (old names kept for backward compat).
+- **package.json version** — synced to match config.yaml.
+
+## [2.2.0] — 2026-06-09
+
+### Changed — PKM Simplification
+- **Tools collapsed from 5 to 3** — `remember(content)`, `recall(query)`, `memory_admin(action)`. Agent no longer needs to choose between pkm_memory, pkm_search, pkm_navigate, pkm_collection, pkm_manage.
+- **Auto-enrichment on write** — server auto-generates title, type, tags, search keywords, topics, entities, importance, and durability from plain text content. Agent just calls `remember("Alice prefers window seats")` — no 8-parameter form to fill.
+- **Entity-aware recall** — `recall` scans query for entities (people, places, orgs), finds linked notes via entity_notes table, merges with FTS5 results. Multi-hop: "Alice's preferences" finds both Alice entity and all notes linked to her.
+- **Smart prefetch** — every message scanned for entities/keywords (sub-millisecond), matching memories auto-injected into prompt. Replaces old narrow recall-pattern-only prefetch.
+- **Leaner system hint** — removed verbose keyword strategy instructions. Now just: "Use remember to save. Use recall to search. Proactively save preferences."
+- **Maintenance timer** — background pipeline interval increased from 5 to 15 minutes. ~3x fewer wake-ups, zero functional impact (windows need 30 min idle before closing anyway).
+
+### Added
+- **compromise.js NER** — rule-based named entity recognition (people, places, organizations). Runs on ARM without ML models, ~250KB. Dramatically better entity extraction than regex proper-noun detection.
+- **RAKE keyword extraction** — Rapid Automatic Keyword Extraction algorithm built in. Scores candidate phrases by word co-occurrence, producing multi-word key phrases ("blood pressure medication" not just "blood").
+- **Hypernym expansion** — auto-generated keywords include category chains (grouper→fish→seafood→protein→dining). Enables future recall by broader terms.
+- **Memory awareness hints** — when entities found in message match stored memories, agent gets hint: "Alice: 3 memories" before even calling recall.
+- **Backward-compatible tool routing** — old tool names (pkm_memory, pkm_search, etc.) still work via automatic forwarding.
+- **Household invites** — joining a household now requires an invite token created by owner/admin. Prevents unauthorized self-join by household UUID.
+
+### Security — Cross-User Memory Isolation Audit
+Three independent Opus 4.6 agents audited all PKM data paths. Five issues found and fixed:
+- **Recall entity-linked notes** — `getNote()` now checks `user_id` ownership before including entity-linked results.
+- **Topic filter query** — added `user_id` filter to topic note queries in search engine (was returning cross-user note IDs into filter set).
+- **Entity-notes query** — added JOIN to notes table with `user_id` filter (was unscoped on the linking table).
+- **Note link creation** — now validates both source and target notes belong to calling user before creating links.
+- **`getNotesForEntity()`** — `userId` parameter now mandatory, throws if missing.
+
 ## [2.1.0] — 2026-06-09
 
 ### Fixed

@@ -72,12 +72,12 @@ If a Copilot CLI instance dies mid-conversation, v7 automatically acquires a new
 
 ### ResponseStreamer
 
-The v7 streamer renders replies progressively in four layers:
+The v8 streamer renders replies in phase-based blocks (like VSCode Copilot):
 
-1. primary content text
-2. code blocks and formatted output
-3. expandable details/tool context
-4. inline buttons
+1. **Thinking phases** — tool status shown live, collapsed when done
+2. **Response text** — streamed clean after tools complete
+3. **Multi-message** — long responses split at paragraph boundaries (no truncation)
+4. **Expandable tool summary** — collapsible block at the end with step count and timings
 
 Rendering mode depends on chat type:
 

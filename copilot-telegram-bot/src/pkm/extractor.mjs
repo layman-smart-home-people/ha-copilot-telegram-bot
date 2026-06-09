@@ -493,9 +493,9 @@ export class PkmExtractor {
     /**
      * Start the background maintenance timer.
      * @param {Function} llmCall - async (prompt) => response text
-     * @param {number} intervalMs - Timer interval (default: 5 min)
+     * @param {number} intervalMs - Timer interval (default: 15 min)
      */
-    startTimer(llmCall, intervalMs = 5 * 60 * 1000) {
+    startTimer(llmCall, intervalMs = 15 * 60 * 1000) {
         if (this.#timer) return;
         this.#timer = setInterval(() => this.runMaintenance(llmCall), intervalMs);
         log.info(`Background timer started (interval=${intervalMs / 1000}s)`);
@@ -506,7 +506,7 @@ export class PkmExtractor {
      * Runs: close stale windows, close oversized, purge old data, decay activations.
      * Skips: LLM extraction of closed windows.
      */
-    startHousekeepingTimer(intervalMs = 5 * 60 * 1000) {
+    startHousekeepingTimer(intervalMs = 15 * 60 * 1000) {
         if (this.#timer) return;
         this.#timer = setInterval(() => this.runMaintenance(null), intervalMs);
         log.info(`Housekeeping timer started (no LLM, interval=${intervalMs / 1000}s)`);

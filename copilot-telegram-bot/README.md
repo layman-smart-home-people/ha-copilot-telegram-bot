@@ -99,7 +99,9 @@ If a user sends a new message while a response is still running, v7 cancels the 
 
 - **Private chats:** draft-style progressive rendering
 - **Groups/forums:** edit-in-place rendering
-- Tool activity labels, code blocks, expandable details, and inline buttons
+- Phase-based: tool status shown live → collapsed when done → clean response streamed
+- Long responses auto-split across multiple messages (no truncation)
+- Expandable tool summary with step count and timings
 
 ### Standing Instructions
 
