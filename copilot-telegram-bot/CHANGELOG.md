@@ -2,6 +2,22 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.1.0] — 2026-06-09
+
+### Fixed
+- **Deterministic thread routing** — closed 6 threadId drop paths across `background_task`, `telegram_call`, `dispatch_to_agent`, `tryResolveText`, Telegram client retry, and menu close. Responses no longer silently fall back to the main thread.
+- **Thread handling consolidated** — extracted `withThread()` utility replacing 16 ad-hoc `if (threadId)` patterns across 7 files. Thread context now injected into agent prompts.
+- **Elicitation blocks typing** — draft mode (sendMessageDraft) now clears before elicitation buttons are sent, unblocking the user's Telegram input field.
+- **Steering delay reduced** — `acp.cancel()` timeout cut from 10s to 3s. Added 150ms elicitation grace period so user replies during elicitation resolve instantly instead of triggering slow cancel→re-prompt.
+- **Dispatcher tries too hard** — rewrote triage instructions: default action is DISPATCH. Only handles single-sentence, zero-tool-call responses directly.
+- **Pool reconfigure MCP loss** — shared `#buildMcpServers()` used in both spawn and reconfigure paths (DRY fix from rebase).
+
+### Added
+- **Forum topic concurrency** — scope key now `forum:{chatId}:{threadId}:{userId}`, enabling concurrent requests from different users in the same topic.
+- **Cross-chat messaging** — new `send_to_user` MCP tool resolves targets by display name, @username, or numeric chat ID via RBAC. Enables "send this report to User B".
+- **WebUI Chats tab** — new 📨 Chats tab lists all reachable users (from RBAC) and groups (with title, member count, admin list from Telegram API).
+- **Agent operational guidelines** — embedded security and file-sharing rules (public `/config/www/` handling, dynamic URL resolution, `send_file` best practices) injected into every first-message context.
+
 ## [2.0.0] — 2026-06-09
 
 ### Added — PKM Memory Palace (Live)
