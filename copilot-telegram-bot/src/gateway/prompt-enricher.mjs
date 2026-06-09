@@ -51,13 +51,15 @@ Do NOT attempt complex tasks yourself — your model is optimized for speed, not
 export class PromptEnricher {
     #config;
     #permissions;
+    #pkm;                              // PkmManager (optional)
     #agentContext = null;          // cached agent memory block
     #copilotInstructions = null;   // cached copilot-instructions.md content
     #pinnedInstructions;           // Map<chatId, string> — bounded by MAX_PINNED
 
-    constructor({ config, permissions }) {
+    constructor({ config, permissions, pkm }) {
         this.#config = config;
         this.#permissions = permissions;
+        this.#pkm = pkm || null;
         this.#pinnedInstructions = new Map();
 
         // Load agent context at startup
@@ -100,10 +102,26 @@ export class PromptEnricher {
             if (isDispatcher) {
                 parts.push(DISPATCHER_INSTRUCTIONS);
             }
+
+            // PKM dynamic hint — memory stats, proactive storage instruction
+            if (this.#pkm && ref.userId) {
+                const hint = this.#pkm.getSystemHint(String(ref.userId));
+                if (hint) parts.push(`[${hint}]`);
+            }
         }
 
         // Sender identity (every message)
         parts.push(this.#buildSenderLine(ref));
+
+        // PKM prefetch — inject relevant memories for recall-type queries
+        if (this.#pkm && ref.userId && text) {
+            try {
+                const prefetched = this.#pkm.getUserPrefetch(text, String(ref.userId), ref.chatType || "private");
+                if (prefetched) {
+                    parts.push(prefetched);
+                }
+            } catch {}
+        }
 
         // Pinned instructions
         const pinned = this.#pinnedInstructions.get(ref.chatId);

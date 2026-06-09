@@ -157,7 +157,7 @@ async function main() {
     }
 
     // --- Prompt Enricher ---
-    const enricher = new PromptEnricher({ config, permissions });
+    const enricher = new PromptEnricher({ config, permissions, pkm });
 
     // --- MCP Profiles ---
     // Owner profile: full tool access (ha-mcp + any configured MCP servers)
@@ -197,7 +197,7 @@ async function main() {
     uds.setConversationManager(convMgr);
 
     // --- Router ---
-    const router = new Router({ telegram, conversationManager: convMgr, pool, permissions, config, enricher });
+    const router = new Router({ telegram, conversationManager: convMgr, pool, permissions, config, enricher, pkm });
     _router = router;
     router.start();
     router.setUdsServer(uds);

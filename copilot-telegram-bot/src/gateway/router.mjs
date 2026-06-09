@@ -111,6 +111,7 @@ export class Router {
     #permissions;
     #config;
     #enricher;
+    #pkm;
     #handlers = new Map(); // command → handler function
     #fileHandler;
     #menus;
@@ -118,13 +119,14 @@ export class Router {
     #topicManager = null;   // set externally after boot
     #udsServer = null;      // set externally after boot
 
-    constructor({ telegram, conversationManager, pool, permissions, config, enricher }) {
+    constructor({ telegram, conversationManager, pool, permissions, config, enricher, pkm }) {
         this.#telegram = telegram;
         this.#conversationManager = conversationManager;
         this.#pool = pool;
         this.#permissions = permissions;
         this.#config = config;
         this.#enricher = enricher || new PromptEnricher({ config, permissions });
+        this.#pkm = pkm || null;
         this.#fileHandler = new FileHandler({ telegram });
         this.#menus = new MenuManager({ telegram });
 
@@ -299,6 +301,11 @@ export class Router {
         // Enrich text with context prefix
         const isDispatcher = useDispatcher;
         const enrichedText = this.#enricher.enrich(text, ref, { isFirstMessage, isDispatcher });
+
+        // Track user message for PKM buffer search (non-blocking)
+        if (this.#pkm) {
+            try { this.#pkm.trackMessage(String(ref.userId), String(ref.chatId), text, "user"); } catch {}
+        }
 
         // Route to conversation manager
         try {
