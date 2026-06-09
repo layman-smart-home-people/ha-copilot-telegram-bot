@@ -6,12 +6,14 @@ import LogViewer from "./components/LogViewer";
 import ConfigEditor from "./components/ConfigEditor";
 import SystemInfo from "./components/SystemInfo";
 import ChatPanel from "./components/ChatPanel";
+import Chats from "./components/Chats";
 import Toast from "./components/Toast";
 import ErrorCollector from "./components/ErrorCollector";
 
 const TABS = [
   { id: "dashboard", label: "📊 Dashboard" },
   { id: "chat", label: "💬 Chat" },
+  { id: "chats", label: "📨 Chats" },
   { id: "instructions", label: "📋 Instructions" },
   { id: "docs", label: "📚 Docs" },
   { id: "logs", label: "📜 Logs" },
@@ -70,6 +72,7 @@ export default function App() {
           </>
         )}
         {activeTab === "chat" && <ChatPanel toast={toast} />}
+        {activeTab === "chats" && <Chats toast={toast} />}
         {activeTab === "instructions" && (
           <Instructions toast={toast} onCountChange={setInstrCount} />
         )}

@@ -268,6 +268,11 @@ export class WebUIServer {
             return this.#apiChatStop(res);
         }
 
+        // GET /api/chats — list all reachable chats (users + groups)
+        if (pathname === "/api/chats" && method === "GET") {
+            return this.#apiChats(res);
+        }
+
         // --- RBAC API routes ---
         if (pathname.startsWith("/api/rbac/") || pathname === "/api/rbac") {
             return this.#handleRbacRoute(req, res, method, pathname, params);
@@ -589,6 +594,60 @@ export class WebUIServer {
         } catch (err) {
             this.#json(res, 500, { error: `Reconnect failed: ${err.message}` });
         }
+    }
+
+    // ── Chats API ──────────────────────────────────────────────
+
+    async #apiChats(res) {
+        const config = this.#ctx.config;
+        const telegram = this.#ctx.telegram;
+        const rbac = this.#ctx.rbac;
+
+        // 1. Paired users from RBAC
+        const users = rbac ? rbac.getPairedUsers().map(u => ({
+            type: "user",
+            chatId: u.userId,
+            name: u.displayName || u.username || String(u.userId),
+            username: u.username || null,
+            role: u.role,
+        })) : [];
+
+        // 2. Allowed groups — fetch info from Telegram API
+        const groups = [];
+        const groupIds = config.allowedGroups || [];
+        for (const gid of groupIds) {
+            const chatId = parseInt(gid);
+            if (isNaN(chatId)) continue;
+            const entry = { type: "group", chatId, name: `Group ${gid}`, members: [] };
+            try {
+                const chat = await telegram.call("getChat", { chat_id: chatId });
+                entry.name = chat.title || entry.name;
+                entry.memberCount = chat.member_count || null;
+                entry.isForum = chat.is_forum || false;
+            } catch (err) {
+                entry.error = err.message;
+            }
+            try {
+                const admins = await telegram.call("getChatAdministrators", { chat_id: chatId });
+                entry.members = (admins || []).map(m => ({
+                    userId: m.user?.id,
+                    name: [m.user?.first_name, m.user?.last_name].filter(Boolean).join(" "),
+                    username: m.user?.username || null,
+                    isBot: m.user?.is_bot || false,
+                    status: m.status,
+                }));
+            } catch {}
+            groups.push(entry);
+        }
+
+        // 3. Owner chat IDs not in RBAC (pre-approved but not yet paired)
+        const pairedIds = new Set(users.map(u => u.chatId));
+        const ownerChats = (config.allowedChatIds || [])
+            .map(Number)
+            .filter(id => !isNaN(id) && !pairedIds.has(id))
+            .map(id => ({ type: "user", chatId: id, name: `User ${id}`, username: null, role: "owner (pre-approved)" }));
+
+        this.#json(res, 200, { users: [...users, ...ownerChats], groups });
     }
 
     // ── Dispatch API ────────────────────────────────────────────
