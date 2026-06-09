@@ -326,9 +326,9 @@ export class ACPClient extends EventEmitter {
 
     async cancel() {
         try {
-            return await this.#send("session/cancel", { sessionId: this.#sessionId }, 10000);
+            return await this.#send("session/cancel", { sessionId: this.#sessionId }, 3000);
         } catch {
-            // If cancel RPC doesn't exist, there's nothing we can do
+            // If cancel RPC doesn't exist or times out, proceed anyway
             return null;
         }
     }

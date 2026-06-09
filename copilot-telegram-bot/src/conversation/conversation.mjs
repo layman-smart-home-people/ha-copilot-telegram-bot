@@ -238,6 +238,14 @@ export class Conversation extends EventEmitter {
      * causes the old to resolve with "Operation cancelled by user".
      */
     async #steer(text, opts = {}) {
+        // Grace period: if an elicitation just arrived (user replied to agent question),
+        // handle it as elicitation instead of cancelling the prompt
+        await new Promise(r => setTimeout(r, 150));
+        if (this.#state === "eliciting") {
+            log.info(`${this.#scopeKey}: elicitation arrived during steer grace — resolving`);
+            return this.#resolveElicitation(text);
+        }
+
         log.info(`Steering ${this.#scopeKey}: cancelling current, re-prompting`);
 
         // Abort the current streamer (old response)
