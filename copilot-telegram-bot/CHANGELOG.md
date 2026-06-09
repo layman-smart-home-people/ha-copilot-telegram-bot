@@ -22,6 +22,11 @@ All notable changes to the Copilot Telegram Bot add-on.
 - **Config API token redaction** — HA Supervisor schema is an object `{key: "password"}`, not an array. Previous code iterated nothing — `bot_token` and `github_token` were returned in cleartext.
 - **Request body size limit** — `#readBody()` now caps at 1MB to prevent DoS via memory exhaustion.
 - **SSE heartbeat** — log stream sends 30s heartbeat to keep connections alive behind HA Ingress/nginx reverse proxies.
+- **`send_file` path jail** — restricted to `/config/`, `/share/`, `/media/`, `/tmp/`. Agents can no longer read arbitrary files.
+- **`telegram_call` allowlist** — blocklist (5 methods) replaced with explicit allowlist (16 safe methods). Blocks `banChatMember`, `deleteChatPhoto`, etc.
+- **UDS buffer limit** — 1MB cap on sidecar connections prevents OOM.
+- **MCP timeout alignment** — `ask_user` timeout aligned to 5.5min (was 30min) to match UDS server.
+- **Error path sanitization** — `send_file` errors return `err.code` instead of full filesystem paths.
 
 ### Fixed — Standing Instructions
 - **SI prompt timeout** — 5-minute max per SI agent prompt. Previously a hung agent blocked that SI scope key forever.
@@ -35,13 +40,6 @@ All notable changes to the Copilot Telegram Bot add-on.
 ### Fixed — Startup
 - **Bot token retry on boot** — `getMe()` now retries 3 times with 5s delay, re-reading config on each attempt. Previously, if `options.json` wasn't ready at boot, the bot exited immediately with "Invalid bot token".
 - **`/start` registered with BotFather** — `setMyCommands` now includes `/start` and orders commands logically.
-
-### Fixed — Security
-- **`send_file` path jail** — restricted to `/config/`, `/share/`, `/media/`, `/tmp/`. Agents can no longer read arbitrary files.
-- **`telegram_call` allowlist** — blocklist (5 methods) replaced with explicit allowlist (16 safe methods). Blocks `banChatMember`, `deleteChatPhoto`, etc.
-- **UDS buffer limit** — 1MB cap on sidecar connections prevents OOM.
-- **MCP timeout alignment** — `ask_user` timeout aligned to 5.5min (was 30min) to match UDS server.
-- **Error path sanitization** — `send_file` errors return `err.code` instead of full filesystem paths.
 
 ## [1.4.12] — 2026-06-09
 
