@@ -206,6 +206,27 @@ async function main() {
     _pool = pool;
     await pool.boot();
 
+    // --- Wire PKM LLM call (uses pool for dream mode) ---
+    const pkmLlmCall = async (prompt) => {
+        const scopeKey = "__pkm_dream__";
+        const inst = await pool.acquire(scopeKey, { model: "fast", mcpProfile: "owner" });
+        try {
+            let text = "";
+            const onChunk = (chunk) => { text += chunk; };
+            inst.acp.on("text_chunk", onChunk);
+            try {
+                await inst.acp.prompt(prompt, { timeout: 120_000 });
+            } finally {
+                inst.acp.off("text_chunk", onChunk);
+            }
+            return text;
+        } finally {
+            pool.release(inst.id);
+        }
+    };
+    pkm.setLlmCall(pkmLlmCall);
+    log.info("PKM LLM wired via pool (dream mode enabled)");
+
     // --- ConversationManager ---
     const convMgr = new ConversationManager({ pool, telegram, config });
     _convMgr = convMgr;
