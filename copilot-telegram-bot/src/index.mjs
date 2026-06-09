@@ -213,12 +213,12 @@ async function main() {
         const scopeKey = `__pkm_${Date.now()}_${Math.random().toString(36).slice(2, 6)}__`;
         let inst;
         try {
-            inst = await pool.acquire(scopeKey, { model: "fast", mcpProfile: "guest" });
+            inst = await pool.acquire(scopeKey, { model: "reasoning", mcpProfile: "owner" });
             let text = "";
             const onChunk = (chunk) => { text += chunk; };
             inst.acp.on("text_chunk", onChunk);
             try {
-                await inst.acp.prompt(prompt, { timeout: 180_000 });
+                await inst.acp.prompt(prompt, { timeout: 0 });
             } finally {
                 inst.acp.off("text_chunk", onChunk);
             }
@@ -228,7 +228,7 @@ async function main() {
         }
     };
     pkm.setLlmCall(pkmLlmCall);
-    log.info("PKM LLM wired via pool (dream mode enabled)");
+    log.info("PKM LLM wired via pool (dream mode — Opus, no timeout)");
 
     // --- ConversationManager ---
     const convMgr = new ConversationManager({ pool, telegram, config });
