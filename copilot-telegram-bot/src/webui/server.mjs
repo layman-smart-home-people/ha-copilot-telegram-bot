@@ -442,7 +442,8 @@ export class WebUIServer {
             ? enricher.enrich(prompt, ref, { isFirstMessage: true, isDispatcher: false })
             : prompt;
 
-        const requestedModel = model || "standard";
+        // Model selection: explicit param > user's default_model > fallback "standard"
+        const requestedModel = model || config.defaultModel || "standard";
         log.info(`Dispatch: "${description}" → ${requestedModel} [${scopeKey}]`);
 
         // Fire-and-forget: create conversation and route prompt asynchronously

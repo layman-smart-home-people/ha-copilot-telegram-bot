@@ -121,13 +121,14 @@ async function main() {
 
     // --- MCP Profiles ---
     // Owner profile: full tool access (ha-mcp + any configured MCP servers)
+    // Use CLI-native format: { url } for HTTP/SSE, { command, args } for stdio
     const ownerMcpServers = {};
     if (config.mcpServers?.length) {
         for (const s of config.mcpServers) {
             if (s.url) {
-                ownerMcpServers[s.name] = { type: "sse", url: s.url };
+                ownerMcpServers[s.name] = { url: s.url };
             } else if (s.command) {
-                ownerMcpServers[s.name] = { type: "stdio", command: s.command, args: s.args || [] };
+                ownerMcpServers[s.name] = { command: s.command, args: s.args || [] };
             }
         }
     }

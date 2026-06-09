@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.4.10] — 2026-06-09
+
+### Fixed
+- **dispatch_to_agent**: Now respects user's `default_model` setting from `/settings` menu. Previously hardcoded to "standard", ignoring the user's preference.
+
 ## [1.4.9] — 2026-06-09
 
 ### Changed — ha-mcp discovery replaces bootstrap
