@@ -45,6 +45,14 @@ export class StandingInstructionOrchestrator {
     #fileWatcher = null;
     #gatingInProgress = new Set();  // instruction IDs currently being gate-checked
 
+    // Rate limiting — prevent runaway token usage
+    #wakeAgentCount = 0;       // wake_agent fires in current hour
+    #wakeAgentHourStart = 0;   // timestamp of current hour window
+    #perSiFireCount = new Map(); // instructionId → fires in current hour
+
+    static MAX_WAKE_AGENT_PER_HOUR = 20;
+    static MAX_PER_SI_PER_HOUR = 10;
+
     constructor({ eventListener, manager, bridge, telegram, ownerChatId, haBaseUrl, haToken }) {
         this.#eventListener = eventListener;
         this.#manager = manager;
@@ -325,6 +333,41 @@ export class StandingInstructionOrchestrator {
             this.#manager.markTriggered(instruction.id);
             this.#triggerCount++;
 
+            // Rate limit check for wake_agent actions — prevent runaway token usage
+            const hasWakeAgent = instruction.action?.some(a => a.type === "wake_agent");
+            if (hasWakeAgent) {
+                const now = Date.now();
+                // Reset hourly counters
+                if (now - this.#wakeAgentHourStart > 3_600_000) {
+                    this.#wakeAgentCount = 0;
+                    this.#wakeAgentHourStart = now;
+                    this.#perSiFireCount.clear();
+                }
+
+                // Global budget check
+                if (this.#wakeAgentCount >= StandingInstructionOrchestrator.MAX_WAKE_AGENT_PER_HOUR) {
+                    log.warn(`Global wake_agent rate limit reached (${this.#wakeAgentCount}/hr) — skipping "${instruction.description}"`);
+                    if (this.#ownerChatId) {
+                        this.#telegram.sendMessage(this.#ownerChatId, `⚠️ Rate limit: too many agent wakes this hour. "${instruction.description}" skipped.`).catch(() => {});
+                    }
+                    return;
+                }
+
+                // Per-SI budget check
+                const siCount = (this.#perSiFireCount.get(instruction.id) || 0);
+                if (siCount >= StandingInstructionOrchestrator.MAX_PER_SI_PER_HOUR) {
+                    log.warn(`Per-SI rate limit reached for "${instruction.description}" (${siCount}/hr) — auto-disabling`);
+                    this.#manager.disable(instruction.id);
+                    if (this.#ownerChatId) {
+                        this.#telegram.sendMessage(this.#ownerChatId, `⚠️ Circuit breaker: "${instruction.description}" fired ${siCount} times this hour — auto-disabled.`).catch(() => {});
+                    }
+                    return;
+                }
+
+                this.#wakeAgentCount++;
+                this.#perSiFireCount.set(instruction.id, siCount + 1);
+            }
+
             this.#processChain(instruction);
             await this.#executeActions(instruction, context);
         } finally {
@@ -510,6 +553,27 @@ export class StandingInstructionOrchestrator {
                 const resolvedMessage = message.replaceAll("{{ result }}", result).replaceAll("{{result}}", result);
                 await this.#telegram.enqueue(() =>
                     this.#telegram.sendMessage(this.#ownerChatId, `🔔 ${instruction.description}\n${resolvedMessage}`)
+                );
+            }
+            return;
+        }
+        case "template_notify": {
+            // Zero-token action: evaluate Jinja2 template via HA, send result as notification
+            const { template } = action;
+            if (!template) {
+                log.warn(`template_notify missing template for "${instruction.description}"`);
+                return;
+            }
+            let rendered;
+            try {
+                rendered = await this.#evaluateTemplate(template);
+            } catch (err) {
+                log.warn(`template_notify failed for "${instruction.description}": ${err.message}`);
+                return;
+            }
+            if (rendered && this.#ownerChatId) {
+                await this.#telegram.enqueue(() =>
+                    this.#telegram.sendMessage(this.#ownerChatId, `🔔 ${instruction.description}\n${rendered}`)
                 );
             }
             return;

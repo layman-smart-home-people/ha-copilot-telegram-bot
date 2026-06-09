@@ -6,7 +6,7 @@ import { createLogger } from "../logger.mjs";
 const DEFAULT_PERSIST_PATH = "/data/standing_instructions.json";
 const DEFAULT_COOLDOWN_SECONDS = 300;
 const VALID_TRIGGER_TYPES = new Set(["state_change", "cron", "timer"]);
-const VALID_ACTION_TYPES = new Set(["wake_agent", "notify", "ha_service", "evaluate"]);
+const VALID_ACTION_TYPES = new Set(["wake_agent", "notify", "ha_service", "evaluate", "template_notify"]);
 const VALID_ACTION_MODES = new Set(["sequential", "parallel"]);
 const VALID_CONDITION_TYPES = new Set(["state", "numeric_state", "time", "and", "or", "not"]);
 const log = createLogger("standing");
@@ -368,6 +368,11 @@ export class StandingInstructionManager {
                     template: this.#requireString(action.template, "evaluate action.template is required."),
                     condition: action.condition != null ? this.#requireString(action.condition, "evaluate action.condition must be a string.") : null,
                     message: action.message != null ? this.#requireString(action.message, "evaluate action.message must be a string.") : null,
+                };
+            case "template_notify":
+                return {
+                    type: "template_notify",
+                    template: this.#requireString(action.template, "template_notify action.template is required (Jinja2 template)."),
                 };
             default:
                 throw new Error(`Unsupported action type: ${action.type}.`);
