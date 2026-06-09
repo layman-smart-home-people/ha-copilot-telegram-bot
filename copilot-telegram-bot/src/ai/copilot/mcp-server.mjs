@@ -149,6 +149,29 @@ const TELEGRAM_CALL_TOOL = {
     },
 };
 
+const SEND_TO_USER_TOOL = {
+    name: "send_to_user",
+    description:
+        "Send a message to another user or group by name, @username, or chat ID. " +
+        "Resolves the target via RBAC (paired users) or allowed groups. " +
+        "Use when the current user asks you to send something to a different person or group chat. " +
+        "This is a private bot — all paired users and allowed groups are valid targets.",
+    inputSchema: {
+        type: "object",
+        properties: {
+            target: {
+                type: "string",
+                description: "Who to send to: display name, @username, or numeric chat/user ID",
+            },
+            message: {
+                type: "string",
+                description: "The message to send (plain text)",
+            },
+        },
+        required: ["target", "message"],
+    },
+};
+
 // --- JSON-RPC helpers ---
 
 function send(id, result) {
@@ -238,7 +261,7 @@ function handleInitialize(id, params) {
 }
 
 function handleToolsList(id) {
-    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL, SEND_FILE_TOOL, TELEGRAM_CALL_TOOL] });
+    send(id, { tools: [TOOL, BACKGROUND_TASK_TOOL, NOTIFY_TOOL, SEND_FILE_TOOL, TELEGRAM_CALL_TOOL, SEND_TO_USER_TOOL] });
 }
 
 async function handleToolsCall(id, params) {
@@ -258,6 +281,8 @@ async function handleToolsCall(id, params) {
         return handleSendFile(id, args);
     } else if (name === "telegram_call") {
         return handleTelegramCall(id, args);
+    } else if (name === "send_to_user") {
+        return handleSendToUser(id, args);
     } else {
         sendError(id, -32602, `Unknown tool: ${name}`);
     }
@@ -458,6 +483,36 @@ async function handleTelegramCall(id, args) {
             content: [{ type: "text", text: `Error: ${err.message}` }],
             isError: true,
         });
+    } finally {
+        pendingCalls--;
+        checkExit();
+    }
+}
+
+async function handleSendToUser(id, args) {
+    if (!args?.target || typeof args.target !== "string") {
+        send(id, { content: [{ type: "text", text: "Error: target parameter is required" }], isError: true });
+        return;
+    }
+    if (!args?.message || typeof args.message !== "string") {
+        send(id, { content: [{ type: "text", text: "Error: message parameter is required" }], isError: true });
+        return;
+    }
+    log(`send_to_user called: target="${args.target}", msg="${args.message.substring(0, 80)}"`);
+    pendingCalls++;
+    try {
+        const result = await callBot({
+            method: "send_to_user",
+            params: { target: args.target, message: args.message },
+            scopeKey: getScopeKey(),
+        });
+        if (result.error) {
+            send(id, { content: [{ type: "text", text: `Error: ${result.error}` }], isError: true });
+        } else {
+            send(id, { content: [{ type: "text", text: `Message sent to ${result.resolvedName || args.target}` }] });
+        }
+    } catch (err) {
+        send(id, { content: [{ type: "text", text: `Error: ${err.message}` }], isError: true });
     } finally {
         pendingCalls--;
         checkExit();

@@ -423,9 +423,9 @@ export class Router {
     // ── Scope Resolution ─────────────────────────────────────
 
     #resolveScopeKey(ref) {
-        // Forum: scope per topic (thread)
+        // Forum: scope per user within topic (enables concurrent requests)
         if (ref.isForum && ref.threadId) {
-            return `forum:${ref.chatId}:${ref.threadId}`;
+            return `forum:${ref.chatId}:${ref.threadId}:${ref.userId}`;
         }
         // Group: scope per user within group
         if (ref.chatType === "group" || ref.chatType === "supergroup") {
@@ -785,7 +785,7 @@ export class Router {
     // ── Scope Prefix Helper ──────────────────────────────────
 
     #scopePrefix(ref) {
-        if (ref.isForum && ref.threadId) return `forum:${ref.chatId}:${ref.threadId}`;
+        if (ref.isForum && ref.threadId) return `forum:${ref.chatId}:${ref.threadId}:${ref.userId}`;
         if (ref.chatType === "group" || ref.chatType === "supergroup") return `group:${ref.chatId}:${ref.userId}`;
         if (ref.chatType === "private" && ref.threadId) return `dm:${ref.userId}:${ref.threadId}`;
         return `dm:${ref.userId}`;
@@ -838,9 +838,9 @@ export class Router {
             action = parts[3];
             payload = parts.slice(4).join(":");
         } else if (parts[0] === "forum") {
-            scopeKey = `forum:${parts[1]}:${parts[2]}`;
-            action = parts[3];
-            payload = parts.slice(4).join(":");
+            scopeKey = `forum:${parts[1]}:${parts[2]}:${parts[3]}`;
+            action = parts[4];
+            payload = parts.slice(5).join(":");
         } else {
             log.debug(`Unknown scope type in callback: ${data}`);
             return;

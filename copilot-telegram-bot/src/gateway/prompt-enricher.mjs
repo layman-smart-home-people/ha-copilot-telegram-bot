@@ -25,28 +25,47 @@ const COPILOT_INSTRUCTIONS_PATHS = [
 
 const MAX_PINNED = 100; // max pinned instructions to keep in memory
 
-const DISPATCHER_INSTRUCTIONS = `[Dispatcher mode — IMPORTANT:
-You are the FAST TRIAGE agent (Haiku). Your job is to quickly assess each request and either:
+const DISPATCHER_INSTRUCTIONS = `[Dispatcher mode — STRICT RULES:
+You are the FAST TRIAGE agent. Your default action is to DISPATCH. Only handle requests yourself if they meet ALL of these criteria:
+- Answerable in a single sentence with zero or one tool call
+- No reasoning, analysis, or multi-step thinking required
+- You are fully confident in the answer
 
-1. **Handle directly** — if the task is simple and you can respond well:
-   - Quick HA state queries ("what's the temperature?", "is the light on?")
-   - Simple device control ("turn on bedroom light", "set AC to 24")
-   - Status checks, greetings, time/date queries
-   - Brief factual answers you're confident about
-   - Standing instruction CRUD (si_create, si_list, etc.)
+Handle directly (ONLY these):
+- Greetings, time/date, "what's the weather"
+- Single HA state read ("is the light on?", "what's the temperature?")
+- Single device command ("turn on bedroom light")
+- Standing instruction CRUD (si_create, si_list, si_delete, si_update)
 
-2. **Dispatch to full agent** — call \`dispatch_to_agent\` for complex tasks:
-   - Research tasks ("compare X vs Y", "investigate...")
-   - Code changes ("fix the bug", "add a feature", "review the code")
-   - Multi-step analysis or report generation
-   - Creative writing, long-form content
-   - Complex automations or dashboard modifications
-   - Anything requiring deep reasoning or multi-tool orchestration
+DISPATCH everything else — call \`dispatch_to_agent\` immediately for:
+- Anything requiring >1 tool call
+- Questions needing explanation or reasoning
+- "What can you do", "help", capability questions
+- Report generation, comparisons, analysis
+- Code changes, investigations, debugging
+- Multi-step tasks, creative content, automations
+- Anything you're not 100% confident about
 
-When dispatching, include ALL relevant context in the prompt — the full agent has no access to your conversation.
-Be brief in your own response: "I'm routing this to the full agent — you'll see the response shortly."
+When in doubt, DISPATCH. You are a router, not an answerer.
+When dispatching, include ALL relevant context in the prompt.
+Your response: just "Routing to the full agent — response incoming shortly."]`;
 
-Do NOT attempt complex tasks yourself — your model is optimized for speed, not depth.]`;
+const AGENT_GUIDELINES = `[Operational Guidelines — SECURITY + FILE SHARING:
+
+/config/www/ is PUBLIC — all files are accessible without authentication at the HA external URL + /local/<filename>.
+
+File sharing decision:
+- DEFAULT: Use send_file tool (Telegram) unless content is explicitly non-sensitive and intended for external sharing.
+- ONLY use /config/www/ if content is confirmed non-sensitive (public images, generic docs for external sharing).
+- Sensitive data includes: system diagnostics, entity IDs, network topology, API tokens, automation logic, personal info.
+
+Getting the HA external URL (never hardcode):
+  curl -s http://supervisor/core/api/config -H "Authorization: Bearer $SUPERVISOR_TOKEN" | grep -o '"external_url":"[^"]*"' | cut -d'"' -f4
+
+If you accidentally expose sensitive data to /config/www/:
+1. Immediately delete: rm /config/www/<filename>
+2. Notify user via Telegram
+3. Log incident in agent memory (PKM)]`;
 
 export class PromptEnricher {
     #config;
@@ -97,6 +116,9 @@ export class PromptEnricher {
                 const agentDir = this.#config.agentDir || DEFAULT_AGENT_DIR;
                 parts.push(`[Agent persistent memory — your identity and memory from ${agentDir}/:\n${this.#agentContext}\n]`);
             }
+
+            // Operational guidelines (security, file sharing)
+            parts.push(AGENT_GUIDELINES);
 
             // Dispatcher instructions for fast triage model
             if (isDispatcher) {

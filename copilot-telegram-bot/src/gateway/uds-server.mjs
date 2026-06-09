@@ -20,14 +20,16 @@ export class UdsServer {
     #telegram;
     #conversationManager;
     #config;
+    #rbac;
     #server = null;
 
     // Pending ask_user questions: questionId → { resolve, chatId, options, messageId, freeText, timer }
     #pending = new Map();
 
-    constructor({ telegram, conversationManager, config }) {
+    constructor({ telegram, conversationManager, config, rbac }) {
         this.#telegram = telegram;
         this.#conversationManager = conversationManager || null;
+        this.#rbac = rbac || null;
         this.#config = config;
     }
 
@@ -163,6 +165,7 @@ export class UdsServer {
             case "send_file":      return this.#sendFile(params, scopeKey);
             case "background_task": return this.#backgroundTask(params, scopeKey);
             case "telegram_call":  return this.#telegramCall(params, scopeKey);
+            case "send_to_user":   return this.#sendToUser(params);
             default:               return { error: `Unknown method: ${method}` };
         }
     }
@@ -384,6 +387,58 @@ export class UdsServer {
             return { data: result };
         } catch (err) {
             return { error: err.message };
+        }
+    }
+
+    async #sendToUser({ target, message }) {
+        if (!target) return { error: "target is required" };
+        if (!message) return { error: "message is required" };
+        if (!this.#rbac) return { error: "RBAC not available — cannot resolve users" };
+
+        let chatId = null;
+        let resolvedName = target;
+
+        // 1. Direct numeric ID
+        const numericId = parseInt(target);
+        if (!isNaN(numericId) && String(numericId) === target.trim()) {
+            chatId = numericId;
+        }
+
+        // 2. Search paired users by @username or display name
+        if (!chatId) {
+            const query = target.replace(/^@/, "").toLowerCase();
+            const users = this.#rbac.getPairedUsers();
+            for (const u of users) {
+                const username = (u.username || "").toLowerCase();
+                const displayName = (u.displayName || "").toLowerCase();
+                if (username === query || displayName === query ||
+                    displayName.includes(query) || username.includes(query)) {
+                    chatId = u.userId;
+                    resolvedName = u.displayName || u.username || String(u.userId);
+                    break;
+                }
+            }
+        }
+
+        // 3. Check allowed groups
+        if (!chatId && this.#config.allowedGroups?.length) {
+            for (const groupId of this.#config.allowedGroups) {
+                if (String(groupId) === target.trim()) {
+                    chatId = parseInt(groupId);
+                    resolvedName = `group ${groupId}`;
+                    break;
+                }
+            }
+        }
+
+        if (!chatId) return { error: `Could not resolve "${target}". Use a display name, @username, or numeric chat ID.` };
+
+        log.info(`send_to_user: "${message.substring(0, 80)}" → ${resolvedName} (${chatId})`);
+        try {
+            await this.#telegram.call("sendMessage", { chat_id: chatId, text: message });
+            return { status: "sent", resolvedName, chatId };
+        } catch (err) {
+            return { error: `Send failed: ${err.message}` };
         }
     }
 }

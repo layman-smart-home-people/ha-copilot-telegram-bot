@@ -179,7 +179,7 @@ async function main() {
     };
 
     // --- UDS Server (MCP sidecar IPC) — must start before pool so socket exists when sidecars connect ---
-    const uds = new UdsServer({ telegram, config });
+    const uds = new UdsServer({ telegram, config, rbac });
     _uds = uds;
     await uds.start();
 

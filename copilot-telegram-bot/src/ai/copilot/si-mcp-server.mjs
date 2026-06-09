@@ -216,11 +216,12 @@ const TOOLS = [
     {
         name: "dispatch_to_agent",
         description:
-            "Delegate a complex task to a full-capability agent session (Sonnet/Opus). " +
-            "Use when the task requires deep reasoning, research, code changes, multi-step analysis, or report generation. " +
-            "The dispatched agent will handle the task and send its response directly to the user as a new message. " +
-            "Include ALL relevant context in the prompt — the dispatched agent has no access to your conversation. " +
-            "Returns immediately — you don't need to wait for the result.",
+            "Delegate to a full-capability agent (Sonnet/Opus). " +
+            "ALWAYS use this unless the request is a single greeting, state read, or device command. " +
+            "If you need >1 tool call, any reasoning, or are unsure — dispatch immediately. " +
+            "The dispatched agent sends its response directly to the user. " +
+            "Include ALL relevant context in the prompt — the dispatched agent has no conversation history. " +
+            "Returns immediately.",
         inputSchema: {
             type: "object",
             properties: {

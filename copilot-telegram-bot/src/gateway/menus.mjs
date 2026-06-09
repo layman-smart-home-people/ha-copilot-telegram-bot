@@ -168,7 +168,7 @@ export function parseMenuCallback(data) {
             : `dm:${scopeParts[1]}`;
     }
     else if (scopeParts[0] === "group") scopeKey = `group:${scopeParts[1]}:${scopeParts[2]}`;
-    else if (scopeParts[0] === "forum") scopeKey = `forum:${scopeParts[1]}:${scopeParts[2]}`;
+    else if (scopeParts[0] === "forum") scopeKey = `forum:${scopeParts[1]}:${scopeParts[2]}:${scopeParts[3]}`;
     else scopeKey = scopePrefix;
 
     return { scopeKey, menuName, action };
