@@ -186,12 +186,12 @@ async function callBot(params) {
                 conn.write(payload);
 
                 const chunks = [];
-                // 30-minute timeout — user may take time to respond
+                // Timeout slightly above UDS server's 5min to let server-side timeout resolve first
                 const timer = setTimeout(() => {
-                    log("UDS timeout (30min)");
+                    log("UDS timeout (5.5min)");
                     conn.destroy();
                     reject(new Error("Timed out waiting for user response"));
-                }, 30 * 60 * 1000);
+                }, 5.5 * 60 * 1000);
 
                 conn.on("data", (c) => chunks.push(c));
                 conn.on("end", () => {

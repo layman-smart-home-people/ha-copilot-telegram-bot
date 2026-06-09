@@ -7,7 +7,7 @@
 import { createServer as createNetServer } from "node:net";
 import { unlinkSync, chmodSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { basename, extname } from "node:path";
+import { basename, extname, resolve as resolvePath } from "node:path";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("uds");
@@ -39,8 +39,15 @@ export class UdsServer {
         try { unlinkSync(TG_UX_SOCK); } catch {}
         this.#server = createNetServer({ allowHalfOpen: true }, (conn) => {
             let buf = "";
+            const MAX_BUF = 1024 * 1024; // 1MB safety limit
             conn.on("data", (chunk) => {
                 buf += chunk.toString();
+                if (buf.length > MAX_BUF) {
+                    log.warn("UDS: buffer exceeded 1MB, dropping connection");
+                    try { conn.end(JSON.stringify({ error: "Request too large" })); } catch {}
+                    buf = "";
+                    return;
+                }
                 const nl = buf.indexOf("\n");
                 if (nl === -1) return;
                 const line = buf.slice(0, nl);
@@ -257,6 +264,13 @@ export class UdsServer {
     async #sendFile({ file_path, caption, type = "auto" }, scopeKey) {
         if (!file_path || typeof file_path !== "string") return { error: "file_path is required" };
 
+        // Path jail: only allow files under safe HA directories
+        const ALLOWED_PREFIXES = ["/config/", "/share/", "/media/", "/tmp/"];
+        const resolved = resolvePath(file_path);
+        if (!ALLOWED_PREFIXES.some(p => resolved.startsWith(p))) {
+            return { error: `file_path must be under one of: ${ALLOWED_PREFIXES.join(", ")}` };
+        }
+
         const { chatId, threadId } = this.#resolveChatId(scopeKey);
         if (!chatId) return { error: "No chat available" };
 
@@ -276,7 +290,7 @@ export class UdsServer {
         try {
             buffer = await readFile(file_path);
         } catch (err) {
-            return { error: `Cannot read file: ${err.message}` };
+            return { error: `Cannot read file: ${err.code || "UNKNOWN"}` };
         }
         if (buffer.length > MAX_FILE_SIZE) {
             return { error: `File too large (${(buffer.length / 1024 / 1024).toFixed(1)}MB). Telegram limit is 50MB.` };
@@ -334,9 +348,26 @@ export class UdsServer {
 
     async #telegramCall({ method, params: apiParams }) {
         if (!method || typeof method !== "string") return { error: "method is required" };
-        if (/^(set|delete)webhook|getme|logout|close$/i.test(method)) {
-            return { error: `Method '${method}' not allowed` };
+
+        // Allowlist: only safe, intended methods
+        const ALLOWED_METHODS = new Set([
+            // Messages
+            "sendmessage", "editmessagetext", "editmessagereplymarkup",
+            "editmessagecaption", "editmessagemedia",
+            // Forum topics
+            "createforumtopic", "editforumtopic", "closeforumtopic",
+            "reopenforumtopic", "deleteforumtopic", "getforumtopiciconstickers",
+            // Queries
+            "getchat", "getchatmembercount", "getchatmember",
+            // Callback
+            "answercallbackquery",
+            // Files
+            "sendphoto", "senddocument", "sendvideo", "sendaudio", "sendvoice",
+        ]);
+        if (!ALLOWED_METHODS.has(method.toLowerCase())) {
+            return { error: `Method '${method}' is not in the allowed list` };
         }
+
         log.info(`telegram_call: ${method}`);
         try {
             const result = await this.#telegram.call(method, apiParams || {});

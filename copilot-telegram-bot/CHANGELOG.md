@@ -32,6 +32,17 @@ All notable changes to the Copilot Telegram Bot add-on.
 - **User-friendly error messages** — pool exhaustion and generic errors no longer leak internal error messages.
 - **Menu expiry message** — expired menus show "⏰ Menu expired" instead of silently stripping buttons.
 
+### Fixed — Startup
+- **Bot token retry on boot** — `getMe()` now retries 3 times with 5s delay, re-reading config on each attempt. Previously, if `options.json` wasn't ready at boot, the bot exited immediately with "Invalid bot token".
+- **`/start` registered with BotFather** — `setMyCommands` now includes `/start` and orders commands logically.
+
+### Fixed — Security
+- **`send_file` path jail** — restricted to `/config/`, `/share/`, `/media/`, `/tmp/`. Agents can no longer read arbitrary files.
+- **`telegram_call` allowlist** — blocklist (5 methods) replaced with explicit allowlist (16 safe methods). Blocks `banChatMember`, `deleteChatPhoto`, etc.
+- **UDS buffer limit** — 1MB cap on sidecar connections prevents OOM.
+- **MCP timeout alignment** — `ask_user` timeout aligned to 5.5min (was 30min) to match UDS server.
+- **Error path sanitization** — `send_file` errors return `err.code` instead of full filesystem paths.
+
 ## [1.4.12] — 2026-06-09
 
 ### Fixed
