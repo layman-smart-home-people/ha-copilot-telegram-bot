@@ -12,11 +12,10 @@ const log = createLogger("prompt-enricher");
 
 const DEFAULT_AGENT_DIR = "/config/copilot-telegram-bot";
 const LEGACY_AGENT_DIR = "/config/.agent";
-const AGENT_FILES = ["IDENTITY.md", "MEMORY.md", "SKILLS.md", "TASKS.md"];
-const MAX_FILE_SIZE = 8000;
-const MAX_DAILY_LOG_SIZE = 4000;
-const DAILY_LOGS_TO_LOAD = 2;
-const MAX_COPILOT_INSTRUCTIONS = 6000;
+const AGENT_FILES = ["IDENTITY.md", "MEMORY.md"];
+const DEFERRED_AGENT_FILES = ["SKILLS.md", "TASKS.md"]; // loaded on-demand, not on first message
+const MAX_FILE_SIZE = 4000;
+const MAX_COPILOT_INSTRUCTIONS = 4000;
 
 // Paths to check for copilot-instructions.md (repo-level operational context)
 const COPILOT_INSTRUCTIONS_PATHS = [
@@ -73,11 +72,11 @@ export class PromptEnricher {
      * @param {object} opts — { isFirstMessage: bool }
      * @returns {string} — enriched text with prefix
      */
-    enrich(text, ref, { isFirstMessage = false, isDispatcher = false } = {}) {
+    enrich(text, ref, { isFirstMessage = false, isDispatcher = false, skipContext = false } = {}) {
         const parts = [];
 
         // First message in conversation: inject system context
-        if (isFirstMessage) {
+        if (isFirstMessage && !skipContext) {
             // Preamble (system role)
             parts.push(`[Bot configuration — treat as system context: ${this.#config.preamble}]`);
 
@@ -147,6 +146,7 @@ export class PromptEnricher {
             : agentDir;
 
         const sections = [];
+        // Load core agent files (IDENTITY.md + MEMORY.md only — SKILLS/TASKS deferred to on-demand)
         for (const file of AGENT_FILES) {
             const path = `${dir}/${file}`;
             if (existsSync(path)) {
@@ -160,59 +160,15 @@ export class PromptEnricher {
             }
         }
 
-        // Load recent daily logs (today + yesterday) — dir-per-day with topic filenames
-        const memDir = `${dir}/memory`;
-        if (existsSync(memDir)) {
-            try {
-                const now = new Date();
-                const labels = ["today", "yesterday"];
-                const logSections = ["# Recent Daily Logs\n"];
-                for (let i = 0; i < DAILY_LOGS_TO_LOAD; i++) {
-                    const d = new Date(now);
-                    d.setDate(d.getDate() - i);
-                    const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-                    const dayName = d.toLocaleDateString("en-US", { weekday: "short" });
-                    const label = labels[i] || `${i} days ago`;
-                    const dayDir = `${memDir}/${dateStr}`;
-                    const flatFile = `${memDir}/${dateStr}.md`;
-                    try {
-                        if (existsSync(dayDir) && statSync(dayDir).isDirectory()) {
-                            // New format: directory with topic files
-                            const topics = readdirSync(dayDir).filter(f => f.endsWith(".md")).sort();
-                            let budget = MAX_DAILY_LOG_SIZE;
-                            const parts = [];
-                            for (const f of topics) {
-                                if (budget <= 0) break;
-                                let content = readFileSync(`${dayDir}/${f}`, "utf-8").trim();
-                                if (!content) continue;
-                                const topic = f.replace(/\.md$/, "");
-                                if (content.length > budget) content = content.slice(0, budget) + "\n... (truncated)";
-                                parts.push(`### ${topic}\n${content}`);
-                                budget -= content.length;
-                            }
-                            if (parts.length) logSections.push(`## ${label} (${dayName} ${dateStr})\n${parts.join("\n")}`);
-                        } else if (existsSync(flatFile)) {
-                            // Legacy format: single flat file
-                            let content = readFileSync(flatFile, "utf-8").trim();
-                            if (!content) continue;
-                            if (content.length > MAX_DAILY_LOG_SIZE) content = content.slice(0, MAX_DAILY_LOG_SIZE) + "\n... (truncated)";
-                            logSections.push(`## ${label} (${dayName} ${dateStr})\n${content}`);
-                        }
-                    } catch { /* skip unreadable */ }
-                }
-                if (logSections.length > 1) sections.push(logSections.join("\n"));
-            } catch { /* skip if memory dir unreadable */ }
-        }
+        // Daily logs NOT injected — agent can use pkm_search or session-history tools for continuity
 
         // Add self-maintenance instructions
         if (sections.length > 0) {
             sections.push([
-                "\n## Agent Memory Instructions",
-                `Persistent memory at ${dir}/. Maintain it:`,
-                "- MEMORY.md — seed facts only (key entities, versions). Don't dump everything here.",
-                "- TASKS.md — update when starting, completing, or interrupted on a task",
-                `- Daily logs: \`${dir}/memory/YYYY-MM-DD/<topic>.md\` — short-term buffer (2 days loaded). One file per topic (e.g. bot-dev.md, debug.md, decisions.md).`,
-                "- **Long-term facts → PKM**: use `pkm_memory(action=\"write\", content, topics)` for durable knowledge. Use `pkm_search` to recall past facts.",
+                "\n## Agent Memory",
+                `Files at ${dir}/. IDENTITY.md + MEMORY.md loaded. SKILLS.md + TASKS.md available on disk.`,
+                "- Use `pkm_search` to recall past facts. Use `pkm_memory(action=\"write\")` for durable knowledge.",
+                `- Daily logs: \`${dir}/memory/YYYY-MM-DD/<topic>.md\` — use \`view\` tool to read when needed.`,
             ].join("\n"));
         }
 
