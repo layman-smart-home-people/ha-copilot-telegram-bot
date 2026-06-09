@@ -327,10 +327,12 @@ export class Conversation extends EventEmitter {
             this.#state = "eliciting";
             this.#pendingElicitation = { requestId, message, schema };
 
-            // Send elicitation message with buttons to user
-            this.#sendElicitationButtons(message).catch(err =>
-                log.warn(`Failed to send elicitation buttons: ${err.message}`)
-            );
+            // Finalize streamer (commits draft as real message, clears draft)
+            // so the user's input field is unblocked for typing a reply.
+            // Send elicitation buttons only after draft is cleared.
+            (this.#streamer.active ? this.#streamer.finalize() : Promise.resolve())
+                .then(() => this.#sendElicitationButtons(message))
+                .catch(err => log.warn(`Elicitation setup failed: ${err.message}`));
 
             this.emit("elicitation", { requestId, message, schema, scopeKey: this.#scopeKey });
         };
