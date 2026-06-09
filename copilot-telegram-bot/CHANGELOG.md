@@ -2,6 +2,36 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.5.0] — 2026-06-09
+
+### Added — UX & Polish
+- **`/start` command** — registered as Telegram deep-link entry point. Shows welcome + help menu.
+- **Richer `/help`** — explains capabilities: photo analysis, file attachments, steering, settings, standing instructions, and memory.
+- **Model descriptions in `/settings`** — "⚡ Fast — quick answers", "🔵 Standard — balanced", "🧠 Reasoning — deep analysis". Warns that model change resets conversation.
+- **Standing instructions empty state** — shows example prompt ("alert me when the front door opens") instead of just "No instructions configured."
+- **Trigger type icons** in `/standing` list — 📡 state_change, ⏰ cron, ⏲ timer.
+- **Markdown table support** — pipe tables converted to aligned `<pre>` blocks instead of garbled text.
+
+### Fixed — Formatting & Streaming
+- **Italic regex no longer misfires on math** — `3 * 4 * 5` no longer becomes `3 <i> 4 </i> 5`. Added CommonMark space-awareness.
+- **Ordered lists preserve numbering** — `1.`, `2.`, `3.` instead of all becoming `▸`.
+- **HTML-safe message chunking** — `chunkMessage` now converts markdown→HTML first, then chunks at 4096 chars. Previously sized on raw markdown, causing Telegram MESSAGE_TOO_LONG rejections.
+- **HTML truncation closes unclosed tags** — streamer `#truncate` now tracks and closes open `<b>`, `<pre>`, `<blockquote>` etc. instead of producing malformed HTML.
+
+### Fixed — Security
+- **Config API token redaction** — HA Supervisor schema is an object `{key: "password"}`, not an array. Previous code iterated nothing — `bot_token` and `github_token` were returned in cleartext.
+- **Request body size limit** — `#readBody()` now caps at 1MB to prevent DoS via memory exhaustion.
+- **SSE heartbeat** — log stream sends 30s heartbeat to keep connections alive behind HA Ingress/nginx reverse proxies.
+
+### Fixed — Standing Instructions
+- **SI prompt timeout** — 5-minute max per SI agent prompt. Previously a hung agent blocked that SI scope key forever.
+- **SI debounce key collision** — uses instruction ID instead of DJB2 hash, preventing hash collisions from silently dropping SIs.
+- **SI conversation cleanup** — destroy errors now logged instead of silently swallowed.
+
+### Fixed — UX
+- **User-friendly error messages** — pool exhaustion and generic errors no longer leak internal error messages.
+- **Menu expiry message** — expired menus show "⏰ Menu expired" instead of silently stripping buttons.
+
 ## [1.4.12] — 2026-06-09
 
 ### Fixed
