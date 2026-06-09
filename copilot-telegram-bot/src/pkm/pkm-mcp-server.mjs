@@ -5,9 +5,23 @@
 // Access control: user_id/scope derived server-side from session context, never from tool params.
 
 import http from "node:http";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const API_BASE = process.env.PKM_API_BASE || "http://localhost:8099";
-const SCOPE_KEY = process.env.TG_UX_SCOPE_KEY || null;
+const COPILOT_HOME = process.env.COPILOT_HOME || "";
+const SCOPE_KEY_FILE = COPILOT_HOME ? join(COPILOT_HOME, ".scope-key") : "";
+
+/** Read current scope key from file (written by pool on claim). */
+function getScopeKey() {
+    if (!SCOPE_KEY_FILE) return null;
+    try {
+        const key = readFileSync(SCOPE_KEY_FILE, "utf-8").trim();
+        return key || null;
+    } catch {
+        return null;
+    }
+}
 
 function log(msg) { process.stderr.write(`[pkm-mcp] ${msg}\n`); }
 
@@ -374,8 +388,9 @@ function apiCall(method, path, body) {
             timeout: 15000,
         };
         // Pass scope key for user context resolution
-        if (SCOPE_KEY) {
-            options.headers["X-Scope-Key"] = SCOPE_KEY;
+        const scopeKey = getScopeKey();
+        if (scopeKey) {
+            options.headers["X-Scope-Key"] = scopeKey;
         }
 
         const req = http.request(options, (res) => {

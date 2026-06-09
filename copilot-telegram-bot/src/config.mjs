@@ -118,7 +118,7 @@ export async function loadConfig() {
         poolIdleMinutes: Number(options.pool_idle_minutes) || 5,
         poolWaitTimeoutSeconds: Number(options.pool_wait_timeout_seconds) || 30,
         defaultModel: options.default_model || "standard",
-        dispatcherModel: options.dispatcher_model || "fast",
+        dispatcherModel: options.dispatcher_model || "",
         guestModel: options.guest_model || "fast",
         siDefaultModel: options.si_default_model || "standard",
 
@@ -277,16 +277,39 @@ async function discoverHaMcpAddon() {
             return null;
         }
 
-        // Resolve port from network config (e.g. { "9583/tcp": 9583 })
-        const networkPorts = info.network || {};
-        const port = Object.values(networkPorts)[0];
-        if (!port) {
-            log.warn("ha-mcp add-on has no exposed port");
+        // Resolve URL for inter-addon communication.
+        // Strategy: use the add-on's internal Docker hostname + the native listening port
+        // (the port config KEY like "9583/tcp" is the container-side port).
+        // The network map VALUES are host-side mappings, which aren't reachable between containers.
+        const hostname = info.hostname;
+        if (!hostname) {
+            log.warn("ha-mcp add-on has no hostname — cannot resolve internal URL");
             return null;
         }
 
-        const host = info.ip_address || info.hostname;
-        const url = `http://${host}:${port}${secretPath}`;
+        // Extract the container-side port from the network config key (e.g. "9583/tcp" → 9583)
+        const networkPorts = info.network || {};
+        const portKeys = Object.keys(networkPorts);
+        let port = null;
+        if (portKeys.length > 0) {
+            const match = portKeys[0].match(/^(\d+)/);
+            if (match) port = parseInt(match[1]);
+        }
+        // Fallback: try network description or ports config
+        if (!port) {
+            const ports = info.ports || {};
+            const portKey = Object.keys(ports)[0];
+            if (portKey) {
+                const m = portKey.match(/^(\d+)/);
+                if (m) port = parseInt(m[1]);
+            }
+        }
+        if (!port) {
+            log.warn("ha-mcp add-on has no discoverable port");
+            return null;
+        }
+
+        const url = `http://${hostname}:${port}${secretPath}`;
 
         log.debug(`ha-mcp discovered: ${hamcp.slug} at ${url}`);
         return { slug: hamcp.slug, url };

@@ -76,12 +76,15 @@ export class ACPPool extends EventEmitter {
 
         mkdirSync(this.#baseCopilotHome, { recursive: true });
 
-        // Pre-warm instances in parallel (use user's default model, not dispatcher)
+        // Pre-warm instances in parallel
         if (this.#preWarmCount > 0) {
-            const defaultModel = this.#resolveModelTier(this.#config.defaultModel || "standard");
+            // Use dispatcher model if set, otherwise default model
+            const preWarmModel = this.#resolveModelTier(
+                this.#config.dispatcherModel || this.#config.defaultModel || "standard"
+            );
             const promises = Array.from({ length: this.#preWarmCount }, (_, i) =>
-                this.#spawn(defaultModel, "owner")
-                    .then(inst => log.info(`Pre-warm ${i + 1}/${this.#preWarmCount}: ${inst.id} ready (${defaultModel})`))
+                this.#spawn(preWarmModel, "owner")
+                    .then(inst => log.info(`Pre-warm ${i + 1}/${this.#preWarmCount}: ${inst.id} ready (${preWarmModel})`))
                     .catch(err => log.warn(`Pre-warm ${i + 1} failed: ${err.message}`))
             );
             await Promise.allSettled(promises);
@@ -282,40 +285,7 @@ export class ACPPool extends EventEmitter {
         writeFileSync(join(home, "settings.json"), JSON.stringify(modelConfig));
 
         // 4. Build MCP server config for this profile
-        // Internal sidecar MCP servers (always included for owner/member profiles)
-        const internalMcpServers = mcpProfile !== "guest" ? {
-            "telegram": {
-                type: "stdio",
-                command: "node",
-                args: ["/app/src/ai/copilot/mcp-server.mjs"],
-            },
-            "standing-instructions": {
-                type: "stdio",
-                command: "node",
-                args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
-            },
-            "access-control": {
-                type: "stdio",
-                command: "node",
-                args: ["/app/src/ai/copilot/rbac-mcp-server.mjs"],
-            },
-            "memory": {
-                type: "stdio",
-                command: "node",
-                args: ["/app/src/pkm/pkm-mcp-server.mjs"],
-            },
-            "session-history": {
-                type: "stdio",
-                command: "node",
-                args: ["--no-warnings", "/app/src/ai/copilot/session-history-mcp-server.mjs"],
-            },
-        } : {};
-        // Merge: internal sidecar servers + external profile servers (e.g. ha-mcp)
-        const profileConfig = this.#mcpProfiles[mcpProfile] || this.#mcpProfiles.owner || {};
-        const mcpServers = {
-            ...internalMcpServers,
-            ...(profileConfig.mcpServers || {}),
-        };
+        const mcpServers = this.#buildMcpServers(mcpProfile);
 
         // 5. Create ACP client
         const acp = new ACPClient({
@@ -367,39 +337,8 @@ export class ACPPool extends EventEmitter {
             await inst.acp.stop().catch(() => {});
         }
 
-        // Respawn with same COPILOT_HOME — merge internal sidecar + external profile servers
-        const internalMcpServers = inst.mcpProfile !== "guest" ? {
-            "telegram": {
-                type: "stdio",
-                command: "node",
-                args: ["/app/src/ai/copilot/mcp-server.mjs"],
-            },
-            "standing-instructions": {
-                type: "stdio",
-                command: "node",
-                args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
-            },
-            "access-control": {
-                type: "stdio",
-                command: "node",
-                args: ["/app/src/ai/copilot/rbac-mcp-server.mjs"],
-            },
-            "memory": {
-                type: "stdio",
-                command: "node",
-                args: ["/app/src/pkm/pkm-mcp-server.mjs"],
-            },
-            "session-history": {
-                type: "stdio",
-                command: "node",
-                args: ["--no-warnings", "/app/src/ai/copilot/session-history-mcp-server.mjs"],
-            },
-        } : {};
-        const profileConfig = this.#mcpProfiles[inst.mcpProfile] || this.#mcpProfiles.owner || {};
-        const mcpServers = {
-            ...internalMcpServers,
-            ...(profileConfig.mcpServers || {}),
-        };
+        // Respawn with same COPILOT_HOME — use shared MCP builder to include all sidecars
+        const mcpServers = this.#buildMcpServers(inst.mcpProfile);
         const acp = new ACPClient({
             binary: this.#config.copilotBinary,
             cwd: this.#config.workingDirectory || "/config",
@@ -635,5 +574,43 @@ export class ACPPool extends EventEmitter {
         if (m === "fast" || m === "haiku" || m.includes("haiku")) return "fast";
         if (m === "reasoning" || m === "opus" || m.includes("opus")) return "reasoning";
         return "standard";
+    }
+
+    /** Build merged MCP server config: internal sidecars + profile servers. */
+    #buildMcpServers(mcpProfile) {
+        // Internal sidecar MCP servers (always included for owner/member profiles)
+        const internalMcpServers = mcpProfile !== "guest" ? {
+            "telegram": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/mcp-server.mjs"],
+            },
+            "standing-instructions": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/si-mcp-server.mjs"],
+            },
+            "access-control": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/ai/copilot/rbac-mcp-server.mjs"],
+            },
+            "memory": {
+                type: "stdio",
+                command: "node",
+                args: ["/app/src/pkm/pkm-mcp-server.mjs"],
+            },
+            "session-history": {
+                type: "stdio",
+                command: "node",
+                args: ["--no-warnings", "/app/src/ai/copilot/session-history-mcp-server.mjs"],
+            },
+        } : {};
+        // Merge: internal sidecar servers + external profile servers (e.g. ha-mcp)
+        const profileConfig = this.#mcpProfiles[mcpProfile] || this.#mcpProfiles.owner || {};
+        return {
+            ...internalMcpServers,
+            ...(profileConfig.mcpServers || {}),
+        };
     }
 }

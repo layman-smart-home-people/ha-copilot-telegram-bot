@@ -51,6 +51,7 @@ options:
   pool_idle_minutes: 5
   pool_wait_timeout_seconds: 30
   default_model: standard
+  dispatcher_model: ""
   guest_model: fast
   si_default_model: standard
   dm_topics_enabled: false
@@ -85,6 +86,7 @@ schema:
   pool_idle_minutes: int(1,60)?
   pool_wait_timeout_seconds: int(5,120)?
   default_model: "list(fast|standard|reasoning)?"
+  dispatcher_model: "str?"
   guest_model: "list(fast|standard|reasoning)?"
   si_default_model: "list(fast|standard|reasoning)?"
   dm_topics_enabled: bool?

@@ -281,15 +281,22 @@ export class Router {
             return;
         }
 
-        // Get role-based model (respects user's /settings model preference)
-        const model = this.#permissions.getModelTier(ref.userId, this.#config);
+        // Get role-based config
+        const roleModel = this.#permissions.getModelTier(ref.userId, this.#config);
+        // Dispatcher pattern: if dispatcherModel is explicitly set and differs from the
+        // user's role model, use it for fast triage. When dispatcherModel is empty/unset,
+        // the user's default_model is used directly (no dispatcher).
+        const dispatcherModel = this.#config.dispatcherModel || "";
+        const useDispatcher = dispatcherModel && dispatcherModel !== roleModel && roleModel !== "fast";
+        const model = useDispatcher ? dispatcherModel : roleModel;
         const mcpProfile = this.#permissions.getMcpProfile(ref.userId);
 
         // Check if conversation already exists (determines if first message)
         const isFirstMessage = !existingConv || existingConv.state === "dead";
 
         // Enrich text with context prefix
-        const enrichedText = this.#enricher.enrich(text, ref, { isFirstMessage });
+        const isDispatcher = useDispatcher;
+        const enrichedText = this.#enricher.enrich(text, ref, { isFirstMessage, isDispatcher });
 
         // Route to conversation manager
         try {
@@ -891,6 +898,15 @@ export class Router {
             const model = action.split(":")[1];
             this.#config.defaultModel = model;
             log.info(`Model changed to: ${model}`);
+
+            // Destroy the active conversation so next message uses the new model
+            const scopeKey = this.#resolveScopeKey(settingsRef);
+            const existingConv = this.#conversationManager.get(scopeKey);
+            if (existingConv && existingConv.state !== "dead") {
+                await this.#conversationManager.destroy(scopeKey);
+                log.info(`Destroyed conversation ${scopeKey} for model change → ${model}`);
+            }
+
             await this.#cmdSettings(settingsRef);
         } else if (action.startsWith("perm:")) {
             const policy = action.split(":")[1];
