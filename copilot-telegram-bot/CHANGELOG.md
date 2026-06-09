@@ -2,6 +2,22 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.0.0] — 2026-06-09
+
+### Added — PKM Memory Palace (Live)
+- **Conversation tracking** — user messages automatically tracked in PKM conversation windows, enabling buffer search on recent conversations without LLM extraction
+- **Dynamic system hint** — agent receives memory count, proactive storage instructions, and keyword strategy guidance on every first message. Agent now knows to store preferences/facts immediately ("Noted ✓")
+- **Memory prefetch** — when user asks recall-type questions ("what fish did I love?"), relevant memories are pre-loaded into the prompt from FTS5 search
+- **Activation tracking** — every search result triggers `trackAccess()`, powering the ACT-R activation/decay model. Frequently recalled memories rank higher organically
+- **Housekeeping timer** — window closing, data purging, and activation decay run every 5 minutes unconditionally (no LLM required)
+- **Keyword strategy** — system hint coaches agent to include 10+ search keywords with synonyms, hypernyms (grouper→fish→seafood), and context terms
+
+### How it works now
+1. User: "I loved the grouper at Jumbo Seafood" → agent calls `pkm_memory(write)` with rich keywords → stored in FTS5
+2. Later: "what fish did I love?" → prefetch finds the memory → agent synthesizes answer
+3. Activation model ensures frequently recalled facts stay prominent, rarely accessed ones decay
+4. Buffer search catches facts from the current conversation even before explicit storage
+
 ## [1.9.0] — 2026-06-09
 
 ### Added — PKM Memory System
