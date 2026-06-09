@@ -298,7 +298,7 @@ export class WebUIServer {
                     return this.#json(res, err.message === "Request body too large" ? 413 : 400, { error: err.message });
                 }
             }
-            const result = pkm.handleApi(method, pathname, body, context);
+            const result = await pkm.handleApi(method, pathname, body, context);
             return this.#json(res, result.status || 200, result.data);
         }
 

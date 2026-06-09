@@ -34,8 +34,9 @@ export class Conversation extends EventEmitter {
     // Turn tracking
     #currentPromptText = null;
     #rawUserText = null;  // Original user text (before enrichment)
+    #resumeContext = null;
 
-    constructor({ scopeKey, poolInstance, telegram, ref, mcpProfile, config }) {
+    constructor({ scopeKey, poolInstance, telegram, ref, mcpProfile, config, resumeContext = null }) {
         super();
         this.#scopeKey = scopeKey;
         this.#poolInstance = poolInstance;
@@ -47,6 +48,7 @@ export class Conversation extends EventEmitter {
         });
         this.#lastActivity = Date.now();
         this.#createdAt = Date.now();
+        this.#resumeContext = resumeContext || null;
 
         this.#attachAcpListeners();
     }
@@ -161,6 +163,11 @@ export class Conversation extends EventEmitter {
         log.info(`${this.#scopeKey} instance replaced: ${newPoolInstance.id}`);
     }
 
+    /** Set one-shot recovery context to prepend to the next prompt. */
+    setResumeContext(text) {
+        this.#resumeContext = text || null;
+    }
+
     /**
      * Serializable status.
      */
@@ -180,7 +187,8 @@ export class Conversation extends EventEmitter {
 
     async #prompt(text, opts = {}) {
         this.#state = "prompting";
-        this.#currentPromptText = text;
+        const promptText = this.#resumeContext ? `${this.#resumeContext}\n${text}` : text;
+        this.#currentPromptText = promptText;
         this.#promptCount++;
 
         // React ⚡ on the user's message if we have a message ID
@@ -194,8 +202,9 @@ export class Conversation extends EventEmitter {
         // Send prompt to ACP
         const startTime = Date.now();
         try {
-            const result = await this.#poolInstance.acp.prompt(text, { images: opts.images });
+            const result = await this.#poolInstance.acp.prompt(promptText, { images: opts.images });
             const elapsed = Date.now() - startTime;
+            this.#resumeContext = null;
             this.#poolInstance.recordPrompt(elapsed);
             this.#state = "idle";
             this.#lastActivity = Date.now();

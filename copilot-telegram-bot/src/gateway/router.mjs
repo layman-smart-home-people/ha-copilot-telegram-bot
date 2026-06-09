@@ -111,6 +111,7 @@ export class Router {
     #conversationManager;
     #pool;
     #permissions;
+    #rbac;
     #config;
     #enricher;
     #pkm;
@@ -122,11 +123,12 @@ export class Router {
     #udsServer = null;      // set externally after boot
     #rejectCooldowns = new Map(); // userId → last rejection timestamp
 
-    constructor({ telegram, conversationManager, pool, permissions, config, enricher, pkm }) {
+    constructor({ telegram, conversationManager, pool, permissions, rbac, config, enricher, pkm }) {
         this.#telegram = telegram;
         this.#conversationManager = conversationManager;
         this.#pool = pool;
         this.#permissions = permissions;
+        this.#rbac = rbac || null;
         this.#config = config;
         this.#enricher = enricher || new PromptEnricher({ config, permissions });
         this.#pkm = pkm || null;
@@ -202,19 +204,54 @@ export class Router {
         const ref = this.#buildRef(msg);
         if (!ref) return;
 
+        const rawText = msg.text || msg.caption || "";
+        const inviteToken = this.#parseInviteToken(rawText);
+
         // Permission check
         if (!this.#permissions.isAllowed(ref.userId)) {
-            // Rate-limited rejection reply (once per user per 10 min)
-            const now = Date.now();
-            const lastReject = this.#rejectCooldowns?.get(ref.userId) || 0;
-            if (now - lastReject > 600_000) {
-                if (!this.#rejectCooldowns) this.#rejectCooldowns = new Map();
-                this.#rejectCooldowns.set(ref.userId, now);
+            if (inviteToken) {
+                const displayName = this.#displayNameFor(msg.from);
+                if (!this.#rbac) {
+                    await this.#reply(ref, "❌ Invite onboarding is unavailable right now. Ask the admin to pair you manually.").catch(() => {});
+                    return;
+                }
+                if (!inviteToken.valid) {
+                    await this.#reply(ref, "❌ This invite link is invalid. Ask the admin for a fresh invite.").catch(() => {});
+                    return;
+                }
+
                 try {
-                    await this.#reply(ref, "🔒 You're not authorized to use this bot. Ask the admin to grant you access.");
-                } catch {}
+                    const invite = this.#rbac.consumeInvite(inviteToken.token, ref.userId, displayName);
+                    if (!invite) {
+                        await this.#reply(ref, "❌ This invite link is invalid, expired, or already used. Ask the admin for a new invite.").catch(() => {});
+                        return;
+                    }
+
+                    this.#rbac.setUserRole(ref.userId, invite.role, {
+                        username: msg.from?.username || null,
+                        displayName,
+                        pairedBy: "invite",
+                        expiresAt: invite.roleExpiresAt,
+                    });
+                    log.info(`User ${ref.userId} paired via invite deep link as ${invite.role}`);
+                } catch (err) {
+                    log.warn(`Invite onboarding failed for ${ref.userId}: ${err.message}`);
+                    await this.#reply(ref, "❌ I couldn't complete invite onboarding. Ask the admin for a fresh invite or manual pairing.").catch(() => {});
+                    return;
+                }
+            } else {
+                // Rate-limited rejection reply (once per user per 10 min)
+                const now = Date.now();
+                const lastReject = this.#rejectCooldowns?.get(ref.userId) || 0;
+                if (now - lastReject > 600_000) {
+                    if (!this.#rejectCooldowns) this.#rejectCooldowns = new Map();
+                    this.#rejectCooldowns.set(ref.userId, now);
+                    try {
+                        await this.#reply(ref, "🔒 You're not authorized to use this bot. Ask the admin to grant you access.");
+                    } catch {}
+                }
+                return;
             }
-            return;
         }
 
         // Group allowlist gate: if allowed_groups is configured, only respond in listed groups
@@ -481,6 +518,22 @@ export class Router {
             /^eta\??$/,
         ];
         return patterns.some(p => p.test(lower));
+    }
+
+    #parseInviteToken(text) {
+        const match = text.match(/^\/start(?:@\w+)?\s+(invite_(\S+))\s*$/i);
+        if (!match) return null;
+        const token = match[2] || "";
+        return {
+            token,
+            valid: /^[a-f0-9]{32}$/i.test(token),
+        };
+    }
+
+    #displayNameFor(user) {
+        if (!user) return null;
+        const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ").trim();
+        return fullName || user.username || null;
     }
 
     /** Thread-aware reply — sends to correct thread/topic. */
@@ -860,6 +913,7 @@ export class Router {
         const formatResult = ({ scope, data, error }) => {
             const label = scope === "agent" ? "🤖 Agent" : "👤 User";
             if (error) return `${label}: ⚠️ ${error}`;
+            if (!data) return `${label}: ⚠️ Empty response`;
             const parts = [];
             if (data.harvested) parts.push(`📥 ${data.harvested} harvested`);
             if (data.curated)   parts.push(`🧹 ${data.curated} curated`);

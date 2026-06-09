@@ -215,7 +215,7 @@ async function main() {
     uds.setConversationManager(convMgr);
 
     // --- Router ---
-    const router = new Router({ telegram, conversationManager: convMgr, pool, permissions, config, enricher, pkm });
+    const router = new Router({ telegram, conversationManager: convMgr, pool, permissions, rbac, config, enricher, pkm });
     _router = router;
     router.start();
     router.setUdsServer(uds);
