@@ -2,6 +2,17 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.3.2] — 2026-06-09
+
+### Fixed — Dream Mode + MCP Server
+- **`log.error` crash in MCP server** — `log` was a plain function, calling `log.error()` threw `TypeError` and broke the catch block. Any tool error caused a silent double-fault (⚠️ in streamer). Added `.error/.warn/.info/.debug` methods.
+- **Debug logging for tool failures** — `err()` helper now emits `log.debug` with the error reason; catch block includes stack trace.
+
+### Added — `/dream` Command
+- **`/dream` command** — runs dream mode directly (no LLM conversation, no streamer). Bypasses thinking bubbles and tool progress noise entirely. Runs user dream then agent dream sequentially, edits a single status message with compact results.
+- **🌙 Dream button** in `/memory` menu — triggers the same silent dream flow.
+- **Agent memory curation** — `/dream` now curates the agent's own memories (identity, skills, etc.) alongside user memories.
+
 ## [2.3.1] — 2026-06-09
 
 ### Fixed — Onboarding + Schema Migration

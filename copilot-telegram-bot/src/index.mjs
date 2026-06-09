@@ -133,6 +133,7 @@ async function main() {
             { command: "settings", description: "Configure bot settings" },
             { command: "standing", description: "Standing instructions" },
             { command: "memory", description: "Memory & knowledge" },
+            { command: "dream", description: "Deep memory maintenance" },
         ],
     }).catch(err => log.warn(`Command registration failed: ${err.message}`));
 

@@ -24,6 +24,10 @@ function getScopeKey() {
 }
 
 function log(msg) { process.stderr.write(`[pkm-mcp] ${msg}\n`); }
+log.error = (msg) => log(`ERROR ${msg}`);
+log.warn  = (msg) => log(`WARN ${msg}`);
+log.info  = (msg) => log(msg);
+log.debug = (msg) => log(`DEBUG ${msg}`);
 
 // ── Tool definitions ────────────────────────────────────────
 
@@ -391,6 +395,7 @@ function ok(text) {
 }
 
 function err(text) {
+    log.debug(`Tool returned error: ${text}`);
     return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 
@@ -757,6 +762,7 @@ async function handleTool(name, args) {
         }
     } catch (e) {
         log.error(`Tool ${name} error: ${e.message}`);
+        log.debug(`Tool ${name} stack: ${e.stack}`);
         return err(e.message);
     }
 }

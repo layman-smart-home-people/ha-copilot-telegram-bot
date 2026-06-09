@@ -103,6 +103,7 @@ const COMMANDS = new Map([
     ["settings", "Configure bot settings"],
     ["standing", "Manage standing instructions"],
     ["memory", "Memory & knowledge base"],
+    ["dream", "Deep memory maintenance"],
 ]);
 
 export class Router {
@@ -141,6 +142,7 @@ export class Router {
         this.#handlers.set("settings", (ref) => this.#cmdSettings(ref));
         this.#handlers.set("standing", (ref) => this.#cmdStanding(ref));
         this.#handlers.set("memory", (ref) => this.#cmdMemory(ref));
+        this.#handlers.set("dream", (ref) => this.#cmdDream(ref));
     }
 
     /** Set SI orchestrator reference (called after boot). */
@@ -797,6 +799,7 @@ export class Router {
         const keyboard = [
             row(
                 btn("🔍 Search Memory", menuCallback(scopePrefix, "memory", "search")),
+                btn("🌙 Dream", menuCallback(scopePrefix, "memory", "dream")),
             ),
             row(
                 btn("🤖 View Identity", menuCallback(scopePrefix, "memory", "view:IDENTITY.md")),
@@ -808,6 +811,74 @@ export class Router {
         ];
 
         await this.#menus.show(ref.chatId, "memory", lines.join("\n"), keyboard, { threadId: ref.threadId });
+    }
+
+    async #cmdDream(ref) {
+        if (!this.#pkm) {
+            await this.#reply(ref, "⚠️ Memory system not available.");
+            return;
+        }
+
+        const statusMsg = await this.#reply(ref, "🌙 <i>Dreaming...</i>", "HTML");
+        const editStatus = async (text) => {
+            try {
+                const params = withThread({
+                    chat_id: ref.chatId, message_id: statusMsg.message_id,
+                    text, parse_mode: "HTML",
+                }, ref);
+                await this.#telegram.call("editMessageText", params);
+            } catch {}
+        };
+
+        const DREAM_TIMEOUT_MS = 5 * 60 * 1000;
+        const dreamFetch = async (scope) => {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), DREAM_TIMEOUT_MS);
+            try {
+                const res = await fetch("http://localhost:8099/api/pkm/dream", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "X-Scope-Key": `dm:${ref.userId}` },
+                    body: JSON.stringify(scope === "agent" ? { scope: "agent" } : {}),
+                    signal: ctrl.signal,
+                });
+                if (res.ok) return { scope, data: await res.json() };
+                const body = await res.json().catch(() => ({}));
+                return { scope, error: body.error || `HTTP ${res.status}` };
+            } catch (e) {
+                return { scope, error: e.name === "AbortError" ? "Timed out" : e.message };
+            } finally {
+                clearTimeout(timer);
+            }
+        };
+
+        // Dream for user, then agent
+        const userResult = await dreamFetch("user");
+        await editStatus("🌙 <i>Dreaming... (user ✅, agent pending)</i>");
+        const agentResult = await dreamFetch("agent");
+
+        // Build summary
+        const formatResult = ({ scope, data, error }) => {
+            const label = scope === "agent" ? "🤖 Agent" : "👤 User";
+            if (error) return `${label}: ⚠️ ${error}`;
+            const parts = [];
+            if (data.harvested) parts.push(`📥 ${data.harvested} harvested`);
+            if (data.curated)   parts.push(`🧹 ${data.curated} curated`);
+            if (data.contradictions) parts.push(`⚔️ ${data.contradictions} contradictions`);
+            if (data.merged)    parts.push(`🔗 ${data.merged} merged`);
+            if (data.synthesized) parts.push(`💡 ${data.synthesized} synthesized`);
+            if (data.stale)     parts.push(`⏳ ${data.stale} stale`);
+            if (data.entities)  parts.push(`👤 ${data.entities} entities`);
+            if (data.suggestions) parts.push(`💭 ${data.suggestions} suggestions`);
+            if (data.compacted) parts.push(`🗜️ ${data.compacted} compacted`);
+            return `${label}: ${parts.length ? parts.join(" · ") : "✅ No changes needed"}`;
+        };
+
+        const lines = [
+            "🌙 <b>Dream complete</b>\n",
+            formatResult(userResult),
+            formatResult(agentResult),
+        ];
+        await editStatus(lines.join("\n"));
     }
 
     // ── Scope Prefix Helper ──────────────────────────────────
@@ -1043,6 +1114,11 @@ export class Router {
     async #handleMemoryAction(action, ref) {
         if (action === "close") {
             await this.#menus.close(ref.chatId, "memory", "🧠 Memory closed.", { threadId: ref.threadId });
+            return;
+        }
+        if (action === "dream") {
+            await this.#menus.close(ref.chatId, "memory", null, { threadId: ref.threadId });
+            await this.#cmdDream(ref);
             return;
         }
         if (action === "search") {
