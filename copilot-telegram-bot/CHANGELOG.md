@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.8.0] — 2026-06-09
+
+### Added
+- **SI template buttons** — `/standing` menu shows 4 one-tap templates when no instructions exist: 🚪 Door Alert, 🌡 Temp Warning, ☀️ Morning Briefing, 🔋 Battery Alert. Tapping routes a pre-written prompt to the agent for automatic setup.
+
 ## [1.7.0] — 2026-06-09
 
 ### Added — RBAC
