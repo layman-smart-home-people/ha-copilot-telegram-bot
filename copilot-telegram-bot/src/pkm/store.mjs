@@ -14,7 +14,7 @@ const log = createLogger("pkm-store");
 
 // ── Constants ──────────────────────────────────────────────
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const DEFAULT_LIMITS = {
     maxNotesPerUser: 10_000,
@@ -380,9 +380,9 @@ export class PkmStore {
                     }
                 }
 
-                this.#db.prepare("UPDATE pkm_schema SET value = ? WHERE key = 'version'").run(String(SCHEMA_VERSION));
+                this.#db.prepare("UPDATE pkm_schema SET value = ? WHERE key = 'version'").run("2");
                 this.#db.exec("COMMIT");
-                schemaVersion = String(SCHEMA_VERSION);
+                schemaVersion = "2";
                 log.info(`PKM schema migrated to v${schemaVersion}`);
             } catch (e) {
                 try {
@@ -393,6 +393,42 @@ export class PkmStore {
                 log.error(`PKM schema v2 migration failed: ${e.message}`);
                 throw e;
             }
+        }
+
+        // ── v2 → v3 migration: pinned, dream_synthesize, household_invites ──
+        if (schemaVersion === "2") {
+            log.info("Running PKM schema v3 migration");
+            const v3Alters = [
+                "ALTER TABLE notes ADD COLUMN pinned INTEGER DEFAULT 0",
+                "ALTER TABLE pkm_settings ADD COLUMN dream_synthesize INTEGER DEFAULT 0",
+            ];
+            for (const sql of v3Alters) {
+                try {
+                    this.#db.exec(sql);
+                    log.info(`Applied v3 alter: ${sql}`);
+                } catch (e) {
+                    if (e.message?.includes("duplicate column name")) continue;
+                    log.warn(`v3 alter failed (non-fatal): ${e.message}`);
+                }
+            }
+            // Ensure household_invites table exists
+            this.#db.exec(`
+                CREATE TABLE IF NOT EXISTS household_invites (
+                    id            TEXT PRIMARY KEY,
+                    household_id  TEXT NOT NULL,
+                    token         TEXT NOT NULL,
+                    created_by    TEXT NOT NULL,
+                    expires_at    TEXT NOT NULL,
+                    used          INTEGER DEFAULT 0,
+                    used_by       TEXT,
+                    used_at       TEXT,
+                    created_at    TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_hhi_lookup ON household_invites(household_id, token, used);
+            `);
+            this.#db.prepare("UPDATE pkm_schema SET value = ? WHERE key = 'version'").run(String(SCHEMA_VERSION));
+            schemaVersion = String(SCHEMA_VERSION);
+            log.info(`PKM schema migrated to v${schemaVersion}`);
         }
 
         return this;

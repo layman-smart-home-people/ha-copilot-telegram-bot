@@ -2,6 +2,15 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.3.1] — 2026-06-09
+
+### Fixed — Onboarding + Schema Migration
+- **v2→v3 schema migration** — existing databases now get `pinned` column, `dream_synthesize` setting, and `household_invites` table. Fixed v1→v2 migration stamping version as "3" and permanently skipping v3.
+- **Unauthorized users get a reply** — was silent drop, now sends "🔒 You're not authorized" (rate-limited: once per user per 10 min to prevent spam).
+- **PKM auto-enabled for owner** — owner's first message auto-enables PKM. No more chicken-and-egg where `remember()` fails because PKM isn't enabled.
+- **Default IDENTITY.md** — created on startup if missing, using bot's display name from `getMe()`.
+- **`allowed_groups` enforced** — groups not in the allowlist are now blocked. Empty list = all groups allowed (backward compatible).
+
 ## [2.3.0] — 2026-06-09
 
 ### Changed — Core Memory + Dream Mode

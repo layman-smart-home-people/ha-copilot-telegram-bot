@@ -147,9 +147,24 @@ async function main() {
     permissions.setRbac(rbac);
 
     // --- PKM (Memory System) ---
+    const agentDir = config.agentDir || "/config/copilot-telegram-bot";
+    // Ensure agent directory and default IDENTITY.md exist
+    try {
+        const { mkdirSync, existsSync: exists, writeFileSync } = await import("node:fs");
+        if (!exists(agentDir)) mkdirSync(agentDir, { recursive: true });
+        const identityPath = `${agentDir}/IDENTITY.md`;
+        if (!exists(identityPath)) {
+            const botName = config.botInfo?.first_name || "Copilot";
+            writeFileSync(identityPath, `# ${botName}\n\nYou are ${botName}, a helpful home assistant bot powered by GitHub Copilot.\nYou help manage a smart home, answer questions, and remember important details about the people you serve.\n\nBe warm, concise, and proactive. When you learn something important, save it to memory.\n`, "utf-8");
+            log.info(`Created default ${identityPath}`);
+        }
+    } catch (e) {
+        log.warn(`Agent dir setup failed (non-fatal): ${e.message}`);
+    }
+
     const pkm = new PkmManager({
         dbPath: "/data/pkm.db",
-        agentDir: config.agentDir || "/config/copilot-telegram-bot",
+        agentDir,
     });
     try {
         pkm.start();

@@ -119,6 +119,7 @@ export class Router {
     #siOrchestrator = null; // set externally after boot
     #topicManager = null;   // set externally after boot
     #udsServer = null;      // set externally after boot
+    #rejectCooldowns = new Map(); // userId → last rejection timestamp
 
     constructor({ telegram, conversationManager, pool, permissions, config, enricher, pkm }) {
         this.#telegram = telegram;
@@ -201,8 +202,26 @@ export class Router {
 
         // Permission check
         if (!this.#permissions.isAllowed(ref.userId)) {
-            log.debug(`Blocked message from unknown user ${ref.userId}`);
+            // Rate-limited rejection reply (once per user per 10 min)
+            const now = Date.now();
+            const lastReject = this.#rejectCooldowns?.get(ref.userId) || 0;
+            if (now - lastReject > 600_000) {
+                if (!this.#rejectCooldowns) this.#rejectCooldowns = new Map();
+                this.#rejectCooldowns.set(ref.userId, now);
+                try {
+                    await this.#reply(ref, "🔒 You're not authorized to use this bot. Ask the admin to grant you access.");
+                } catch {}
+            }
             return;
+        }
+
+        // Group allowlist gate: if allowed_groups is configured, only respond in listed groups
+        if (ref.chatType !== "private") {
+            const allowedGroups = this.#config.allowedGroups;
+            if (allowedGroups?.length > 0 && !allowedGroups.includes(String(ref.chatId))) {
+                log.debug(`Blocked message from unlisted group ${ref.chatId}`);
+                return;
+            }
         }
 
         // Group mention gate: in groups (non-forum), only respond if mentioned/replied/command
@@ -305,6 +324,14 @@ export class Router {
 
         // Track user message for PKM buffer search (non-blocking)
         if (this.#pkm) {
+            // Auto-enable PKM for owner on first interaction
+            try {
+                const uid = String(ref.userId);
+                if (!this.#pkm.store?.isEnabled(uid) && this.#permissions.getRole(ref.userId) === "owner") {
+                    this.#pkm.store.enableUser(uid);
+                    log.info(`Auto-enabled PKM for owner ${uid}`);
+                }
+            } catch {}
             try { this.#pkm.trackMessage(String(ref.userId), String(ref.chatId), text, "user"); } catch {}
         }
 
