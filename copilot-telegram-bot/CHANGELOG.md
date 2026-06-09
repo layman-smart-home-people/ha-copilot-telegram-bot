@@ -2,6 +2,19 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.9.0] — 2026-06-09
+
+### Added — PKM Memory System
+- **PKM system wired end-to-end** — PkmManager instantiated, SQLite DB with FTS5 created at `/data/pkm.db`, all 5 MCP memory tools (`pkm_memory`, `pkm_search`, `pkm_navigate`, `pkm_collection`, `pkm_manage`) now operational.
+- **Per-user memory isolation** — scope key from pool claim maps to userId for memory partitioning. Each user gets their own memories, topics, and entities.
+- **REST API live** — `/api/pkm/*` routes connected to PkmManager.handleApi() instead of returning 404.
+
+### Changed — /memory Command
+- **Shows PKM stats** — total memories, topics, entities from live database instead of raw `.md` file sizes.
+- **🔍 Search Memory button** — prompts user to ask a recall question.
+- **Agent config secondary** — Personality and Key Facts shown as compact line below PKM stats.
+- **Removed SKILLS.md/TASKS.md from menu** — not user-relevant.
+
 ## [1.8.0] — 2026-06-09
 
 ### Added
