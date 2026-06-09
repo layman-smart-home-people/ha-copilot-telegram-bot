@@ -10,6 +10,7 @@
 // editMessageText for groups, and setMessageReaction for status.
 
 import { escapeHtml, markdownToTelegramHtml, stripHtmlKeepStructure } from "../transport/telegram/formatter.mjs";
+import { withThread } from "../transport/telegram/thread.mjs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("streamer");
@@ -131,11 +132,10 @@ export class ResponseStreamer {
                 log.warn(`Draft mode unavailable: ${err.message} — falling back to edit mode`);
                 this.#draftMode = false;
                 this.#draftId = null;
-                const params = {
+                const params = withThread({
                     chat_id: ref.chatId, text: "🤔 <i>Thinking...</i>",
                     parse_mode: "HTML", disable_notification: true,
-                };
-                if (ref.threadId) params.message_thread_id = ref.threadId;
+                }, ref);
                 const result = await this.#telegram.call("sendMessage", params).catch(() => null);
                 this.#messageId = result?.message_id ?? null;
             }
@@ -145,11 +145,10 @@ export class ResponseStreamer {
             this.#messageId = -2; // sentinel: active but no progress
         } else {
             this.#draftMode = false;
-            const params = {
+            const params = withThread({
                 chat_id: ref.chatId, text: "🤔 <i>Thinking...</i>",
                 parse_mode: "HTML", disable_notification: true,
-            };
-            if (ref.threadId) params.message_thread_id = ref.threadId;
+            }, ref);
             const result = await this.#telegram.call("sendMessage", params);
             this.#messageId = result?.message_id ?? null;
         }
@@ -461,9 +460,8 @@ export class ResponseStreamer {
             // Fallback to regular message on repeated failures
             if (this.#draftFailures >= 3 && this.#messageId === -1) {
                 this.#draftMode = false;
-                const params = { chat_id: this.#ref.chatId, text: html, parse_mode: "HTML",
-                    link_preview_options: { is_disabled: true } };
-                if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+                const params = withThread({ chat_id: this.#ref.chatId, text: html, parse_mode: "HTML",
+                    link_preview_options: { is_disabled: true } }, this.#ref);
                 const result = await this.#telegram.call("sendMessage", params);
                 this.#messageId = result?.message_id ?? null;
             }
@@ -504,9 +502,8 @@ export class ResponseStreamer {
             await this.#sendDraft(html);
             // For drafts, we need to send a real message as well since drafts are ephemeral
             try {
-                const params = { chat_id: this.#ref.chatId, text: html, parse_mode: "HTML",
-                    link_preview_options: { is_disabled: true } };
-                if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+                const params = withThread({ chat_id: this.#ref.chatId, text: html, parse_mode: "HTML",
+                    link_preview_options: { is_disabled: true } }, this.#ref);
                 if (replyMarkup) params.reply_markup = replyMarkup;
                 const result = await this.#telegram.call("sendMessage", params);
                 this.#messageId = result?.message_id ?? null;
@@ -516,9 +513,8 @@ export class ResponseStreamer {
                 log.warn(`Final send failed: ${err.message}`);
                 // Fallback: try plain text
                 const plain = stripHtmlKeepStructure(html);
-                const fallbackParams = { chat_id: this.#ref.chatId, text: plain,
-                    link_preview_options: { is_disabled: true } };
-                if (this.#ref.threadId) fallbackParams.message_thread_id = this.#ref.threadId;
+                const fallbackParams = withThread({ chat_id: this.#ref.chatId, text: plain,
+                    link_preview_options: { is_disabled: true } }, this.#ref);
                 const result = await this.#telegram.call("sendMessage", fallbackParams);
                 this.#messageId = result?.message_id ?? null;
             }
@@ -541,18 +537,16 @@ export class ResponseStreamer {
         } else {
             // "off" mode or no messageId — send final as fresh message
             try {
-                const params = { chat_id: this.#ref.chatId, text: html, parse_mode: "HTML",
-                    link_preview_options: { is_disabled: true } };
-                if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+                const params = withThread({ chat_id: this.#ref.chatId, text: html, parse_mode: "HTML",
+                    link_preview_options: { is_disabled: true } }, this.#ref);
                 if (replyMarkup) params.reply_markup = replyMarkup;
                 const result = await this.#telegram.call("sendMessage", params);
                 this.#messageId = result?.message_id ?? null;
             } catch (err) {
                 log.warn(`Fresh send failed: ${err.message}`);
                 const plain = stripHtmlKeepStructure(html);
-                const params = { chat_id: this.#ref.chatId, text: plain,
-                    link_preview_options: { is_disabled: true } };
-                if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+                const params = withThread({ chat_id: this.#ref.chatId, text: plain,
+                    link_preview_options: { is_disabled: true } }, this.#ref);
                 const result = await this.#telegram.call("sendMessage", params).catch(() => null);
                 this.#messageId = result?.message_id ?? null;
             }

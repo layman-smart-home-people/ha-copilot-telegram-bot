@@ -234,11 +234,15 @@ export class PromptEnricher {
         if (ref.username) parts.push(`username=@${ref.username}`);
         if (ref.userId) parts.push(`userId=${ref.userId}`);
         if (ref.chatId) parts.push(`chatId=${ref.chatId}`);
+        if (ref.threadId) parts.push(`threadId=${ref.threadId}`);
 
         const role = this.#permissions.getRole(ref.userId);
         if (role) parts.push(`role=${role}`);
 
-        return `[Via Telegram]\n[Sender: ${parts.join(", ")}]`;
+        const context = ref.threadId
+            ? `[Via Telegram — topic thread ${ref.threadId}. All responses and tool calls (sendMessage, notify_user, etc.) target this thread automatically.]`
+            : "[Via Telegram]";
+        return `${context}\n[Sender: ${parts.join(", ")}]`;
     }
 
     #sanitize(text) {

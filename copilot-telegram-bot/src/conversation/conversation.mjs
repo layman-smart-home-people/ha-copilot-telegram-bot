@@ -8,6 +8,7 @@
 
 import { EventEmitter } from "node:events";
 import { ResponseStreamer } from "./streamer.mjs";
+import { withThread } from "../transport/telegram/thread.mjs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("conversation");
@@ -277,9 +278,8 @@ export class Conversation extends EventEmitter {
                 { text: "❌ Decline", callback_data: `${this.#scopeKey}:elicit:decline` },
             ]],
         };
-        const params = { chat_id: this.#ref.chatId, text, parse_mode: "HTML",
-            reply_markup: replyMarkup, link_preview_options: { is_disabled: true } };
-        if (this.#ref.threadId) params.message_thread_id = this.#ref.threadId;
+        const params = withThread({ chat_id: this.#ref.chatId, text, parse_mode: "HTML",
+            reply_markup: replyMarkup, link_preview_options: { is_disabled: true } }, this.#ref);
         await this.#telegram.call("sendMessage", params);
     }
 

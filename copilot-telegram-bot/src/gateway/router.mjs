@@ -12,6 +12,7 @@ import { createLogger } from "../logger.mjs";
 import { PromptEnricher } from "./prompt-enricher.mjs";
 import { FileHandler } from "./file-handler.mjs";
 import { MenuManager, menuCallback, parseMenuCallback, row, btn } from "./menus.mjs";
+import { withThread } from "../transport/telegram/thread.mjs";
 
 const log = createLogger("router");
 
@@ -455,10 +456,9 @@ export class Router {
 
     /** Thread-aware reply — sends to correct thread/topic. */
     async #reply(ref, text, parseMode = null, replyMarkup = null) {
-        const params = { chat_id: ref.chatId, text, link_preview_options: { is_disabled: true } };
+        const params = withThread({ chat_id: ref.chatId, text, link_preview_options: { is_disabled: true } }, ref);
         if (parseMode) params.parse_mode = parseMode;
         if (replyMarkup) params.reply_markup = replyMarkup;
-        if (ref.threadId) params.message_thread_id = ref.threadId;
         return this.#telegram.call("sendMessage", params);
     }
 
