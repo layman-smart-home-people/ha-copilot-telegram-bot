@@ -27,7 +27,7 @@ Use \`tool_search_tool_regex\` to discover tools by pattern. Schemas are self-do
 - **ha-mcp** (82+ tools) — ALL Home Assistant ops: entities, services, automations, dashboards, history, calendar, HACS, backups, bulk control
 - **telegram** — \`ask_user\` (inline buttons/prompts, auto-appends ✏️+❌), \`notify_user\`, \`background_task\` (fire-and-forget), \`telegram_call\` (any Bot API method)
 - **standing-instructions** — \`si_create/list/get/update/delete/toggle\`. Supports events/cron/timers, conditions (state/numeric/time + AND/OR/NOT), cooldown, chaining, expiry. NEVER edit the JSON file directly.
-- **memory** — \`remember\` (auto-enriched write), \`recall\` (entity-aware search), \`memory_admin\` (navigate/collections/topics/settings). Old tool names still work via forwarding.
+- **memory** — \`remember\` (auto-enriched write, pinned=true for core identity), \`recall\` (entity-aware search), \`memory_admin\` (pin/unpin/navigate/collections/settings). Core memory always in context.
 - **access-control** — user roles & permissions management
 - **session-history** — cross-session history lookup
 
@@ -748,30 +748,31 @@ export class Router {
             lines.push(`<i>Memory database not yet created. It will be initialized on first use.</i>`);
         }
 
-        // Agent config files — secondary info
+        // Agent config
         const agentDir = this.#config.agentDir || "/config/copilot-telegram-bot";
-        const configFiles = [
-            { file: "IDENTITY.md", label: "🤖 Personality" },
-            { file: "MEMORY.md", label: "📝 Key Facts" },
-        ];
-        const configInfo = configFiles.map(({ file, label }) => {
-            const path = `${agentDir}/${file}`;
-            if (existsSync(path)) {
-                const size = readFileSync(path).length;
-                return `${label} ${size > 1024 ? `${(size / 1024).toFixed(1)}K` : `${size}B`}`;
-            }
-            return `${label} <i>not set</i>`;
-        });
-        lines.push(`\n<b>Agent Config</b>`);
-        lines.push(configInfo.join(" · "));
+        const identityPath = `${agentDir}/IDENTITY.md`;
+        if (existsSync(identityPath)) {
+            const size = readFileSync(identityPath).length;
+            lines.push(`\n<b>Agent Config</b>`);
+            lines.push(`🤖 Identity ${size > 1024 ? `${(size / 1024).toFixed(1)}K` : `${size}B`}`);
+        }
+
+        // Core memory (pinned notes)
+        if (this.#pkm) {
+            try {
+                const core = this.#pkm.getCoreMemoryBlock();
+                if (core) {
+                    lines.push(`📌 Core memory: ${core.length} chars pinned`);
+                }
+            } catch {}
+        }
 
         const keyboard = [
             row(
                 btn("🔍 Search Memory", menuCallback(scopePrefix, "memory", "search")),
             ),
             row(
-                btn("🤖 View Personality", menuCallback(scopePrefix, "memory", "view:IDENTITY.md")),
-                btn("📝 View Key Facts", menuCallback(scopePrefix, "memory", "view:MEMORY.md")),
+                btn("🤖 View Identity", menuCallback(scopePrefix, "memory", "view:IDENTITY.md")),
             ),
             row(
                 btn("🔄 Reset Agent Config", menuCallback(scopePrefix, "memory", "reset")),
@@ -1024,7 +1025,7 @@ export class Router {
         if (action === "reset") {
             // Show confirmation
             const scopePrefix = this.#scopePrefix(ref);
-            const text = "⚠️ <b>Reset agent memory?</b>\n\nThis will reset MEMORY.md, SKILLS.md, TASKS.md, and copilot-instructions.md to defaults.\nIDENTITY.md will be preserved.\nDaily logs will be cleared.";
+            const text = "⚠️ <b>Reset agent config?</b>\n\nThis will reset IDENTITY.md, SKILLS.md, TASKS.md, and copilot-instructions.md to defaults.\nPinned core memories will be preserved.\nDaily logs will be cleared.";
             const keyboard = [
                 row(
                     btn("✅ Yes, reset", menuCallback(scopePrefix, "memory", "confirm-reset")),
@@ -1040,7 +1041,6 @@ export class Router {
 
             // Reset agent seed files to defaults
             const defaults = {
-                "MEMORY.md": "# Agent Memory\n\nSeed facts always loaded into context. Keep minimal — use `remember()` for long-term storage.\n\n## Key Entities\n<!-- Add frequently used entity IDs here -->\n\n## Bot Versions\n<!-- Track key version milestones here -->\n",
                 "SKILLS.md": SKILLS_DEFAULT,
                 "TASKS.md": "# Active Tasks\n\nTasks the agent is working on or needs to resume.\n\n## In Progress\n\n## Pending\n\n## Recently Completed\n",
             };
@@ -1064,7 +1064,7 @@ export class Router {
                 this.#enricher.reload();
 
                 await this.#menus.close(ref.chatId, "memory",
-                    "✅ Reset complete.\n📄 MEMORY.md, SKILLS.md, TASKS.md, copilot-instructions.md → defaults\n📁 Daily logs cleared\n🛡️ IDENTITY.md preserved",
+                    "✅ Reset complete.\n📄 SKILLS.md, TASKS.md, copilot-instructions.md → defaults\n📁 Daily logs cleared\n📌 Core memories preserved",
                     { threadId: ref.threadId });
             } catch (err) {
                 await this.#reply(ref, `⚠️ Reset failed: ${err.message}`);

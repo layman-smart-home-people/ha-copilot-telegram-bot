@@ -495,36 +495,38 @@ Standing instructions are still a first-class part of the add-on in v7.
 }
 ```
 
-## 🗂️ Agent memory system
+## 🗂️ Agent Memory System
 
-The persistent agent files still matter in v7.
+The memory system uses a unified SQLite-backed PKM (Personal Knowledge Management) database with three tiers:
 
-### Core files
+### Core Memory (always in context)
 
-- `IDENTITY.md` — personality, role, and operating rules
-- `MEMORY.md` — durable remembered facts
-- `SKILLS.md` — operational knowledge and standing-instruction reference
-- `TASKS.md` — in-progress work and handoff state
-- `memory/YYYY-MM-DD.md` — daily logs and recent observations
+Pinned memories are injected into every conversation's first message. They define the agent's identity, knowledge, and behavior. The agent can pin/unpin memories to manage what's always available.
 
-### Recommended v7 location
+- Created automatically on first use by bootstrapping from legacy .md files
+- Agent maintains via `remember(content, {pinned: true})` and `memory_admin({action: "pin"})`
+- Capped at ~4000 chars to fit context budget
+- Sorted by importance — most critical facts always included
 
-```text
-/config/.agent
-```
+### Working Memory (injected when relevant)
 
-### How it is used
+Smart prefetch scans every incoming message for entities (people, places, orgs) and keywords. Matching memories are automatically injected into the prompt.
 
-At conversation start, the bot loads these files into prompt context so the agent begins with:
+- Uses compromise.js NER for entity detection (sub-millisecond on ARM)
+- No LLM cost — purely algorithmic
 
-- identity
-- persistent memory
-- skills/reference material
-- any unfinished tasks
+### Archival Memory (searched on demand)
 
-### Important note
+All other memories. Searched via `recall(query)` with entity-aware FTS5 search, multi-hop entity linking, and activation-weighted ranking.
 
-`MEMORY.md` is user-specific operational data. Leave it intact during documentation updates and migrations unless you explicitly intend to rewrite user memory.
+- Background extraction from conversations (15-min maintenance cycle)
+- RAKE keyword extraction + hypernym expansion for discoverability
+- ACT-R activation/decay model for organic ranking
+
+### Legacy files
+
+- `IDENTITY.md` — still loaded as fallback if PKM is unavailable
+- `MEMORY.md`, `SKILLS.md`, `TASKS.md` — bootstrapped into pinned PKM notes on first use, no longer loaded directly
 
 ## 🖥️ WebUI
 

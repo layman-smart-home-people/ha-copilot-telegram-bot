@@ -2,6 +2,27 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.3.0] — 2026-06-09
+
+### Changed — Core Memory + Dream Mode
+- **Pinned memories replace .md files** — IDENTITY.md, MEMORY.md, SKILLS.md, copilot-instructions.md bootstrapped into pinned PKM notes on first use. Pinned notes always injected into agent context (~4K char budget).
+- **Memory as identity** — system prompt frames pinned memories as the agent's self: "Your pinned memories define who you are. Maintaining your memory maintains your identity."
+- **`remember(content, {pinned: true})`** — agent can pin memories to core. `memory_admin({action: "pin/unpin"})` for existing notes.
+- **Bot self-awareness** — `getMe()` result injected into first-message context: @username, display name, bot ID, group/inline capabilities.
+- **`/memory` menu updated** — removed "View Key Facts" (MEMORY.md). Shows core memory char count.
+
+### Added — Dream Mode (9 phases)
+- **`memory_admin({action: "dream"})`** — comprehensive memory maintenance:
+  1. **Harvest**: close all open sessions, extract memories via LLM
+  2. **Curate**: LLM reviews all memories, suggests pin/unpin/archive
+  3. **Contradictions**: find conflicting facts, archive the outdated one
+  4. **Merge**: consolidate 3+ similar memories into single richer notes
+  5. **Synthesize+Infer** (optional `dream_synthesize` setting): pattern recognition + logical deduction. Confidence-tiered: axiomatic inferences stored directly, uncertain ones tagged `needs_confirmation` for agent to verify organically
+  6. **Staleness**: flag memories >6 months old that may be outdated (addresses, jobs, preferences)
+  7. **Entity relationships**: deduce and store relationships between entities (wife_of, works_at, etc.)
+  8. **Proactive suggestions**: surface upcoming dates, incomplete goals, actionable patterns
+  9. **Compact**: decay activations, purge old sessions, clean audit logs
+
 ## [2.2.4] — 2026-06-09
 
 ### Fixed

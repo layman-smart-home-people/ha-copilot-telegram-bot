@@ -236,9 +236,9 @@ const TOOLS = [
         name: "remember",
         description:
             "Save a memory. Just provide the content — title, type, tags, and keywords are generated automatically. " +
-            "Use for facts, preferences, events, people details, decisions. " +
-            "Use scope='agent' for your own private operational notes. " +
-            "Use scope='household' for shared family memories.",
+            "Use pinned=true for core identity facts that should always be in your context. " +
+            "Use scope='agent' for your own private notes. " +
+            "Your pinned memories define who you are — maintain them actively.",
         inputSchema: {
             type: "object",
             properties: {
@@ -253,8 +253,12 @@ const TOOLS = [
                     enum: ["user", "agent", "household"],
                     description: "Memory scope (default: user). 'agent' for private notes, 'household' for shared.",
                 },
+                pinned: {
+                    type: "boolean",
+                    description: "If true, this memory is always loaded into your context (core memory). Use for identity, key facts, instructions. Default: false.",
+                },
                 title: { type: "string", description: "Optional — auto-generated if omitted" },
-                type: { type: "string", enum: ["fact", "preference", "event", "meeting", "health", "journal", "reflection"], description: "Optional — auto-classified if omitted" },
+                type: { type: "string", enum: ["fact", "preference", "event", "meeting", "health", "journal", "reflection", "identity", "skill", "instruction"], description: "Optional — auto-classified if omitted" },
                 importance: { type: "number", description: "Optional 0-1 — auto-estimated if omitted" },
             },
             required: ["content"],
@@ -287,7 +291,8 @@ const TOOLS = [
     {
         name: "memory_admin",
         description:
-            "Advanced memory management: get/update/delete notes, navigate topics, manage collections, " +
+            "Advanced memory management: get/update/delete notes, pin/unpin core memory, navigate topics, manage collections, " +
+            "dream (deep maintenance: harvest sessions, curate, infer new facts), " +
             "view stats, link notes, run maintenance. Use remember/recall for everyday operations.",
         inputSchema: {
             type: "object",
@@ -295,7 +300,7 @@ const TOOLS = [
                 action: {
                     type: "string",
                     enum: [
-                        "get", "update", "delete", "link",
+                        "get", "update", "delete", "link", "pin", "unpin", "dream",
                         "map", "browse", "context", "timeline",
                         "stats", "settings", "topic_create", "topic_move", "topic_merge", "maintain",
                         "collection_create", "collection_add", "collection_query", "collection_list",
@@ -330,6 +335,7 @@ const TOOLS = [
                 sort_by: { type: "string", description: "[collection_query] Sort field" },
                 item_id: { type: "string", description: "[collection item ops] Item ID" },
                 query: { type: "string", description: "[entity_search] Entity name query" },
+                synthesize: { type: "boolean", description: "[dream] If true, also infer new facts and form concepts from existing memories. Default: false" },
                 limit: { type: "number", description: "Max results" },
             },
             required: ["action"],
@@ -498,12 +504,13 @@ async function handleTool(name, args) {
         switch (name) {
             // ── remember: simplified write ──────────────────
             case "remember": {
-                const { content, scope, title, type, importance } = args || {};
+                const { content, scope, title, type, importance, pinned } = args || {};
                 if (!content) return err("content is required");
-                const payload = { content, scope, title, type, importance };
+                const payload = { content, scope, title, type, importance, pinned };
                 const { status, data } = await apiCall("POST", "/api/pkm/remember", payload);
                 if (status === 201 || status === 200) {
-                    return ok(`📝 Remembered: ${data?.title || "(untitled)"}\nType: ${data?.type || "fact"} | ID: ${data?.id}`);
+                    const pin = data?.pinned ? " 📌" : "";
+                    return ok(`📝 Remembered: ${data?.title || "(untitled)"}${pin}\nType: ${data?.type || "fact"} | ID: ${data?.id}`);
                 }
                 return err(data?.error || `API error (${status})`);
             }
@@ -569,6 +576,39 @@ async function handleTool(name, args) {
                     if (!source_id || !target_id) return err("source_id and target_id required");
                     const { status, data } = await apiCall("POST", "/api/pkm/link", { source_id, target_id, relation });
                     if (status === 201 || status === 200) return ok("🔗 Linked");
+                    return err(data?.error || `API error (${status})`);
+                }
+                if (action === "pin") {
+                    const { id } = args || {};
+                    if (!id) return err("id required");
+                    const { status, data } = await apiCall("POST", "/api/pkm/pin", { id });
+                    if (status === 200) return ok(`📌 Pinned to core memory: ${id}`);
+                    return err(data?.error || `API error (${status})`);
+                }
+                if (action === "unpin") {
+                    const { id } = args || {};
+                    if (!id) return err("id required");
+                    const { status, data } = await apiCall("POST", "/api/pkm/unpin", { id });
+                    if (status === 200) return ok(`📌 Unpinned from core memory: ${id}`);
+                    return err(data?.error || `API error (${status})`);
+                }
+                if (action === "dream") {
+                    const { synthesize } = args || {};
+                    const { status, data } = await apiCall("POST", "/api/pkm/dream", { scope, synthesize });
+                    if (status === 200) {
+                        const r = data;
+                        const parts = [`🌙 Dream complete`];
+                        if (r.harvested) parts.push(`📥 Harvested: ${r.harvested} memories from sessions`);
+                        if (r.curated) parts.push(`🧹 Curated: ${r.curated} memories pinned/unpinned/archived`);
+                        if (r.contradictions) parts.push(`⚔️ Contradictions: ${r.contradictions} resolved`);
+                        if (r.merged) parts.push(`🔗 Merged: ${r.merged} groups consolidated`);
+                        if (r.synthesized) parts.push(`💡 Synthesized: ${r.synthesized} new inferred facts`);
+                        if (r.stale) parts.push(`⏳ Stale: ${r.stale} flagged for confirmation`);
+                        if (r.entities) parts.push(`👤 Entities: ${r.entities} relationships mapped`);
+                        if (r.suggestions) parts.push(`💭 Suggestions: ${r.suggestions} proactive insights`);
+                        if (r.compacted) parts.push(`🗜️ Compacted: ${r.compacted} old sessions cleaned`);
+                        return ok(parts.join("\n"));
+                    }
                     return err(data?.error || `API error (${status})`);
                 }
 

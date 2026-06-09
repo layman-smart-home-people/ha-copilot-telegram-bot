@@ -100,6 +100,7 @@ async function main() {
                 throw new Error("bot_token is empty — check add-on configuration");
             }
             const me = await telegram.getMe();
+            config.botInfo = me;
             log.info(`Telegram: @${me.username} (${me.first_name})`);
             break;
         } catch (err) {

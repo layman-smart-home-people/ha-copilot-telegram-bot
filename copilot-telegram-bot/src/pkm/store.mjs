@@ -256,7 +256,9 @@ const MIGRATION_V2_ALTERS = [
     "ALTER TABLE notes ADD COLUMN access_count INTEGER DEFAULT 0",
     "ALTER TABLE notes ADD COLUMN confirmations INTEGER DEFAULT 0",
     "ALTER TABLE notes ADD COLUMN collection_id TEXT REFERENCES collections(id)",
+    "ALTER TABLE notes ADD COLUMN pinned INTEGER DEFAULT 0",
     "ALTER TABLE note_links ADD COLUMN weight REAL DEFAULT 1.0",
+    "ALTER TABLE pkm_settings ADD COLUMN dream_synthesize INTEGER DEFAULT 0",
 ];
 
 const MIGRATION_V2_INDEXES = [
@@ -437,12 +439,146 @@ export class PkmStore {
 
     updateSettings(userId, updates) {
         const allowed = ["window_minutes", "max_window_messages", "max_window_hours",
-            "enrichment_enabled", "notifications_enabled", "household_id"];
+            "enrichment_enabled", "notifications_enabled", "household_id", "dream_synthesize"];
         const now = new Date().toISOString();
         for (const [key, value] of Object.entries(updates)) {
             if (allowed.includes(key)) {
                 this.#db.prepare(`UPDATE pkm_settings SET ${key} = ?, updated_at = ? WHERE user_id = ?`).run(value, now, userId);
             }
+        }
+    }
+
+    // ── Core Memory (pinned notes) ──────────────────────────
+
+    /**
+     * Get all pinned notes for a user/agent, sorted by importance DESC.
+     * Capped at charBudget characters total to fit in context window.
+     */
+    getCoreMemory(userId, charBudget = 4000) {
+        const notes = this.#db.prepare(
+            `SELECT id, type, title, content, importance, pinned
+             FROM notes
+             WHERE user_id = ? AND pinned = 1 AND valid_to IS NULL
+             ORDER BY importance DESC, created_at ASC`
+        ).all(userId);
+
+        // Cap at character budget
+        const result = [];
+        let chars = 0;
+        for (const note of notes) {
+            const size = (note.title?.length || 0) + (note.content?.length || 0) + 10;
+            if (chars + size > charBudget && result.length > 0) break;
+            chars += size;
+            result.push(note);
+        }
+        return result;
+    }
+
+    pinNote(noteId, userId) {
+        const note = this.getNote(noteId);
+        if (!note) throw new Error("Note not found");
+        if (note.user_id !== userId) throw new Error("Access denied");
+        this.#db.prepare("UPDATE notes SET pinned = 1, updated_at = ? WHERE id = ?")
+            .run(new Date().toISOString(), noteId);
+        this.logEvent(noteId, userId, "pin");
+    }
+
+    unpinNote(noteId, userId) {
+        const note = this.getNote(noteId);
+        if (!note) throw new Error("Note not found");
+        if (note.user_id !== userId) throw new Error("Access denied");
+        this.#db.prepare("UPDATE notes SET pinned = 0, updated_at = ? WHERE id = ?")
+            .run(new Date().toISOString(), noteId);
+        this.logEvent(noteId, userId, "unpin");
+    }
+
+    /**
+     * First-use bootstrap: create seed pinned memories for the agent.
+     * Idempotent — skips if pinned memories already exist.
+     */
+    bootstrapCoreMemory(agentDir) {
+        const agentId = "__agent__";
+
+        // Skip if agent already has pinned memories
+        const existing = this.#db.prepare(
+            "SELECT COUNT(*) as cnt FROM notes WHERE user_id = ? AND pinned = 1 AND valid_to IS NULL"
+        ).get(agentId);
+        if (existing?.cnt > 0) return;
+
+        const now = new Date().toISOString();
+        const seeds = [];
+
+        // 1. Bootstrap from IDENTITY.md if it exists
+        const identityPath = `${agentDir}/IDENTITY.md`;
+        if (existsSync(identityPath)) {
+            try {
+                const content = readFileSync(identityPath, "utf-8").trim();
+                if (content) {
+                    seeds.push({ type: "identity", title: "Agent Identity", content, importance: 1.0 });
+                }
+            } catch {}
+        }
+
+        // 2. Bootstrap from MEMORY.md if it exists
+        const memoryPath = `${agentDir}/MEMORY.md`;
+        if (existsSync(memoryPath)) {
+            try {
+                const content = readFileSync(memoryPath, "utf-8").trim();
+                if (content) {
+                    seeds.push({ type: "fact", title: "Seed Knowledge", content, importance: 0.9 });
+                }
+            } catch {}
+        }
+
+        // 3. Bootstrap from SKILLS.md if it exists
+        const skillsPath = `${agentDir}/SKILLS.md`;
+        if (existsSync(skillsPath)) {
+            try {
+                const content = readFileSync(skillsPath, "utf-8").trim();
+                if (content) {
+                    seeds.push({ type: "skill", title: "Agent Capabilities", content, importance: 0.8 });
+                }
+            } catch {}
+        }
+
+        // 4. Bootstrap from copilot-instructions.md
+        for (const instrPath of [
+            "/config/.github/copilot-instructions.md",
+            "/config/copilot-instructions.md",
+        ]) {
+            if (existsSync(instrPath)) {
+                try {
+                    const content = readFileSync(instrPath, "utf-8").trim();
+                    if (content) {
+                        seeds.push({ type: "instruction", title: "Operational Instructions", content, importance: 0.85 });
+                        break;
+                    }
+                } catch {}
+            }
+        }
+
+        // Create pinned notes
+        for (const seed of seeds) {
+            try {
+                this.createNote({
+                    userId: agentId,
+                    type: seed.type,
+                    title: seed.title,
+                    content: seed.content,
+                    importance: seed.importance,
+                    durability: "permanent",
+                    scope: "agent",
+                    sourceType: "bootstrap",
+                    confidence: 1.0,
+                    pinned: true,
+                });
+            } catch (e) {
+                log.warn(`Core memory bootstrap failed for ${seed.title}: ${e.message}`);
+            }
+        }
+
+        if (seeds.length > 0) {
+            log.info(`Core memory bootstrapped: ${seeds.length} pinned notes from .md files`);
         }
     }
 
@@ -452,7 +588,7 @@ export class PkmStore {
         userId, chatId, type = "fact", title, content, searchKeywords, tags,
         metadata, validFrom, sourceType = "extracted", confidence = 0.8,
         durability = "normal", importance = 0.5, scope = "user", scopeId,
-        evidenceMsgIds, conversationId, topics,
+        evidenceMsgIds, conversationId, topics, pinned = false,
     }) {
         // Rate limit check
         const count = this.getNoteCount(userId);
@@ -471,11 +607,11 @@ export class PkmStore {
         this.#db.prepare(`
             INSERT INTO notes (id, user_id, chat_id, type, title, content, search_keywords, tags,
                 metadata, valid_from, source_type, confidence, durability, importance, scope, scope_id,
-                evidence_msg_ids, conversation_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                evidence_msg_ids, conversation_id, pinned, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(id, userId, chatId || null, type, title || null, content, kw, tagsJson,
             metaJson, vf, sourceType, confidence, durability, importance, scope, scopeId || null,
-            evidJson, conversationId || null, now, now);
+            evidJson, conversationId || null, pinned ? 1 : 0, now, now);
 
         this.logEvent(id, userId, "create", { type, scope, title: title?.substring(0, 100) });
 

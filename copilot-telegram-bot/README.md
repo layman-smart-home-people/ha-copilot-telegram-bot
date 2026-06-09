@@ -183,7 +183,8 @@ v7 is organized into a few clear layers:
 - **Gateway** — parses Telegram updates, resolves scope keys, applies permissions, enriches prompts
 - **Conversation layer** — one active conversation per scope, with steering and crash recovery
 - **ACP Pool** — reusable Copilot CLI workers with model/profile routing
-- **ResponseStreamer** — progressive Telegram output for private chats and groups
+- **Memory System** — three-tier (core/working/archival) with pinned memories, entity-aware search, auto-enrichment
+- **ResponseStreamer** — multi-bubble progressive output with collapsible thinking/tool blocks
 - **Standing Instructions + WebUI** — automation and operator surfaces
 
 ## 🔧 Troubleshooting

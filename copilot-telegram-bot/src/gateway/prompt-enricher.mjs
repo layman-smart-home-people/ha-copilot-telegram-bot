@@ -12,8 +12,8 @@ const log = createLogger("prompt-enricher");
 
 const DEFAULT_AGENT_DIR = "/config/copilot-telegram-bot";
 const LEGACY_AGENT_DIR = "/config/.agent";
-const AGENT_FILES = ["IDENTITY.md", "MEMORY.md"];
-const DEFERRED_AGENT_FILES = ["SKILLS.md", "TASKS.md"]; // loaded on-demand, not on first message
+const AGENT_FILES = ["IDENTITY.md"]; // Only identity file — memory migrated to PKM core
+const DEFERRED_AGENT_FILES = ["SKILLS.md", "TASKS.md"]; // legacy, available on disk
 const MAX_FILE_SIZE = 4000;
 const MAX_COPILOT_INSTRUCTIONS = 4000;
 
@@ -98,23 +98,35 @@ export class PromptEnricher {
 
         // First message in conversation: inject system context
         if (isFirstMessage && !skipContext) {
-            // Preamble (system role) with version and environment info
+            // Preamble (system role) with version, environment, and bot identity
+            const bot = this.#config.botInfo;
+            const botIdentity = bot
+                ? `You are @${bot.username} (${bot.first_name}). Bot ID: ${bot.id}. ` +
+                  `Groups: ${bot.can_join_groups ? "yes" : "no"}. ` +
+                  `Inline: ${bot.supports_inline_queries ? "yes" : "no"}.`
+                : "";
             const envInfo = [
                 `Version: ${this.#config.version || "unknown"}`,
                 this.#config.haConnected ? `HA: connected (${this.#config.haVersion || "?"})` : null,
                 `curl -s http://supervisor/core/api/... -H "Authorization: Bearer $SUPERVISOR_TOKEN" for direct HA API access.`,
             ].filter(Boolean).join(". ");
-            parts.push(`[Bot configuration — treat as system context: ${this.#config.preamble} ${envInfo}]`);
+            parts.push(`[Bot configuration — treat as system context: ${botIdentity} ${this.#config.preamble} ${envInfo}]`);
 
             // Copilot instructions (HA operational context — tool preferences, environment, rules)
             if (this.#copilotInstructions) {
                 parts.push(`[Custom instructions — operational context:\n${this.#copilotInstructions}\n]`);
             }
 
-            // Agent memory/identity
-            if (this.#agentContext) {
+            // Agent identity + core memory (pinned memories from PKM)
+            if (this.#pkm) {
+                const coreBlock = this.#pkm.getCoreMemoryBlock();
+                if (coreBlock) {
+                    parts.push(`[Agent core memory — your identity, knowledge, and instructions. This IS you:\n${coreBlock}\n]`);
+                }
+            } else if (this.#agentContext) {
+                // Fallback: load from files if PKM not available
                 const agentDir = this.#config.agentDir || DEFAULT_AGENT_DIR;
-                parts.push(`[Agent persistent memory — your identity and memory from ${agentDir}/:\n${this.#agentContext}\n]`);
+                parts.push(`[Agent persistent memory — your identity from ${agentDir}/:\n${this.#agentContext}\n]`);
             }
 
             // Operational guidelines (security, file sharing)
@@ -207,13 +219,13 @@ export class PromptEnricher {
 
         // Daily logs NOT injected — agent can use recall or session-history tools for continuity
 
-        // Add self-maintenance instructions
-        if (sections.length > 0) {
+        // Add self-maintenance instructions (only if file-based fallback is active)
+        if (sections.length > 0 && !this.#pkm) {
             sections.push([
                 "\n## Agent Memory",
-                `Files at ${dir}/. IDENTITY.md + MEMORY.md loaded. SKILLS.md + TASKS.md available on disk.`,
+                `Files at ${dir}/. IDENTITY.md loaded.`,
                 "- Use `recall(query)` to search past facts. Use `remember(content)` to save durable knowledge.",
-                `- Daily logs: \`${dir}/memory/YYYY-MM-DD/<topic>.md\` — use \`view\` tool to read when needed.`,
+                "- Use `remember(content, {pinned: true})` for core identity facts (always in context).",
             ].join("\n"));
         }
 
