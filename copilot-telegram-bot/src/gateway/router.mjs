@@ -683,9 +683,25 @@ export class Router {
         } else {
             buttons.push(btn("⏸️ Pause All", menuCallback(scopePrefix, "standing", "pause")));
         }
-        buttons.push(btn("❌ Close", menuCallback(scopePrefix, "standing", "close")));
 
-        const keyboard = [row(...buttons)];
+        const keyboard = [
+            row(...buttons, btn("❌ Close", menuCallback(scopePrefix, "standing", "close"))),
+        ];
+
+        // Add template suggestions if no instructions exist
+        if (instructions.length === 0) {
+            keyboard.unshift(
+                row(
+                    btn("🚪 Door Alert", menuCallback(scopePrefix, "standing", "tpl:door")),
+                    btn("🌡 Temp Warning", menuCallback(scopePrefix, "standing", "tpl:temp")),
+                ),
+                row(
+                    btn("☀️ Morning Briefing", menuCallback(scopePrefix, "standing", "tpl:morning")),
+                    btn("🔋 Battery Alert", menuCallback(scopePrefix, "standing", "tpl:battery")),
+                ),
+            );
+        }
+
         await this.#menus.show(ref.chatId, "standing", lines.join("\n"), keyboard, { threadId: ref.threadId });
     }
 
@@ -958,6 +974,24 @@ export class Router {
         } else if (action === "resume") {
             this.#siOrchestrator.resume();
             await this.#reply(ref, "▶️ Standing instructions resumed.");
+        } else if (action.startsWith("tpl:")) {
+            // SI template — route as a prompt to the agent
+            const templates = {
+                door: "Create a standing instruction that alerts me when any door or window sensor opens. Use state_change trigger watching binary_sensor entities with 'door' or 'window' in the name, triggering when state changes to 'on'.",
+                temp: "Create a standing instruction that warns me when any room temperature exceeds 30°C or drops below 16°C. Use state_change trigger with above/below thresholds on climate or temperature sensor entities.",
+                morning: "Create a standing instruction that gives me a morning briefing every day at 7:00 AM. Use a cron trigger (0 7 * * *) with wake_agent action. The briefing should include: weather, any overnight alerts, today's calendar, and device status summary.",
+                battery: "Create a standing instruction that alerts me when any device battery level drops below 20%. Use state_change trigger with below: 20 on battery sensor entities.",
+            };
+            const prompt = templates[action.split(":")[1]];
+            if (!prompt) return;
+            await this.#menus.close(ref.chatId, "standing", "📌 Setting up...", { threadId: ref.threadId });
+            // Route the template prompt through the conversation
+            const scopeKey = this.#resolveScopeKey(ref);
+            const enrichedText = this.#enricher.enrich(prompt, ref, { isFirstMessage: !this.#conversationManager.get(scopeKey) });
+            const roleModel = this.#permissions.getModelTier(ref.userId, this.#config);
+            await this.#conversationManager.route(scopeKey, enrichedText, ref, {
+                model: roleModel, mcpProfile: "owner", rawText: prompt,
+            });
         }
     }
 
