@@ -703,7 +703,7 @@ export class WebUIServer {
             firstName: "Dispatched Agent",
         };
 
-        // Enrich the prompt with system context (MEMORY.md, IDENTITY.md, etc.)
+        // Enrich the prompt with system context (IDENTITY.md, PKM, etc.)
         const enrichedPrompt = enricher
             ? enricher.enrich(prompt, ref, { isFirstMessage: true, isDispatcher: false })
             : prompt;
