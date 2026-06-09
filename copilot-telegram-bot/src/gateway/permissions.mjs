@@ -1,41 +1,46 @@
 // ============================================================
-// Permissions — Simple 3-role gate for v7
+// Permissions — Role gate for v7 (delegates to RBAC manager)
 // ============================================================
-// Roles: owner (full access) | member (chat only) | guest (limited)
-// Reads from /data/rbac.json if it exists, falls back to config.
+// Resolves user roles, model tiers, and MCP profiles.
+// Uses live RBACManager when available, falls back to config.
 
-import { readFileSync, existsSync } from "node:fs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("permissions");
 
 export class Permissions {
     #ownerIds = new Set();
-    #memberIds = new Set();
-    #guestIds = new Set();
+    #rbac = null;
 
     constructor({ config }) {
-        // Owner IDs from add-on config (allowed_chat_ids)
+        // Owner IDs from add-on config (allowed_chat_ids) — always trusted
         for (const id of config.allowedChatIds || []) {
             this.#ownerIds.add(String(id));
         }
+    }
 
-        // Load RBAC file if it exists for members/guests
-        this.#loadRbac();
+    /** Wire the live RBAC manager (called after construction). */
+    setRbac(rbac) {
+        this.#rbac = rbac;
+        log.info("Permissions wired to live RBAC manager");
     }
 
     /** Check if a user is allowed to interact at all. */
     isAllowed(userId) {
         const id = String(userId);
-        return this.#ownerIds.has(id) || this.#memberIds.has(id) || this.#guestIds.has(id);
+        if (this.#ownerIds.has(id)) return true;
+        if (this.#rbac) return !!this.#rbac.getUser(Number(userId));
+        return false;
     }
 
-    /** Get user role: 'owner' | 'member' | 'guest' | null */
+    /** Get user role: 'owner' | 'admin' | 'member' | 'guest' | null */
     getRole(userId) {
         const id = String(userId);
         if (this.#ownerIds.has(id)) return "owner";
-        if (this.#memberIds.has(id)) return "member";
-        if (this.#guestIds.has(id)) return "guest";
+        if (this.#rbac) {
+            const user = this.#rbac.getUser(Number(userId));
+            return user?.role || null;
+        }
         return null;
     }
 
@@ -47,35 +52,15 @@ export class Permissions {
     /** Get the MCP profile to use for this user's role. */
     getMcpProfile(userId) {
         const role = this.getRole(userId);
-        if (role === "owner" || role === "member") return "owner";
-        return "guest";
+        if (role === "guest") return "guest";
+        return role ? "owner" : "guest";
     }
 
     /** Get the model tier for this user's role. */
     getModelTier(userId, config) {
         const role = this.getRole(userId);
-        if (role === "owner") return config.defaultModel || "standard";
-        if (role === "member") return config.defaultModel || "standard";
+        if (role === "guest") return config.guestModel || "fast";
+        if (role) return config.defaultModel || "standard";
         return config.guestModel || "fast";
-    }
-
-    #loadRbac() {
-        const path = "/data/rbac.json";
-        if (!existsSync(path)) return;
-
-        try {
-            const data = JSON.parse(readFileSync(path, "utf-8"));
-            if (data.users) {
-                for (const [id, user] of Object.entries(data.users)) {
-                    const role = user.role || user.effectiveRole;
-                    if (role === "owner" || role === "admin") this.#ownerIds.add(String(id));
-                    else if (role === "member") this.#memberIds.add(String(id));
-                    else if (role === "guest") this.#guestIds.add(String(id));
-                }
-            }
-            log.info(`Loaded roles: ${this.#ownerIds.size} owners, ${this.#memberIds.size} members, ${this.#guestIds.size} guests`);
-        } catch (err) {
-            log.warn(`Failed to load RBAC: ${err.message}`);
-        }
     }
 }

@@ -143,6 +143,7 @@ async function main() {
         persistPath: "/data/rbac.json",
         preApprovedIds: config.allowedChatIds || [],
     });
+    permissions.setRbac(rbac);
 
     // --- PKM (Memory System) ---
     const pkm = new PkmManager({
