@@ -707,57 +707,67 @@ export class Router {
 
     async #cmdMemory(ref) {
         const scopePrefix = this.#scopePrefix(ref);
-        const { readFileSync, existsSync, readdirSync } = await import("node:fs");
-        const agentDir = this.#config.agentDir || "/config/.agent";
+        const { readFileSync, existsSync } = await import("node:fs");
 
-        const fileLabels = {
-            "IDENTITY.md": "🤖 Personality",
-            "MEMORY.md": "📝 Key Facts",
-            "SKILLS.md": "🔧 Capabilities",
-            "TASKS.md": "📋 Current Tasks",
-        };
-        const files = Object.keys(fileLabels);
-        const lines = [
-            `<b>🧠 Agent Memory</b>`,
-            `<i>These files shape how I behave. Tap to view.</i>\n`,
+        const lines = [`<b>🧠 Memory</b>\n`];
+
+        // PKM stats — show actual user memories if database exists
+        const pkmDbExists = existsSync("/data/pkm.db");
+        if (pkmDbExists) {
+            try {
+                // Try to get stats from the PKM API
+                const res = await fetch("http://localhost:8099/api/pkm/stats", {
+                    headers: { "X-Scope-Key": `dm:${ref.userId}` },
+                });
+                if (res.ok) {
+                    const stats = await res.json();
+                    const total = stats.total_notes ?? stats.totalNotes ?? 0;
+                    const topics = stats.total_topics ?? stats.topicCount ?? 0;
+                    const entities = stats.total_entities ?? stats.entityCount ?? 0;
+                    lines.push(`📊 <b>${total}</b> memories · <b>${topics}</b> topics · <b>${entities}</b> entities`);
+                    if (total > 0) {
+                        lines.push(`<i>Ask me anything about past conversations — I'll search my memory.</i>`);
+                    } else {
+                        lines.push(`<i>No memories yet. Chat with me and I'll start remembering.</i>`);
+                    }
+                } else {
+                    lines.push(`📊 Memory database ready`);
+                    lines.push(`<i>Use pkm_memory and pkm_search tools to manage memories.</i>`);
+                }
+            } catch {
+                lines.push(`📊 Memory system available`);
+            }
+        } else {
+            lines.push(`<i>Memory database not yet created. It will be initialized on first use.</i>`);
+        }
+
+        // Agent config files — secondary info
+        const agentDir = this.#config.agentDir || "/config/copilot-telegram-bot";
+        const configFiles = [
+            { file: "IDENTITY.md", label: "🤖 Personality" },
+            { file: "MEMORY.md", label: "📝 Key Facts" },
         ];
-
-        for (const f of files) {
-            const path = `${agentDir}/${f}`;
-            const label = fileLabels[f];
+        const configInfo = configFiles.map(({ file, label }) => {
+            const path = `${agentDir}/${file}`;
             if (existsSync(path)) {
                 const size = readFileSync(path).length;
-                const sizeStr = size > 1024 ? `${(size / 1024).toFixed(1)}K` : `${size}B`;
-                lines.push(`${label} · ${sizeStr}`);
-            } else {
-                lines.push(`${label} · <i>not set</i>`);
+                return `${label} ${size > 1024 ? `${(size / 1024).toFixed(1)}K` : `${size}B`}`;
             }
-        }
-
-        // Daily logs
-        const memDir = `${agentDir}/memory`;
-        if (existsSync(memDir)) {
-            try {
-                const { statSync } = await import("node:fs");
-                const entries = readdirSync(memDir);
-                const dirs = entries.filter(f => { try { return statSync(`${memDir}/${f}`).isDirectory(); } catch { return false; } });
-                const flatFiles = entries.filter(f => f.endsWith(".md"));
-                const count = dirs.length || flatFiles.length;
-                if (count > 0) lines.push(`📁 Daily Notes · ${count} day${count > 1 ? "s" : ""}`);
-            } catch {}
-        }
+            return `${label} <i>not set</i>`;
+        });
+        lines.push(`\n<b>Agent Config</b>`);
+        lines.push(configInfo.join(" · "));
 
         const keyboard = [
             row(
-                btn("🤖 Personality", menuCallback(scopePrefix, "memory", "view:IDENTITY.md")),
-                btn("📝 Key Facts", menuCallback(scopePrefix, "memory", "view:MEMORY.md")),
+                btn("🔍 Search Memory", menuCallback(scopePrefix, "memory", "search")),
             ),
             row(
-                btn("📋 Tasks", menuCallback(scopePrefix, "memory", "view:TASKS.md")),
-                btn("🔧 Capabilities", menuCallback(scopePrefix, "memory", "view:SKILLS.md")),
+                btn("🤖 View Personality", menuCallback(scopePrefix, "memory", "view:IDENTITY.md")),
+                btn("📝 View Key Facts", menuCallback(scopePrefix, "memory", "view:MEMORY.md")),
             ),
             row(
-                btn("🔄 Reset (keep personality)", menuCallback(scopePrefix, "memory", "reset")),
+                btn("🔄 Reset Agent Config", menuCallback(scopePrefix, "memory", "reset")),
                 btn("❌ Close", menuCallback(scopePrefix, "memory", "close")),
             ),
         ];
@@ -998,6 +1008,10 @@ export class Router {
     async #handleMemoryAction(action, ref) {
         if (action === "close") {
             await this.#menus.close(ref.chatId, "memory", "🧠 Memory closed.", { threadId: ref.threadId });
+            return;
+        }
+        if (action === "search") {
+            await this.#menus.close(ref.chatId, "memory", "🔍 Tell me what you'd like to recall — I'll search my memory.", { threadId: ref.threadId });
             return;
         }
         if (action === "reset") {
