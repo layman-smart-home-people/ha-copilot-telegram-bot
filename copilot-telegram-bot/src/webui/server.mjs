@@ -45,8 +45,8 @@ export class WebUIServer {
      * Attach bot internals so API routes can access them.
      * Call this before start().
      */
-    attach({ pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher, rbac }) {
-        this.#ctx = { pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher, rbac };
+    attach({ pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher, rbac, pkm }) {
+        this.#ctx = { pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher, rbac, pkm };
     }
 
     /**
@@ -273,8 +273,28 @@ export class WebUIServer {
             return this.#handleRbacRoute(req, res, method, pathname, params);
         }
 
-        if (pathname.startsWith("/api/pkm/")) {
-            return this.#json(res, 404, { error: "Not found" });
+        // --- PKM API routes ---
+        if (pathname.startsWith("/api/pkm/") || pathname === "/api/pkm") {
+            const pkm = this.#ctx.pkm;
+            if (!pkm) {
+                return this.#json(res, 503, { error: "PKM not available" });
+            }
+            // Resolve user context from X-Scope-Key header (set by PKM MCP sidecar)
+            const scopeKey = req.headers["x-scope-key"] || "";
+            const userId = scopeKey.startsWith("dm:") ? scopeKey.split(":")[1] : null;
+            const chatType = scopeKey.startsWith("group:") ? "group" : "private";
+            const context = { userId, chatType, scopeKey };
+
+            let body = {};
+            if (method === "POST" || method === "PUT") {
+                try {
+                    body = await this.#readBody(req);
+                } catch (err) {
+                    return this.#json(res, err.message === "Request body too large" ? 413 : 400, { error: err.message });
+                }
+            }
+            const result = pkm.handleApi(method, pathname, body, context);
+            return this.#json(res, result.status || 200, result.data);
         }
 
         // POST /api/dispatch — dispatch task to full-capability agent

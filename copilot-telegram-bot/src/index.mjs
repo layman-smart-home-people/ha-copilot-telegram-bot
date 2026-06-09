@@ -12,6 +12,7 @@ import { ConversationManager } from "./conversation/index.mjs";
 import { Router } from "./gateway/router.mjs";
 import { Permissions } from "./gateway/permissions.mjs";
 import { RBACManager } from "./core/rbac.mjs";
+import { PkmManager } from "./pkm/index.mjs";
 import { PromptEnricher } from "./gateway/prompt-enricher.mjs";
 import { SIBridge } from "./gateway/si-bridge.mjs";
 import { TopicManager } from "./core/topic-manager.mjs";
@@ -143,6 +144,18 @@ async function main() {
         preApprovedIds: config.allowedChatIds || [],
     });
 
+    // --- PKM (Memory System) ---
+    const pkm = new PkmManager({
+        dbPath: "/data/pkm.db",
+        agentDir: config.agentDir || "/config/copilot-telegram-bot",
+    });
+    try {
+        pkm.start();
+        log.info("PKM memory system started");
+    } catch (err) {
+        log.warn(`PKM startup failed (non-fatal): ${err.message}`);
+    }
+
     // --- Prompt Enricher ---
     const enricher = new PromptEnricher({ config, permissions });
 
@@ -249,6 +262,7 @@ async function main() {
         startedAt: Date.now(),
         enricher,
         rbac,
+        pkm,
     });
     await webui.start();
     log.info("WebUI listening on :8099");
