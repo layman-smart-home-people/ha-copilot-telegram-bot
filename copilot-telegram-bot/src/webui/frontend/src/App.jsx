@@ -7,6 +7,7 @@ import ConfigEditor from "./components/ConfigEditor";
 import SystemInfo from "./components/SystemInfo";
 import ChatPanel from "./components/ChatPanel";
 import Chats from "./components/Chats";
+import UsersRoles from "./components/UsersRoles";
 import Toast from "./components/Toast";
 import ErrorCollector from "./components/ErrorCollector";
 
@@ -14,8 +15,9 @@ const TABS = [
   { id: "dashboard", label: "📊 Dashboard" },
   { id: "chat", label: "💬 Chat" },
   { id: "chats", label: "📨 Chats" },
+  { id: "access", label: "🔐 Access" },
   { id: "instructions", label: "📋 Instructions" },
-  { id: "docs", label: "📚 Docs" },
+  { id: "docs", label: "🧠 Agent Files" },
   { id: "logs", label: "📜 Logs" },
   { id: "config", label: "⚙️ Config" },
 ];
@@ -23,7 +25,7 @@ const TABS = [
 export default function App() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [toasts, setToasts] = useState([]);
-  const [instrCount, setInstrCount] = useState(0);
+  const [instrCount, setInstrCount] = useState(null);
   const [version, setVersion] = useState("—");
 
   const toast = useCallback((message, type = "success") => {
@@ -52,7 +54,7 @@ export default function App() {
             onClick={() => setActiveTab(tab.id)}
           >
             {tab.label}
-            {tab.id === "instructions" && (
+            {tab.id === "instructions" && instrCount > 0 && (
               <span className="badge">{instrCount}</span>
             )}
           </button>
@@ -73,6 +75,7 @@ export default function App() {
         )}
         {activeTab === "chat" && <ChatPanel toast={toast} />}
         {activeTab === "chats" && <Chats toast={toast} />}
+        {activeTab === "access" && <UsersRoles toast={toast} />}
         {activeTab === "instructions" && (
           <Instructions toast={toast} onCountChange={setInstrCount} />
         )}
