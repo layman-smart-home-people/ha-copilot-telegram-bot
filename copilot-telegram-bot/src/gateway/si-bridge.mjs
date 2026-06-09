@@ -7,6 +7,7 @@
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("si-bridge");
+const SI_PROMPT_TIMEOUT_MS = 5 * 60 * 1000; // 5 min max per SI prompt
 
 export class SIBridge {
     #conversationManager;
@@ -32,11 +33,15 @@ export class SIBridge {
     /**
      * Inject a background prompt from a standing instruction.
      * Routes through ConversationManager with an SI-scoped conversation.
+     * @param {string} prompt
+     * @param {number|string} chatId
+     * @param {object} opts — { description, silent, instructionId }
      */
     injectBackgroundPrompt(prompt, chatId, opts = {}) {
         const description = opts.description || "SI";
         const silent = opts.silent || false;
-        const scopeKey = `si:${this.#hashScope(description)}`;
+        // Use instruction ID for scope key to avoid hash collisions
+        const scopeKey = opts.instructionId ? `si:${opts.instructionId}` : `si:${this.#hashScope(description)}`;
 
         // Debounce: if this SI is already in-flight, skip
         if (this.#activePrompts.has(scopeKey)) {
@@ -46,8 +51,15 @@ export class SIBridge {
 
         this.#activePrompts.add(scopeKey);
 
-        // Fire and forget — route through conversation manager
-        this.#executePrompt(scopeKey, prompt, chatId, { description, silent })
+        // Fire and forget with timeout — prevents hung agents from blocking SI scope forever
+        const executeWithTimeout = Promise.race([
+            this.#executePrompt(scopeKey, prompt, chatId, { description, silent }),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(`SI prompt timed out after ${SI_PROMPT_TIMEOUT_MS / 1000}s`)), SI_PROMPT_TIMEOUT_MS)
+            ),
+        ]);
+
+        executeWithTimeout
             .catch(err => {
                 log.error(`SI prompt failed [${description}]: ${err.message}`);
                 if (!silent && chatId) {
@@ -56,8 +68,9 @@ export class SIBridge {
             })
             .finally(() => {
                 this.#activePrompts.delete(scopeKey);
-                // Destroy the SI conversation after completion to prevent accumulation
-                this.#conversationManager.destroy(scopeKey).catch(() => {});
+                this.#conversationManager.destroy(scopeKey).catch(err =>
+                    log.warn(`Failed to destroy SI conversation ${scopeKey}: ${err.message}`)
+                );
             });
     }
 

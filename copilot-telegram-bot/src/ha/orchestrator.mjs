@@ -387,6 +387,7 @@ export class StandingInstructionOrchestrator {
                     priority: 1,
                     description: instruction.description,
                     silent: isSilent,
+                    instructionId: instruction.id,
                 });
             } else {
                 if (isSilent) {
