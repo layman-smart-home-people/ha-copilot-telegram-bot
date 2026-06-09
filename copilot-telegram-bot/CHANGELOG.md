@@ -2,6 +2,24 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.7.0] — 2026-06-09
+
+### Added — RBAC
+- **RBAC API fully wired** — 17 REST endpoints now connected to RBACManager. MCP `access-control` tools (rbac_list_roles, rbac_set_user_role, rbac_create_invite, etc.) return real data instead of 404 errors. Roles, users, invites, overrides, and audit log all operational.
+
+### Fixed — Agent Context
+- **Version awareness** — agent now knows its own version and can answer "what version are you?"
+- **Supervisor API access** — preamble now includes `$SUPERVISOR_TOKEN` curl instructions so agent can reach HA API directly when MCP tools are unavailable.
+- **HA connection status** — injected into agent context (connected/disconnected + version).
+
+### Fixed — WebUI Chat
+- **Chat SSE streaming** — WebUI chat panel now receives real-time events (text_chunk, thought, tool_start, tool_end, done, error). Previously only sent initial status, making the chat panel non-functional.
+- **Removed duplicate listener code** — cleaned up brittle streamer-patching approach in favor of clean EventEmitter-based conversation listeners.
+
+### Changed — UX
+- **Layman-friendly /status** — removed pool instance IDs, scope keys, and developer metrics. Shows model, active chats, capacity, HA connection, SI status, and avg response time in plain language.
+- **Layman-friendly /memory** — files renamed to human labels (🤖 Personality, 📝 Key Facts, 🔧 Capabilities, 📋 Current Tasks). Added description text. "Reset" button says "keep personality" instead of "keep identity".
+
 ## [1.6.0] — 2026-06-09
 
 ### Added — Standing Instructions
