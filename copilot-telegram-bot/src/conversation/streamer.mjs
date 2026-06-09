@@ -537,13 +537,12 @@ export class ResponseStreamer {
 
     #truncate(html) {
         if (html.length <= MAX_MSG_LEN) return html;
-        // Find safe truncation point — avoid cutting inside HTML tags or entities
-        let cutAt = MAX_MSG_LEN - 30;
+        const suffix = "\n…(truncated)";
+        let cutAt = MAX_MSG_LEN - 80; // extra room for closing tags + suffix
         // Scan backwards to find a position not inside a tag
         const lastOpenTag = html.lastIndexOf("<", cutAt);
         const lastCloseTag = html.lastIndexOf(">", cutAt);
         if (lastOpenTag > lastCloseTag) {
-            // We're inside a tag — cut before it
             cutAt = lastOpenTag;
         }
         // Also check for partial entities (&amp; etc)
@@ -552,6 +551,23 @@ export class ResponseStreamer {
         if (lastAmp > lastSemi && cutAt - lastAmp < 8) {
             cutAt = lastAmp;
         }
-        return html.substring(0, cutAt) + "\n…(truncated)";
+        let truncated = html.substring(0, cutAt) + suffix;
+        // Close any unclosed HTML tags
+        const openTags = [];
+        const tagRe = /<\/?([a-z]+)[^>]*>/gi;
+        let m;
+        while ((m = tagRe.exec(truncated))) {
+            const tag = m[1].toLowerCase();
+            if (m[0].startsWith("</")) {
+                const idx = openTags.lastIndexOf(tag);
+                if (idx !== -1) openTags.splice(idx, 1);
+            } else if (!m[0].endsWith("/>")) {
+                openTags.push(tag);
+            }
+        }
+        for (let i = openTags.length - 1; i >= 0; i--) {
+            truncated += `</${openTags[i]}>`;
+        }
+        return truncated;
     }
 }

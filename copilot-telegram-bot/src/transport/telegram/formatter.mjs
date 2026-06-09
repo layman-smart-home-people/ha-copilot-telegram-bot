@@ -56,6 +56,27 @@ export function markdownToTelegramHtml(md) {
         return hold(`<a href="${escapeHtml(url)}">${escapeHtml(text)}</a>`);
     });
 
+    // Markdown tables: | col | col | → <pre> aligned columns
+    t = t.replace(
+        /(?:^\|.+\|[ \t]*\n)+/gm,
+        (block) => {
+            const rows = block.trim().split("\n").map(r =>
+                r.replace(/^\||\|$/g, "").split("|").map(c => c.trim())
+            );
+            // Remove separator rows (---|---|---)
+            const filtered = rows.filter(r => !r.every(c => /^[-:]+$/.test(c)));
+            if (filtered.length === 0) return block;
+            const colCount = Math.max(...filtered.map(r => r.length));
+            const widths = Array.from({ length: colCount }, (_, i) =>
+                Math.max(...filtered.map(r => (r[i] || "").length), 1)
+            );
+            const formatted = filtered.map(r =>
+                r.map((c, i) => c.padEnd(widths[i] || 1)).join("  │  ")
+            ).join("\n");
+            return hold(`<pre>${escapeHtml(formatted)}</pre>`);
+        }
+    );
+
     // HTML-escape remaining text
     t = escapeHtml(t);
 
@@ -63,8 +84,8 @@ export function markdownToTelegramHtml(md) {
     t = t.replace(/\*\*\*(.+?)\*\*\*/g, "<b><i>$1</i></b>");
     // Bold: **text**
     t = t.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
-    // Italic: *text*
-    t = t.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, "<i>$1</i>");
+    // Italic: *text* (CommonMark: no space after opening or before closing *)
+    t = t.replace(/(?<!\*)\*(?!\s)(.+?)(?<!\s|\*)\*(?!\*)/g, "<i>$1</i>");
     // Strikethrough: ~~text~~
     t = t.replace(/~~(.+?)~~/g, "<s>$1</s>");
 
@@ -87,10 +108,10 @@ export function markdownToTelegramHtml(md) {
     });
 
     // Ordered lists: 1. item, 2. item (preserve numbers)
-    t = t.replace(/^([ \t]*)\d+\.[ \t]+(.+)$/gm, (_, indent, content) => {
+    t = t.replace(/^([ \t]*)(\d+)\.[ \t]+(.+)$/gm, (_, indent, num, content) => {
         const depth = Math.floor(indent.replace(/\t/g, "    ").length / 2);
         const pad = "  ".repeat(depth);
-        return `${pad}▸ ${content}`;
+        return `${pad}${num}. ${content}`;
     });
 
     // Horizontal rules
@@ -105,29 +126,60 @@ export function markdownToTelegramHtml(md) {
 }
 
 export function chunkMessage(text, maxLen = 4096) {
+    // Convert to HTML first, then chunk — HTML is always longer than markdown
+    const html = markdownToTelegramHtml(text);
+    return chunkHtml(html, maxLen);
+}
+
+/** Chunk pre-converted HTML, closing unclosed tags at chunk boundaries. */
+export function chunkHtml(html, maxLen = 4096) {
     const chunks = [];
-    let remaining = text;
+    let remaining = html;
     while (remaining.length > maxLen) {
         let splitAt = remaining.lastIndexOf("\n\n", maxLen);
         if (splitAt <= 0) splitAt = remaining.lastIndexOf("\n", maxLen);
+        if (splitAt <= 0) splitAt = remaining.lastIndexOf(" ", maxLen);
         if (splitAt <= 0) splitAt = maxLen;
+
+        // Don't split inside an HTML tag or entity
+        const lastOpen = remaining.lastIndexOf("<", splitAt);
+        const lastClose = remaining.lastIndexOf(">", splitAt);
+        if (lastOpen > lastClose) splitAt = lastOpen;
+        const lastAmp = remaining.lastIndexOf("&", splitAt);
+        const lastSemi = remaining.lastIndexOf(";", splitAt);
+        if (lastAmp > lastSemi && splitAt - lastAmp < 8) splitAt = lastAmp;
 
         let chunk = remaining.slice(0, splitAt);
         remaining = remaining.slice(splitAt).replace(/^\n+/, "");
 
-        // Check for unclosed code fences in this chunk
-        const fenceMatches = chunk.match(/```/g);
-        if (fenceMatches && fenceMatches.length % 2 !== 0) {
-            // Odd number of ``` means an unclosed fence — close it
-            chunk += "\n```";
-            // Re-open the fence in the next chunk
-            remaining = "```\n" + remaining;
-        }
-
+        // Close any unclosed HTML tags in this chunk
+        chunk = closeOpenTags(chunk);
         chunks.push(chunk);
     }
     if (remaining.length > 0) chunks.push(remaining);
     return chunks;
+}
+
+/** Track and close unclosed HTML tags to produce valid HTML fragments. */
+function closeOpenTags(html) {
+    const openTags = [];
+    const tagRe = /<\/?([a-z]+)[^>]*>/gi;
+    let m;
+    while ((m = tagRe.exec(html))) {
+        const tag = m[1].toLowerCase();
+        if (m[0].startsWith("</")) {
+            const idx = openTags.lastIndexOf(tag);
+            if (idx !== -1) openTags.splice(idx, 1);
+        } else if (!m[0].endsWith("/>")) {
+            openTags.push(tag);
+        }
+    }
+    // Close in reverse order
+    let closed = html;
+    for (let i = openTags.length - 1; i >= 0; i--) {
+        closed += `</${openTags[i]}>`;
+    }
+    return closed;
 }
 
 import { basename } from "node:path";
