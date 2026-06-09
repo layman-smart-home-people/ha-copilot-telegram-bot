@@ -75,15 +75,9 @@ export class MenuManager {
      * Close a menu (remove buttons, optionally update text).
      */
     async close(chatId, menuId, finalText, opts = {}) {
-        // Try with threadId first, then without (backward compat)
         const threadSuffix = opts.threadId ? `:${opts.threadId}` : "";
-        let menuKey = `${chatId}:${menuId}${threadSuffix}`;
-        let existing = this.#activeMenus.get(menuKey);
-        if (!existing && threadSuffix) {
-            // Fallback: try without threadId for menus opened before this fix
-            menuKey = `${chatId}:${menuId}`;
-            existing = this.#activeMenus.get(menuKey);
-        }
+        const menuKey = `${chatId}:${menuId}${threadSuffix}`;
+        const existing = this.#activeMenus.get(menuKey);
         if (!existing) return;
 
         try {

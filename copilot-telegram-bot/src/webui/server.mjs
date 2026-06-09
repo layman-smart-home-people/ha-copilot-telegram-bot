@@ -594,7 +594,7 @@ export class WebUIServer {
     // ── Dispatch API ────────────────────────────────────────────
 
     async #apiDispatch(res, body) {
-        const { prompt, description, model } = body || {};
+        const { prompt, description, model, scopeKey: callerScope } = body || {};
         if (!prompt || typeof prompt !== "string") {
             return this.#json(res, 400, { error: "prompt is required" });
         }
@@ -611,7 +611,16 @@ export class WebUIServer {
             return this.#json(res, 503, { error: "Conversation manager not available" });
         }
 
-        const chatId = config.allowedChatIds?.[0];
+        // Resolve chat/thread from caller's scope if available, otherwise fall back
+        let chatId, threadId = null;
+        if (callerScope) {
+            const callerConv = convMgr.get(callerScope);
+            if (callerConv?.ref) {
+                chatId = callerConv.ref.chatId;
+                threadId = callerConv.ref.threadId || null;
+            }
+        }
+        if (!chatId) chatId = config.allowedChatIds?.[0];
         if (!chatId) {
             return this.#json(res, 400, { error: "No target chat configured" });
         }
@@ -629,8 +638,8 @@ export class WebUIServer {
             chatId,
             userId: 0,
             chatType,
-            threadId: null,
-            isForum: false,
+            threadId,
+            isForum: !!threadId,
             username: "dispatcher",
             firstName: "Dispatched Agent",
         };

@@ -71,11 +71,12 @@ export class TelegramClient extends EventEmitter {
         }
         if (!res.ok) {
             const body = await res.text().catch(() => "");
-            // Auto-recover from stale/invalid thread IDs (e.g., forum→non-forum switch)
+            // Thread not found — fail instead of silently falling back to main thread
             if (res.status === 400 && /thread not found/i.test(body) && params.message_thread_id) {
-                log.warn(`Thread ${params.message_thread_id} not found in ${method}, retrying without threadId`);
-                const { message_thread_id: _, ...retryParams } = params;
-                return this.call(method, retryParams);
+                const err = new Error(`Telegram API ${method}: thread ${params.message_thread_id} not found`);
+                err.status = 400;
+                err.threadNotFound = true;
+                throw err;
             }
             const err = new Error(`Telegram API ${method} failed: ${res.status} ${body}`);
             err.status = res.status;
@@ -145,11 +146,9 @@ export class TelegramClient extends EventEmitter {
         });
         if (!res.ok) {
             const body = await res.text().catch(() => "");
-            // Auto-recover from stale/invalid thread IDs
+            // Thread not found — fail instead of silently falling back to main thread
             if (res.status === 400 && /thread not found/i.test(body) && form.has("message_thread_id")) {
-                log.warn(`Thread not found in ${method}, retrying without threadId`);
-                form.delete("message_thread_id");
-                return this.callForm(method, form);
+                throw new Error(`Telegram ${method}: thread not found`);
             }
             throw new Error(`Telegram ${method} failed: ${res.status} ${body}`);
         }

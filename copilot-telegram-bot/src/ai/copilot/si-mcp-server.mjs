@@ -4,8 +4,21 @@
 // No npm dependencies.
 
 import http from "node:http";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const API_BASE = process.env.SI_API_BASE || "http://localhost:8099";
+const COPILOT_HOME = process.env.COPILOT_HOME || "";
+const SCOPE_KEY_FILE = COPILOT_HOME ? join(COPILOT_HOME, ".scope-key") : "";
+
+/** Read current scope key from file (written by pool on claim). */
+function getScopeKey() {
+    if (!SCOPE_KEY_FILE) return null;
+    try {
+        const key = readFileSync(SCOPE_KEY_FILE, "utf8").trim();
+        return key || null;
+    } catch { return null; }
+}
 
 function log(msg) { process.stderr.write(`[si-mcp] ${msg}\n`); }
 
@@ -355,6 +368,8 @@ async function handleTool(name, args) {
                 if (!desc) return err("description is required");
                 const body = { prompt, description: desc };
                 if (m) body.model = m;
+                const callerScope = getScopeKey();
+                if (callerScope) body.scopeKey = callerScope;
                 const { status, data } = await apiCall("POST", "/api/dispatch", body);
                 if (status === 200 || status === 202) {
                     return ok(`✅ Dispatched: "${desc}"\nModel: ${body.model || "(user default)"}\nThe full agent will send its response to the user directly.`);

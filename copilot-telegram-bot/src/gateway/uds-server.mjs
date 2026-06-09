@@ -126,8 +126,8 @@ export class UdsServer {
     tryResolveText(chatId, text, threadId = null) {
         for (const [qId, q] of this.#pending) {
             if (String(q.chatId) === String(chatId) && q.freeText) {
-                // If question was sent to a specific thread, only match that thread
-                if (q.threadId && threadId && String(q.threadId) !== String(threadId)) continue;
+                // Strict thread matching: question in a thread only matches that thread
+                if (q.threadId && String(q.threadId) !== String(threadId || "")) continue;
                 // Update the button message to show the answer
                 if (q.messageId) {
                     this.#telegram.call("editMessageText", {
@@ -161,7 +161,7 @@ export class UdsServer {
             case "notify_user":    return this.#notifyUser(params, scopeKey);
             case "send_file":      return this.#sendFile(params, scopeKey);
             case "background_task": return this.#backgroundTask(params, scopeKey);
-            case "telegram_call":  return this.#telegramCall(params);
+            case "telegram_call":  return this.#telegramCall(params, scopeKey);
             default:               return { error: `Unknown method: ${method}` };
         }
     }
@@ -326,13 +326,14 @@ export class UdsServer {
         if (!prompt) return { error: "prompt is required" };
         if (!description) return { error: "description is required" };
 
-        const { chatId } = this.#resolveChatId(scopeKey);
+        const { chatId, threadId } = this.#resolveChatId(scopeKey);
         if (!chatId) return { error: "No chat for result delivery" };
 
         const taskId = `bg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
         log.info(`Background task: ${taskId} — "${description}"`);
 
         const ref = { chatId, chatType: "private", userId: chatId };
+        if (threadId) ref.threadId = threadId;
         try {
             // Use user's default model preference for background tasks
             const model = this.#config.defaultModel || "standard";
@@ -346,7 +347,7 @@ export class UdsServer {
         }
     }
 
-    async #telegramCall({ method, params: apiParams }) {
+    async #telegramCall({ method, params: apiParams }, scopeKey) {
         if (!method || typeof method !== "string") return { error: "method is required" };
 
         // Allowlist: only safe, intended methods
@@ -368,9 +369,19 @@ export class UdsServer {
             return { error: `Method '${method}' is not in the allowed list` };
         }
 
+        // Auto-inject message_thread_id for outbound messages when not explicitly set
+        const THREAD_METHODS = new Set([
+            "sendmessage", "sendphoto", "senddocument", "sendvideo", "sendaudio", "sendvoice",
+        ]);
+        const merged = { ...(apiParams || {}) };
+        if (THREAD_METHODS.has(method.toLowerCase()) && !merged.message_thread_id && scopeKey) {
+            const { threadId } = this.#resolveChatId(scopeKey);
+            if (threadId) merged.message_thread_id = threadId;
+        }
+
         log.info(`telegram_call: ${method}`);
         try {
-            const result = await this.#telegram.call(method, apiParams || {});
+            const result = await this.#telegram.call(method, merged);
             return { data: result };
         } catch (err) {
             return { error: err.message };
