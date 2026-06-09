@@ -33,6 +33,8 @@ export class WebUIServer {
     #logBuffer = [];       // circular buffer for recent log lines
     #logMaxLines = 500;
     #sseClients = new Set(); // SSE connections for live log streaming
+    #chatSseClients = new Set(); // SSE connections for chat streaming
+    #chatConvListeners = null;   // attached conversation event listeners
     #addonSlug = null;     // resolved lazily
 
     constructor({ port = 8099 } = {}) {
@@ -43,8 +45,8 @@ export class WebUIServer {
      * Attach bot internals so API routes can access them.
      * Call this before start().
      */
-    attach({ pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher }) {
-        this.#ctx = { pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher };
+    attach({ pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher, rbac }) {
+        this.#ctx = { pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher, rbac };
     }
 
     /**
@@ -67,6 +69,17 @@ export class WebUIServer {
         }
     }
 
+    /** Push a chat event to all WebUI chat SSE clients. */
+    pushChatEvent(event) {
+        for (const client of this.#chatSseClients) {
+            try {
+                client.write(`data: ${JSON.stringify(event)}\n\n`);
+            } catch {
+                this.#chatSseClients.delete(client);
+            }
+        }
+    }
+
     async start() {
         this.#server = http.createServer((req, res) => this.#handleRequest(req, res));
         this.#server.listen(this.#port, () => {
@@ -75,6 +88,7 @@ export class WebUIServer {
     }
 
     async stop() {
+        this.#detachChatConvListeners();
         if (this.#server) {
             return new Promise((resolve) => {
                 this.#server.close(() => {
@@ -254,7 +268,12 @@ export class WebUIServer {
             return this.#apiChatStop(res);
         }
 
-        if (pathname.startsWith("/api/rbac/") || pathname.startsWith("/api/pkm/")) {
+        // --- RBAC API routes ---
+        if (pathname.startsWith("/api/rbac/") || pathname === "/api/rbac") {
+            return this.#handleRbacRoute(req, res, method, pathname, params);
+        }
+
+        if (pathname.startsWith("/api/pkm/")) {
             return this.#json(res, 404, { error: "Not found" });
         }
 
@@ -265,6 +284,165 @@ export class WebUIServer {
         }
 
         this.#json(res, 404, { error: "Not found" });
+    }
+
+    // ── RBAC API ─────────────────────────────────────────────
+
+    async #handleRbacRoute(req, res, method, pathname, params) {
+        const rbac = this.#ctx.rbac;
+        if (!rbac) {
+            return this.#json(res, 503, { error: "RBAC not available" });
+        }
+
+        try {
+            // GET /api/rbac/roles
+            if (pathname === "/api/rbac/roles" && method === "GET") {
+                const allRoles = rbac.getAllRoles();
+                const result = Object.entries(allRoles).map(([name, r]) => ({
+                    name,
+                    ...r,
+                    effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)],
+                }));
+                return this.#json(res, 200, result);
+            }
+
+            // POST /api/rbac/roles
+            if (pathname === "/api/rbac/roles" && method === "POST") {
+                const body = await this.#readBody(req);
+                const { name, rank, inherits, capabilities, icon, description } = body;
+                rbac.createRole(name, { rank, inherits, capabilities, icon, description });
+                const created = rbac.getRoleConfig(name);
+                return this.#json(res, 201, { name, ...created, effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)] });
+            }
+
+            // GET/PUT/DELETE /api/rbac/roles/:name
+            const roleMatch = pathname.match(/^\/api\/rbac\/roles\/([^/]+)$/);
+            if (roleMatch) {
+                const name = decodeURIComponent(roleMatch[1]);
+                if (method === "GET") {
+                    const role = rbac.getRoleConfig(name);
+                    if (!role) return this.#json(res, 404, { error: `Role not found: ${name}` });
+                    return this.#json(res, 200, { name, ...role, effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)] });
+                }
+                if (method === "PUT") {
+                    const body = await this.#readBody(req);
+                    rbac.updateRole(name, body);
+                    const updated = rbac.getRoleConfig(name);
+                    return this.#json(res, 200, { name, ...updated, effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)] });
+                }
+                if (method === "DELETE") {
+                    rbac.deleteRole(name);
+                    return this.#json(res, 204, null);
+                }
+            }
+
+            // GET /api/rbac/users
+            if (pathname === "/api/rbac/users" && method === "GET") {
+                return this.#json(res, 200, rbac.getPairedUsers());
+            }
+
+            // PUT /api/rbac/users/:id/role
+            const userRoleMatch = pathname.match(/^\/api\/rbac\/users\/([^/]+)\/role$/);
+            if (userRoleMatch && method === "PUT") {
+                const userId = decodeURIComponent(userRoleMatch[1]);
+                const body = await this.#readBody(req);
+                const { role, displayName, expiresAt } = body;
+                rbac.setUserRole(userId, role, { displayName, expiresAt });
+                return this.#json(res, 200, rbac.getUser(Number(userId)));
+            }
+
+            // GET/DELETE /api/rbac/users/:id
+            const userMatch = pathname.match(/^\/api\/rbac\/users\/([^/]+)$/);
+            if (userMatch) {
+                const userId = decodeURIComponent(userMatch[1]);
+                if (method === "GET") {
+                    const user = rbac.getUser(Number(userId));
+                    if (!user) return this.#json(res, 404, { error: `User not found: ${userId}` });
+                    return this.#json(res, 200, user);
+                }
+                if (method === "DELETE") {
+                    rbac.revoke(Number(userId));
+                    return this.#json(res, 204, null);
+                }
+            }
+
+            // POST /api/rbac/check
+            if (pathname === "/api/rbac/check" && method === "POST") {
+                const body = await this.#readBody(req);
+                const { userId, capability, entityId, toolName, toolArgs } = body;
+                let result;
+                if (toolName) {
+                    result = rbac.checkToolPermission(Number(userId), toolName, toolArgs || {});
+                } else {
+                    result = rbac.canPerform(Number(userId), capability, entityId || null);
+                }
+                return this.#json(res, 200, result);
+            }
+
+            // POST /api/rbac/invites
+            if (pathname === "/api/rbac/invites" && method === "POST") {
+                const body = await this.#readBody(req);
+                const { role, expiresAt, roleExpiresAt, createdBy } = body;
+                const token = rbac.createInvite(role, { createdBy, expiresAt, roleExpiresAt });
+                return this.#json(res, 201, { token, role });
+            }
+
+            // GET /api/rbac/invites
+            if (pathname === "/api/rbac/invites" && method === "GET") {
+                const status = params.status || undefined;
+                return this.#json(res, 200, rbac.listInvites({ status }));
+            }
+
+            // DELETE /api/rbac/invites
+            if (pathname === "/api/rbac/invites" && method === "DELETE") {
+                const body = await this.#readBody(req);
+                const { id, revokedBy } = body;
+                const ok = rbac.revokeInvite(id, { revokedBy: revokedBy || "system" });
+                if (!ok) return this.#json(res, 404, { error: "Invite not found" });
+                return this.#json(res, 204, null);
+            }
+
+            // GET /api/rbac/overrides
+            if (pathname === "/api/rbac/overrides" && method === "GET") {
+                const filters = {};
+                if (params.get("entity_id")) filters.entity_id = params.get("entity_id");
+                if (params.get("target_type")) filters.target_type = params.get("target_type");
+                if (params.get("target_id")) filters.target_id = params.get("target_id");
+                return this.#json(res, 200, rbac.getOverrides(filters));
+            }
+
+            // POST /api/rbac/overrides
+            if (pathname === "/api/rbac/overrides" && method === "POST") {
+                const body = await this.#readBody(req);
+                rbac.addOverride(body);
+                return this.#json(res, 201, body);
+            }
+
+            // DELETE /api/rbac/overrides
+            if (pathname === "/api/rbac/overrides" && method === "DELETE") {
+                const body = await this.#readBody(req);
+                const { entity_id, target_type, target_id } = body;
+                const ok = rbac.removeOverride(entity_id, target_type, target_id);
+                if (!ok) return this.#json(res, 404, { error: "Override not found" });
+                return this.#json(res, 204, null);
+            }
+
+            // GET /api/rbac/audit
+            if (pathname === "/api/rbac/audit" && method === "GET") {
+                const query = {};
+                if (params.get("limit")) query.limit = Number(params.get("limit"));
+                if (params.get("offset")) query.offset = Number(params.get("offset"));
+                if (params.get("event")) query.event = params.get("event");
+                if (params.get("actor")) query.actor = params.get("actor");
+                if (params.get("target")) query.target = params.get("target");
+                return this.#json(res, 200, rbac.getAuditLog(query));
+            }
+
+            return this.#json(res, 404, { error: "Not found" });
+        } catch (err) {
+            log.error(`RBAC API error: ${err.message}`);
+            return this.#json(res, 400, { error: err.message });
+        }
     }
 
     // ── Status API ──────────────────────────────────────────────
@@ -862,9 +1040,83 @@ export class WebUIServer {
             "X-Accel-Buffering": "no",
         });
         res.write(`data: ${JSON.stringify({ type: "status", ...this.#getWebuiConversationStatus() })}\n\n`);
+
+        this.#chatSseClients.add(res);
+
+        // Heartbeat to keep connection alive behind proxies (HA Ingress/nginx)
+        const heartbeat = setInterval(() => {
+            try { res.write(":heartbeat\n\n"); }
+            catch { clearInterval(heartbeat); this.#chatSseClients.delete(res); }
+        }, 30_000);
+
         req.on("close", () => {
+            clearInterval(heartbeat);
+            this.#chatSseClients.delete(res);
             try { res.end(); } catch {}
         });
+
+        // Ensure conversation event listeners are attached
+        this.#ensureChatConvListeners();
+    }
+
+    /** Broadcast a chat event to all connected chat SSE clients. */
+    #broadcastChatEvent(event) {
+        const payload = `data: ${JSON.stringify(event)}\n\n`;
+        for (const client of this.#chatSseClients) {
+            try { client.write(payload); }
+            catch { this.#chatSseClients.delete(client); }
+        }
+    }
+
+    /**
+     * Attach event listeners to the webui:default conversation.
+     * Re-attaches whenever the conversation instance changes.
+     */
+    #ensureChatConvListeners() {
+        const conv = this.#getWebuiConversation();
+        if (!conv) return; // no conversation yet — listeners will attach on send
+
+        // Already listening to this conversation instance
+        if (this.#chatConvListeners?.target === conv) return;
+
+        // Detach from previous conversation if any
+        this.#detachChatConvListeners();
+
+        const listeners = {
+            target: conv,
+            text_chunk: ({ text }) =>
+                this.#broadcastChatEvent({ type: "text_chunk", text }),
+            thought_chunk: ({ text }) =>
+                this.#broadcastChatEvent({ type: "thought", text }),
+            tool_start: (data) =>
+                this.#broadcastChatEvent({ type: "tool_start", toolCallId: data.toolCallId, name: data.name }),
+            tool_end: (data) =>
+                this.#broadcastChatEvent({ type: "tool_end", toolCallId: data.toolCallId, status: data.status }),
+            prompt_complete: () => {
+                this.#broadcastChatEvent({ type: "done", ...this.#getWebuiConversationStatus() });
+            },
+            error: (err) =>
+                this.#broadcastChatEvent({ type: "error", message: err.message }),
+            dead: () =>
+                this.#broadcastChatEvent({ type: "error", message: "Conversation ended unexpectedly" }),
+            elicitation: (data) =>
+                this.#broadcastChatEvent({ type: "elicitation", message: data.message }),
+        };
+
+        for (const [event, fn] of Object.entries(listeners)) {
+            if (event === "target") continue;
+            conv.on(event, fn);
+        }
+        this.#chatConvListeners = listeners;
+    }
+
+    #detachChatConvListeners() {
+        if (!this.#chatConvListeners) return;
+        const { target, ...fns } = this.#chatConvListeners;
+        for (const [event, fn] of Object.entries(fns)) {
+            target.removeListener(event, fn);
+        }
+        this.#chatConvListeners = null;
     }
 
     async #apiChatSend(res, body) {
@@ -884,15 +1136,39 @@ export class WebUIServer {
         }
 
         try {
+            // Broadcast user message and message_start to SSE clients
+            this.#broadcastChatEvent({ type: "user_message", text });
+            this.#broadcastChatEvent({ type: "message_start" });
+
             // Force safe defaults — never trust client-supplied model/mcpProfile
             const opts = {
                 model: this.#ctx.config?.defaultModel || "standard",
                 mcpProfile: "owner",
                 messageId: null,
             };
-            await conversationManager.route(WEBUI_SCOPE_KEY, text, ref, opts);
+
+            // Don't await — route() blocks until prompt completes.
+            // We respond immediately and let SSE carry the streaming events.
+            const routePromise = conversationManager.route(WEBUI_SCOPE_KEY, text, ref, opts);
+
+            // Poll briefly for conversation to appear (created before prompt starts)
+            const attachListeners = async () => {
+                for (let i = 0; i < 20; i++) {
+                    await new Promise(r => setTimeout(r, 100));
+                    const conv = this.#getWebuiConversation();
+                    if (conv) { this.#ensureChatConvListeners(); return; }
+                }
+            };
+            attachListeners();
+
+            // Handle completion/errors in background
+            routePromise.catch(err => {
+                this.#broadcastChatEvent({ type: "error", message: err.message });
+            });
+
             this.#json(res, 200, { sent: true, conversation: this.#getWebuiConversationStatus() });
         } catch (err) {
+            this.#broadcastChatEvent({ type: "error", message: err.message });
             this.#json(res, 500, { error: `Chat error: ${err.message}` });
         }
     }
@@ -904,7 +1180,9 @@ export class WebUIServer {
         }
 
         try {
+            this.#detachChatConvListeners();
             const cleared = await conversationManager.destroy(WEBUI_SCOPE_KEY);
+            this.#broadcastChatEvent({ type: "new_session" });
             this.#json(res, 200, { cleared, conversation: this.#getWebuiConversationStatus() });
         } catch (err) {
             this.#json(res, 500, { error: `Failed to reset conversation: ${err.message}` });
