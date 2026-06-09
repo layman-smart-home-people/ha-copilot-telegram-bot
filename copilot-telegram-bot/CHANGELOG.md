@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.2.4] — 2026-06-09
+
+### Fixed
+- **Draft blocks typing on finalize** — draft is now cleared BEFORE sending the real message (was: send draft with full HTML → send real message → clear draft, leaving input blocked). Uses empty string to clear instead of null (null was a no-op). Clear is now awaited, not fire-and-forget.
+
 ## [2.2.3] — 2026-06-09
 
 ### Changed

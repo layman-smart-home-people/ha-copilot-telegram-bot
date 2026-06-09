@@ -2,7 +2,7 @@ name: Copilot Telegram Bot
 description: Always-on Telegram bot connected to GitHub Copilot CLI via ACP
 slug: copilot-telegram-bot
 url: https://github.com/layman-smart-home-people/ha-copilot-telegram-bot
-version: 2.2.3
+version: 2.2.4
 init: false
 arch:
   - aarch64
