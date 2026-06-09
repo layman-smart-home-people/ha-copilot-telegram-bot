@@ -2,6 +2,14 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.3.4] — 2026-06-10
+
+### Fixed
+- **`/dream` crash — missing `await`** — `pkm.handleApi()` returns a Promise for async routes, but the WebUI server wasn't awaiting it. Response became `null`, crashing with `Cannot read properties of null (reading 'harvested')`. (#10)
+- **`/dream` null-safety** — `formatResult` now guards against null/undefined `data` before accessing result fields.
+- **Invite deep links broken** — `consumeInvite()` existed in RBAC but was never called. `/start invite_<TOKEN>` now processes invites before the auth wall, enabling self-service onboarding. Handles expired, invalid, and already-used tokens. (Fixes #4)
+- **No timestamp after session resume** — after compaction/recovery, the agent had no time reference, leading to incorrect time assumptions. Current ISO 8601 timestamp is now injected into recovery context. (Fixes #8)
+
 ## [2.3.3] — 2026-06-09
 
 ### Changed — Code Hygiene
