@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.3.5] — 2026-06-10
+
+### Fixed
+- **Dream mode "LLM not available"** — `PkmManager.setLlmCall()` was never called during boot, so `/dream` returned 503. Now wires a pool-backed `llmCall` function after the ACP pool boots. Uses `reasoning` model (Opus 4.6) for high-quality memory curation, no timeout (dream runs as long as needed), `owner` MCP profile (PKM sidecar + fact-checking tools available), unique scope keys per call to prevent STICKY collisions between concurrent dream phases and extractor timer, and guarded `pool.release()` for pool-exhaustion safety.
+
 ## [2.3.4] — 2026-06-10
 
 ### Fixed
