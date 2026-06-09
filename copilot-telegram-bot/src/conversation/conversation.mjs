@@ -25,6 +25,7 @@ export class Conversation extends EventEmitter {
     #crashRetries = 0;
     #maxRetries = 2;
     #mcpProfile;     // preserved for crash recovery
+    #receiveQueue = Promise.resolve(); // serialize concurrent receives
 
     // Elicitation
     #pendingElicitation = null; // { requestId, message, resolve }
@@ -78,6 +79,14 @@ export class Conversation extends EventEmitter {
      * - eliciting → resolve elicitation with this text
      */
     async receive(text, opts = {}) {
+        // Serialize concurrent receives to prevent race conditions
+        const result = this.#receiveQueue = this.#receiveQueue
+            .catch(() => {}) // don't let previous failures block the queue
+            .then(() => this.#doReceive(text, opts));
+        return result;
+    }
+
+    async #doReceive(text, opts = {}) {
         this.#lastActivity = Date.now();
         if (opts.rawText) this.#rawUserText = opts.rawText;
 
