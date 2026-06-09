@@ -68,12 +68,13 @@ export class ResponseStreamer {
     #draftId = null;
     #transportConfig;  // 'auto' | 'draft' | 'edit' | 'off'
 
-    // Content accumulation — VSCode-style phases
-    #phases = [];          // [{ thinking: string, tools: [{...}], text: string }]
+    // Content accumulation — multi-bubble phases
+    #phases = [];          // [{ thinking: string, tools: [{...}], text: string, flushed: bool }]
     #currentPhase = null;  // current phase being built
     #thoughtBuffer = "";
     #toolSteps = [];       // flat list for progress tracking
     #planEntries = [];
+    #pendingFlush = false; // flag: need to flush completed phases as messages
 
     // Rendering state
     #lastRendered = "";
@@ -87,7 +88,7 @@ export class ResponseStreamer {
     // Draft tracking
     #draftFailures = 0;
     #draftSending = false;
-    #overflowPages = null;  // multi-message overflow for long responses
+    #overflowPages = null;
 
     constructor(telegram, { streamingTransport = "auto" } = {}) {
         this.#telegram = telegram;
@@ -111,6 +112,7 @@ export class ResponseStreamer {
         this.#thoughtBuffer = "";
         this.#toolSteps = [];
         this.#planEntries = [];
+        this.#pendingFlush = false;
         this.#lastRendered = "";
         this.#lastRenderTime = 0;
         this.#finalized = false;
@@ -166,22 +168,15 @@ export class ResponseStreamer {
         return this.#messageId;
     }
 
-    /** Stream a text chunk from ACP. */
+    /** Stream a text chunk from ACP — always response text (visible in bubble). */
     onTextChunk(text) {
         if (this.#finalized) return;
-        // Classify: if tools are active in current phase, this is reasoning.
-        // If no tools active (or all done), this is response text.
         const phase = this.#ensurePhase();
-        const hasActiveTools = phase.tools.some(t => t.status === "running");
-        if (hasActiveTools) {
-            phase.thinking += text;
-        } else {
-            phase.text += text;
-        }
+        phase.text += text;
         this.#scheduleRender();
     }
 
-    /** Stream a thought chunk (shown during processing, hidden in final). */
+    /** Stream a thought chunk — internal reasoning (collapsed in bubble). */
     onThoughtChunk(text) {
         if (this.#finalized) return;
         this.#thoughtBuffer += text;
@@ -190,7 +185,7 @@ export class ResponseStreamer {
         this.#scheduleRender();
     }
 
-    /** Tool started — opens a new thinking phase if needed. */
+    /** Tool started — opens a new phase if previous one had content. */
     onToolStart({ toolName, name, toolCallId }) {
         if (this.#finalized) return;
         const resolvedName = toolName || name;
@@ -203,10 +198,11 @@ export class ResponseStreamer {
         };
         this.#toolSteps.push(step);
 
-        // If current phase already has response text, start a new phase
+        // If current phase has response text, flush it and start a new phase
         const phase = this.#ensurePhase();
-        if (phase.text.trim()) {
-            this.#currentPhase = null; // force new phase
+        if (phase.text.trim() || phase.thinking.trim()) {
+            this.#pendingFlush = true;
+            this.#currentPhase = null;
             this.#ensurePhase().tools.push(step);
         } else {
             phase.tools.push(step);
@@ -301,7 +297,7 @@ export class ResponseStreamer {
     /** Ensure a current phase exists. Creates one if needed. */
     #ensurePhase() {
         if (!this.#currentPhase) {
-            this.#currentPhase = { thinking: "", tools: [], text: "" };
+            this.#currentPhase = { thinking: "", tools: [], text: "", flushed: false };
             this.#phases.push(this.#currentPhase);
         }
         return this.#currentPhase;
@@ -369,11 +365,16 @@ export class ResponseStreamer {
 
     async #renderProgress() {
         if (this.#finalized) return;
-        if (this.#messageId === -2) return; // "off" mode — no progress updates
+        if (this.#messageId === -2) return; // "off" mode
+
+        // Flush completed phases as separate message bubbles
+        if (this.#pendingFlush) {
+            await this.#flushCompletedPhases();
+            this.#pendingFlush = false;
+        }
 
         const html = this.#buildProgressHtml();
         if (html === this.#lastRendered) return;
-        // In draft mode, always send; in edit mode, require meaningful change
         if (!this.#draftMode && Math.abs(html.length - this.#lastRendered.length) < EDIT_MIN_CHARS
             && !html.includes("⏱")) return;
 
@@ -387,16 +388,27 @@ export class ResponseStreamer {
         }
     }
 
-    /** Build progress HTML — VSCode-style: tool status during thinking, text when writing. */
-    #buildProgressHtml() {
-        const elapsed = this.#startTime ? Math.round((Date.now() - this.#startTime) / 1000) : 0;
-        const timer = elapsed > 0 ? ` <i>(${elapsed}s)</i>` : "";
+    /**
+     * Flush all completed (non-current) phases as separate Telegram messages.
+     * Then reset the current message for the active phase.
+     */
+    async #flushCompletedPhases() {
+        const toFlush = this.#phases.filter(p => p !== this.#currentPhase && !p.flushed);
+        if (toFlush.length === 0) return;
 
         const parts = [];
-
-        // Render completed phases as collapsed thinking blocks
-        for (let i = 0; i < this.#phases.length - 1; i++) {
-            const phase = this.#phases[i];
+        for (const phase of toFlush) {
+            // Response text — visible at top
+            if (phase.text.trim()) {
+                parts.push(markdownToTelegramHtml(phase.text));
+            }
+            // Thinking — collapsed
+            if (phase.thinking.trim()) {
+                const lines = phase.thinking.trim().split("\n").filter(l => l.trim());
+                const preview = (lines[0] || "Thinking").slice(0, 60);
+                parts.push(`<blockquote expandable>💭 ${escapeHtml(preview)}${lines[0]?.length > 60 ? "…" : ""}\n${escapeHtml(phase.thinking.trim())}</blockquote>`);
+            }
+            // Tools — collapsed
             if (phase.tools.length > 0) {
                 const toolLines = phase.tools.map(s => {
                     const icon = s.status === "done" ? "✅" : s.status === "error" ? "⚠️" : "⏳";
@@ -405,25 +417,61 @@ export class ResponseStreamer {
                 }).join("\n");
                 parts.push(`<blockquote expandable>🧠 ${phase.tools.length} steps\n${toolLines}</blockquote>`);
             }
-            // Show response text from completed phases
-            if (phase.text.trim()) {
-                parts.push(markdownToTelegramHtml(phase.text));
-            }
+            phase.flushed = true;
         }
 
-        // Current (last) phase — show live progress
-        const current = this.#phases.length > 0 ? this.#phases[this.#phases.length - 1] : null;
+        if (parts.length === 0) return;
 
-        if (current?.text.trim()) {
+        const html = this.#truncate(parts.join("\n"));
+
+        // Commit the current message content (edit or send), then start fresh
+        if (this.#draftMode) {
+            // Send as real message, clear draft for next phase
+            try {
+                const params = withThread({ chat_id: this.#ref.chatId, text: html, parse_mode: "HTML",
+                    link_preview_options: { is_disabled: true }, disable_notification: true }, this.#ref);
+                await this.#telegram.call("sendMessage", params);
+            } catch (err) {
+                log.warn(`Phase flush failed: ${err.message}`);
+            }
+        } else if (this.#messageId && this.#messageId > 0) {
+            // Edit current message to the completed content, then send new placeholder
+            try {
+                await this.#telegram.editMessageText(this.#ref.chatId, this.#messageId, html, "HTML");
+            } catch { /* best effort */ }
+            // Send new placeholder for next phase
+            try {
+                const params = withThread({ chat_id: this.#ref.chatId, text: "🤔 <i>Thinking...</i>",
+                    parse_mode: "HTML", disable_notification: true }, this.#ref);
+                const result = await this.#telegram.call("sendMessage", params);
+                this.#messageId = result?.message_id ?? this.#messageId;
+            } catch { /* keep old messageId */ }
+        }
+
+        this.#lastRendered = "";
+    }
+
+    /** Build progress HTML — only the current active phase (previous phases already flushed as bubbles). */
+    #buildProgressHtml() {
+        const elapsed = this.#startTime ? Math.round((Date.now() - this.#startTime) / 1000) : 0;
+        const timer = elapsed > 0 ? ` <i>(${elapsed}s)</i>` : "";
+
+        const parts = [];
+        const current = this.#currentPhase;
+
+        if (!current) {
+            return `🤔 <i>Thinking...</i>${timer}`;
+        }
+
+        if (current.text.trim()) {
             // Agent is writing response — stream it clean
             parts.push(markdownToTelegramHtml(current.text));
 
-            // Show any still-running tools below
             const running = current.tools.filter(s => s.status === "running");
             if (running.length > 0) {
                 parts.push(`\n<blockquote>${running.map(s => `⏳ ${escapeHtml(s.label)}...`).join("\n")}</blockquote>`);
             }
-        } else if (current?.tools.length > 0) {
+        } else if (current.tools.length > 0) {
             // Agent is thinking/using tools — show compact status
             const running = current.tools.filter(s => s.status === "running");
             const doneCount = current.tools.filter(s => s.status === "done").length;
@@ -434,17 +482,17 @@ export class ResponseStreamer {
                 parts.push(`🤔 <i>Processing...</i>${timer}`);
             }
 
-            // Show recent tools
             const recent = current.tools.slice(-5);
             const toolLines = recent.map(s => {
                 const icon = s.status === "done" ? "✅" : s.status === "error" ? "⚠️" : "⏳";
                 const dur = s.endTime ? ` ${((s.endTime - s.startTime) / 1000).toFixed(1)}s` : "";
                 return `${icon} ${escapeHtml(s.label)}${dur}`;
             }).join("\n");
-            if (doneCount > 0) parts.push(`${doneCount} done · ${running.length} running`);
+            if (doneCount > 0 || running.length > 0) {
+                parts.push(`${doneCount} done · ${running.length} running`);
+            }
             parts.push(`<blockquote>${toolLines}</blockquote>`);
         } else {
-            // No tools, no text — pure thinking
             parts.push(`🤔 <i>Thinking...</i>${timer}`);
         }
 
@@ -461,25 +509,35 @@ export class ResponseStreamer {
         return this.#truncate(parts.join("\n") || `🤔 <i>Thinking...</i>${timer}`);
     }
 
-    /** Build final HTML — clean response + collapsed thinking phases. */
+    /** Build final HTML — text → thinking → tools, only unflushed phases. */
     #renderFinal(replyMarkup) {
         const parts = [];
-        const thinkingBlocks = [];
-        let totalToolCount = 0;
+        let toolCount = 0;
+        const toolLines = [];
 
         for (const phase of this.#phases) {
-            if (phase.tools.length > 0) {
-                totalToolCount += phase.tools.length;
-                const toolLines = phase.tools.map(s => {
-                    const icon = s.status === "done" ? "✅" : s.status === "error" ? "⚠️" : "⏳";
-                    const dur = s.endTime ? `${((s.endTime - s.startTime) / 1000).toFixed(1)}s` : "";
-                    return `${icon} ${escapeHtml(s.label)} ${dur}`;
-                }).join("\n");
-                thinkingBlocks.push(toolLines);
-            }
+            if (phase.flushed) continue;
 
+            // Response text — visible at top
             if (phase.text.trim()) {
                 parts.push(markdownToTelegramHtml(phase.text));
+            }
+
+            // Thinking — collapsed
+            if (phase.thinking.trim()) {
+                const lines = phase.thinking.trim().split("\n").filter(l => l.trim());
+                const preview = (lines[0] || "Thinking").slice(0, 60);
+                parts.push(`<blockquote expandable>💭 ${escapeHtml(preview)}${lines[0]?.length > 60 ? "…" : ""}\n${escapeHtml(phase.thinking.trim())}</blockquote>`);
+            }
+
+            // Collect tools for summary
+            if (phase.tools.length > 0) {
+                toolCount += phase.tools.length;
+                for (const s of phase.tools) {
+                    const icon = s.status === "done" ? "✅" : s.status === "error" ? "⚠️" : "⏳";
+                    const dur = s.endTime ? `${((s.endTime - s.startTime) / 1000).toFixed(1)}s` : "";
+                    toolLines.push(`${icon} ${escapeHtml(s.label)} ${dur}`);
+                }
             }
         }
 
@@ -487,21 +545,20 @@ export class ResponseStreamer {
             parts.push("Done ✅");
         }
 
-        // Append collapsed thinking/tool summary
-        let toolSuffix = "";
-        if (thinkingBlocks.length > 0) {
+        // Tools — collapsed at bottom
+        if (toolLines.length > 0) {
             const elapsed = ((Date.now() - this.#startTime) / 1000).toFixed(1);
-            const allToolLines = thinkingBlocks.join("\n");
-            toolSuffix = `\n\n<blockquote expandable>📋 ${totalToolCount} steps · ${elapsed}s\n${allToolLines}</blockquote>`;
+            parts.push("");
+            parts.push(`<blockquote expandable>📋 ${toolCount} steps · ${elapsed}s\n${toolLines.join("\n")}</blockquote>`);
         }
 
-        const fullHtml = parts.join("\n") + toolSuffix;
-
-        // If it fits in one message, done
+        const fullHtml = parts.join("\n");
         if (fullHtml.length <= MAX_MSG_LEN) return fullHtml;
 
-        // Split into pages — store overflow for multi-message send in commitFinal
-        this.#overflowPages = this.#splitForTelegram(parts.join("\n"), toolSuffix);
+        this.#overflowPages = this.#splitForTelegram(
+            parts.slice(0, toolLines.length > 0 ? -1 : undefined).join("\n"),
+            toolLines.length > 0 ? parts[parts.length - 1] : ""
+        );
         return this.#overflowPages.shift();
     }
 
@@ -605,14 +662,19 @@ export class ResponseStreamer {
 
     async #commitFinal(html, replyMarkup) {
         if (this.#draftMode) {
-            await this.#sendDraft(html);
+            // Clear draft FIRST to unblock input, then send real message
+            try {
+                await this.#telegram.sendMessageDraft(this.#ref.chatId, this.#draftId, "", "HTML");
+            } catch {
+                // Try null as fallback
+                await this.#telegram.sendMessageDraft(this.#ref.chatId, this.#draftId, null).catch(() => {});
+            }
             try {
                 const params = withThread({ chat_id: this.#ref.chatId, text: html, parse_mode: "HTML",
                     link_preview_options: { is_disabled: true } }, this.#ref);
                 if (replyMarkup) params.reply_markup = replyMarkup;
                 const result = await this.#telegram.call("sendMessage", params);
                 this.#messageId = result?.message_id ?? null;
-                this.#telegram.sendMessageDraft(this.#ref.chatId, this.#draftId, null).catch(() => {});
             } catch (err) {
                 log.warn(`Final send failed: ${err.message}`);
                 const plain = stripHtmlKeepStructure(html);

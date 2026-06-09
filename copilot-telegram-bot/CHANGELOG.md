@@ -2,6 +2,13 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.2.3] — 2026-06-09
+
+### Changed
+- **Multi-bubble streaming** — each thinking round (reasoning + tools) sends as a separate Telegram message. No more single growing bubble. Each bubble has its own collapsed tool summary.
+- **Current phase only in draft** — draft/edit shows only the active phase, not accumulated history. Previous phases already committed as separate messages.
+- **Flush on new round** — when a new tool call starts after response text, the completed phase is automatically flushed as a committed message before the new round begins.
+
 ## [2.2.2] — 2026-06-09
 
 ### Changed — Streaming UX Overhaul
