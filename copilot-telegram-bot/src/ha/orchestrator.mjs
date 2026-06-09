@@ -131,8 +131,8 @@ export class StandingInstructionOrchestrator {
             // Non-fatal — will reconnect automatically
         }
 
-        // Start cron evaluation loop
-        this.#cronTimer = setInterval(() => this.#evaluateCron(), CRON_CHECK_INTERVAL_MS);
+        // Start cron evaluation loop — aligned to clock minute boundaries to prevent drift
+        this.#scheduleCronTick();
 
         // Start timer evaluation loop
         this.#timerTimer = setInterval(() => this.#evaluateTimers(), TIMER_CHECK_INTERVAL_MS);
@@ -150,7 +150,7 @@ export class StandingInstructionOrchestrator {
         this.#started = false;
 
         if (this.#cronTimer) {
-            clearInterval(this.#cronTimer);
+            clearTimeout(this.#cronTimer);
             this.#cronTimer = null;
         }
         if (this.#timerTimer) {
@@ -208,6 +208,18 @@ export class StandingInstructionOrchestrator {
         if (!instruction.last_triggered_at) return false;
         const cooldownMs = (instruction.cooldown_seconds || 0) * 1000;
         return cooldownMs > 0 && Date.now() - Date.parse(instruction.last_triggered_at) < cooldownMs;
+    }
+
+    /** Schedule cron tick aligned to the next clock minute boundary to prevent drift. */
+    #scheduleCronTick() {
+        const now = Date.now();
+        const msUntilNextMinute = CRON_CHECK_INTERVAL_MS - (now % CRON_CHECK_INTERVAL_MS) + 500; // 500ms buffer into the new minute
+        this.#cronTimer = setTimeout(() => {
+            this.#evaluateCron();
+            // Continue scheduling aligned ticks
+            if (this.#started) this.#scheduleCronTick();
+        }, msUntilNextMinute);
+        if (this.#cronTimer.unref) this.#cronTimer.unref();
     }
 
     #evaluateCron() {
