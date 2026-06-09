@@ -2,6 +2,16 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.4.12] — 2026-06-09
+
+### Fixed
+- **Pool: zombie claimed instance detection** — Health check now detects claimed instances with dead processes and cleans them up. Previously only idle instances were health-checked, allowing dead claimed instances to consume pool capacity indefinitely.
+- **Pool: health check triggers pre-warm** — Health check failures now trigger replacement spawn (like crash handler), preventing pool from silently shrinking below pre-warm threshold.
+- **Pool: wait queue drain after spawn** — After crash/health-check replacement spawn, the wait queue is drained again so queued waiters get served by the new instance instead of timing out.
+- **Conversation: receive serialization** — Two near-simultaneous messages for an idle conversation could both enter `#prompt()` concurrently, causing interleaved ACP prompts and garbled streamer output. Now serialized through a promise queue.
+- **Conversation: crash recovery releases old instance** — `replaceInstance()` now releases the old dead pool instance before acquiring a new one, preventing pool capacity leak.
+- **Standing Instructions: cron minute alignment** — Cron evaluation now aligns to clock minute boundaries using `setTimeout` instead of drifting `setInterval`. Prevents missed cron triggers (e.g., `0 6 * * *` could miss the 06:00 minute).
+
 ## [1.4.11] — 2026-06-09
 
 ### Fixed
