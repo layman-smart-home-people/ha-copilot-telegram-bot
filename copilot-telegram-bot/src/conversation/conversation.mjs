@@ -290,14 +290,30 @@ export class Conversation extends EventEmitter {
     #attachAcpListeners() {
         const acp = this.#poolInstance.acp;
 
-        this.#listeners.textChunk = (text) => this.#streamer.onTextChunk(text);
-        this.#listeners.thoughtChunk = (text) => this.#streamer.onThoughtChunk(text);
-        this.#listeners.toolStart = (data) => this.#streamer.onToolStart(data);
-        this.#listeners.toolEnd = (data) => this.#streamer.onToolEnd(data);
-        this.#listeners.plan = (entries) => this.#streamer.onPlan(entries);
+        this.#listeners.textChunk = (text) => {
+            this.#streamer.onTextChunk(text);
+            this.emit("text_chunk", { text });
+        };
+        this.#listeners.thoughtChunk = (text) => {
+            this.#streamer.onThoughtChunk(text);
+            this.emit("thought_chunk", { text });
+        };
+        this.#listeners.toolStart = (data) => {
+            this.#streamer.onToolStart(data);
+            this.emit("tool_start", data);
+        };
+        this.#listeners.toolEnd = (data) => {
+            this.#streamer.onToolEnd(data);
+            this.emit("tool_end", data);
+        };
+        this.#listeners.plan = (entries) => {
+            this.#streamer.onPlan(entries);
+            this.emit("plan", entries);
+        };
         this.#listeners.messageEnd = () => {
-            // ACP signals message_end when the turn is complete
-            // (prompt() promise resolves separately)
+            // ACP signals message_end when a turn is complete — notify streamer for multi-turn display
+            this.#streamer.onTurnEnd();
+            this.emit("message_end");
         };
         this.#listeners.elicitation = ({ requestId, message, schema }) => {
             this.#state = "eliciting";

@@ -122,9 +122,23 @@ export class ResponseStreamer {
 
         if (useDraft) {
             this.#draftMode = true;
-            this.#draftId = `stream-${Date.now()}`;
+            this.#draftId = 1; // Telegram API requires integer draft_id
             this.#messageId = -1; // sentinel for draft mode
-            await this.#sendDraft("🤔 Thinking...");
+            try {
+                await this.#sendDraft("🤔 Thinking...");
+            } catch (err) {
+                // Draft failed on first attempt — fall back to edit mode
+                log.warn(`Draft mode unavailable: ${err.message} — falling back to edit mode`);
+                this.#draftMode = false;
+                this.#draftId = null;
+                const params = {
+                    chat_id: ref.chatId, text: "🤔 <i>Thinking...</i>",
+                    parse_mode: "HTML", disable_notification: true,
+                };
+                if (ref.threadId) params.message_thread_id = ref.threadId;
+                const result = await this.#telegram.call("sendMessage", params).catch(() => null);
+                this.#messageId = result?.message_id ?? null;
+            }
         } else if (this.#transportConfig === "off") {
             // No progress updates — send final as fresh message
             this.#draftMode = false;
@@ -190,6 +204,16 @@ export class ResponseStreamer {
         if (this.#finalized) return;
         this.#planEntries = entries;
         this.#scheduleRender();
+    }
+
+    /** Agent turn ended — snapshot current text for multi-turn display. */
+    onTurnEnd() {
+        if (this.#finalized) return;
+        // If there's accumulated text, mark the turn boundary
+        // so the next turn's text doesn't merge with the previous
+        if (this.#textBuffer.length > 0) {
+            this.#textBuffer += "\n\n";
+        }
     }
 
     /** Finalize the response — render final message with expandable details. */
