@@ -622,6 +622,17 @@ export class RBACManager {
         if (!this.#roles[role]) {
             throw new Error(`Unknown role: ${role}`);
         }
+        // Pre-approved admins cannot be demoted
+        if (this.#adminIds.has(userId) && role !== "owner") {
+            throw new Error("Cannot demote pre-approved admin user");
+        }
+        // Delegation check: if a caller is specified, verify they can grant this role
+        if (opts.callerId) {
+            const callerId = Number(opts.callerId);
+            if (!Number.isNaN(callerId) && !this.canGrantRole(callerId, role)) {
+                throw new Error(`Insufficient rank to assign role: ${role}`);
+            }
+        }
 
         const existing = this.#users.get(userId);
         const previousRole = existing?.role || null;
@@ -702,6 +713,16 @@ export class RBACManager {
         if (updates.inherits !== undefined) {
             if (updates.inherits && !this.#roles[updates.inherits]) {
                 throw new Error(`Inherits from unknown role: ${updates.inherits}`);
+            }
+            // Circular inheritance check
+            if (updates.inherits) {
+                let check = updates.inherits;
+                const visited = new Set([name]);
+                while (check) {
+                    if (visited.has(check)) throw new Error(`Circular inheritance: ${name} → ... → ${check}`);
+                    visited.add(check);
+                    check = this.#roles[check]?.inherits;
+                }
             }
             role.inherits = updates.inherits;
         }

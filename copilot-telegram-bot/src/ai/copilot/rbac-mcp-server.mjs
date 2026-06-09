@@ -4,8 +4,27 @@
 // Same pattern as si-mcp-server.mjs. No npm dependencies.
 
 import http from "node:http";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const API_BASE = process.env.RBAC_API_BASE || "http://localhost:8099";
+const COPILOT_HOME = process.env.COPILOT_HOME || "";
+const SCOPE_KEY_FILE = COPILOT_HOME ? join(COPILOT_HOME, ".scope-key") : "";
+
+/** Read calling user ID from scope key (e.g. "dm:430432097" → "430432097"). */
+function getCallerUserId() {
+    if (!SCOPE_KEY_FILE) return null;
+    try {
+        const key = readFileSync(SCOPE_KEY_FILE, "utf8").trim();
+        if (!key) return null;
+        const parts = key.split(":");
+        // dm:{userId}, dm:{userId}:{threadId}, group:{chatId}:{userId}, forum:{chatId}:{threadId}:{userId}
+        if (parts[0] === "dm") return parts[1] || null;
+        if (parts[0] === "group") return parts[2] || null;
+        if (parts[0] === "forum") return parts[3] || null;
+        return null;
+    } catch { return null; }
+}
 
 function log(msg) { process.stderr.write(`[rbac-mcp] ${msg}\n`); }
 
@@ -375,7 +394,8 @@ async function handleTool(name, args) {
                 const { userId, role, displayName, expiresAt } = args || {};
                 if (!userId) return err("userId is required");
                 if (!role) return err("role is required");
-                const body = { role, displayName, expiresAt };
+                const callerId = getCallerUserId();
+                const body = { role, displayName, expiresAt, callerId };
                 const { status, data } = await apiCall("PUT", `/api/rbac/users/${encodeURIComponent(userId)}/role`, body);
                 if (status === 200) {
                     return ok(`✅ User ${userId} assigned role: ${role}\n\n${JSON.stringify(data, null, 2)}`);
@@ -404,9 +424,10 @@ async function handleTool(name, args) {
             }
 
             case "rbac_create_invite": {
-                const { role, expiresAt, roleExpiresAt, createdBy } = args || {};
+                const { role, expiresAt, roleExpiresAt } = args || {};
                 if (!role) return err("role is required");
-                const body = { role, expiresAt, roleExpiresAt, createdBy };
+                const callerId = getCallerUserId();
+                const body = { role, expiresAt, roleExpiresAt, createdBy: callerId || undefined };
                 const { status, data } = await apiCall("POST", "/api/rbac/invites", body);
                 if (status === 201) {
                     return ok(`🔗 Invite created for role: ${role}\n\nToken: ${data.token}\nDeep link: /start invite_${data.token}\n\n${JSON.stringify(data, null, 2)}`);

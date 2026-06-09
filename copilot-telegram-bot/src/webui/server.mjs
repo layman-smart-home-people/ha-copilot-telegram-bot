@@ -371,8 +371,8 @@ export class WebUIServer {
             if (userRoleMatch && method === "PUT") {
                 const userId = decodeURIComponent(userRoleMatch[1]);
                 const body = await this.#readBody(req);
-                const { role, displayName, expiresAt } = body;
-                rbac.setUserRole(userId, role, { displayName, expiresAt });
+                const { role, displayName, expiresAt, callerId } = body;
+                rbac.setUserRole(userId, role, { displayName, expiresAt, callerId });
                 return this.#json(res, 200, rbac.getUser(Number(userId)));
             }
 
