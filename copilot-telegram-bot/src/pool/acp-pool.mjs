@@ -485,10 +485,14 @@ export class ACPPool extends EventEmitter {
             this.#cleanup(inst);
             this.#drainWaitQueue();
 
-            // Replace if below pre-warm threshold
+            // Replace if below pre-warm threshold — drain wait queue again after spawn
             if (this.#countAlive() < this.#preWarmCount) {
-                const defaultModel = this.#resolveModelTier(this.#config.defaultModel);
-                this.#spawn(defaultModel, "owner").catch(err =>
+                const defaultModel = this.#resolveModelTier(
+                    this.#config.dispatcherModel || this.#config.defaultModel || "standard"
+                );
+                this.#spawn(defaultModel, "owner").then(() => {
+                    this.#drainWaitQueue();
+                }).catch(err =>
                     log.warn(`Post-crash pre-warm failed: ${err.message}`)
                 );
             }
@@ -501,6 +505,17 @@ export class ACPPool extends EventEmitter {
 
     async #healthCheck() {
         for (const inst of this.#instances.values()) {
+            // Check claimed instances for dead processes (zombie detection)
+            if (inst.state === "claimed" && !inst.alive) {
+                log.warn(`${inst.id} is claimed but process is dead — marking dead`);
+                const crashedScope = inst.claimedBy;
+                inst.state = "dead";
+                if (crashedScope) {
+                    this.emit("instance-crash", { instanceId: inst.id, scopeKey: crashedScope });
+                }
+                this.#cleanup(inst);
+                continue;
+            }
             if (inst.state !== "idle") continue;
             try {
                 await Promise.race([
@@ -514,6 +529,18 @@ export class ACPPool extends EventEmitter {
                 inst.state = "dead";
                 this.#cleanup(inst);
             }
+        }
+
+        // Replace if below pre-warm threshold (covers both health failures and zombie cleanup)
+        if (this.#countAlive() < this.#preWarmCount) {
+            const defaultModel = this.#resolveModelTier(
+                this.#config.dispatcherModel || this.#config.defaultModel || "standard"
+            );
+            this.#spawn(defaultModel, "owner").then(() => {
+                this.#drainWaitQueue();
+            }).catch(err =>
+                log.warn(`Health-check pre-warm failed: ${err.message}`)
+            );
         }
     }
 
