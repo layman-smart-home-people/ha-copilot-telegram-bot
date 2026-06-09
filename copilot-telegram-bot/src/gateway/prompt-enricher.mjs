@@ -1,7 +1,7 @@
 // ============================================================
 // PromptEnricher — Builds context prefix for v7 conversations
 // ============================================================
-// Loads agent identity (MEMORY.md, IDENTITY.md, SKILLS.md) and
+// Loads agent identity (IDENTITY.md, PKM pinned memories) and
 // injects sender metadata, pinned instructions, and role context.
 // Used by the Router before passing text to ConversationManager.
 
@@ -203,7 +203,7 @@ export class PromptEnricher {
             : agentDir;
 
         const sections = [];
-        // Load core agent files (IDENTITY.md + MEMORY.md only — SKILLS/TASKS deferred to on-demand)
+        // Load core agent files (IDENTITY.md only — memory migrated to PKM)
         for (const file of AGENT_FILES) {
             const path = `${dir}/${file}`;
             if (existsSync(path)) {
