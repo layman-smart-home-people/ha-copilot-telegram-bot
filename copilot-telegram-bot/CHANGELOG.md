@@ -5,7 +5,7 @@ All notable changes to the Copilot Telegram Bot add-on.
 ## [2.3.5] — 2026-06-10
 
 ### Fixed
-- **Dream mode "LLM not available"** — `PkmManager.setLlmCall()` was never called during boot, so `/dream` returned 503. Now wires a pool-backed `llmCall` function after the ACP pool boots. Uses `fast` model (Haiku) for cost efficiency, 120s timeout, and auto-releases the pool instance after each call. Also enables LLM-powered memory extraction in the background timer.
+- **Dream mode "LLM not available"** — `PkmManager.setLlmCall()` was never called during boot, so `/dream` returned 503. Now wires a pool-backed `llmCall` function after the ACP pool boots. Uses `fast` model (Haiku) for cost efficiency, 180s timeout, guest MCP profile (no tools — dream prompts are text-only), unique scope keys per call to prevent collisions between dream phases and extractor timer, and guarded release for pool-exhaustion safety.
 
 ## [2.3.4] — 2026-06-10
 

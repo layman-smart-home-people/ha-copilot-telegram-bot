@@ -208,20 +208,23 @@ async function main() {
 
     // --- Wire PKM LLM call (uses pool for dream mode) ---
     const pkmLlmCall = async (prompt) => {
-        const scopeKey = "__pkm_dream__";
-        const inst = await pool.acquire(scopeKey, { model: "fast", mcpProfile: "owner" });
+        // Unique scope per call avoids STICKY collisions between
+        // concurrent dream phases and the extractor background timer
+        const scopeKey = `__pkm_${Date.now()}_${Math.random().toString(36).slice(2, 6)}__`;
+        let inst;
         try {
+            inst = await pool.acquire(scopeKey, { model: "fast", mcpProfile: "guest" });
             let text = "";
             const onChunk = (chunk) => { text += chunk; };
             inst.acp.on("text_chunk", onChunk);
             try {
-                await inst.acp.prompt(prompt, { timeout: 120_000 });
+                await inst.acp.prompt(prompt, { timeout: 180_000 });
             } finally {
                 inst.acp.off("text_chunk", onChunk);
             }
             return text;
         } finally {
-            pool.release(inst.id);
+            if (inst) pool.release(inst.id);
         }
     };
     pkm.setLlmCall(pkmLlmCall);
