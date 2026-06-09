@@ -2,6 +2,11 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.3.3] — 2026-06-09
+
+### Changed — Code Hygiene
+- **Stale MEMORY.md comments cleaned up** — prompt-enricher.mjs and server.mjs comments still referenced MEMORY.md as part of the loading pipeline. Updated to reflect current PKM-based architecture (IDENTITY.md + pinned memories).
+
 ## [2.3.2] — 2026-06-09
 
 ### Fixed — Dream Mode + MCP Server
