@@ -600,7 +600,14 @@ export class WebUIServer {
 
         this.#sseClients.add(res);
 
+        // Heartbeat to keep connection alive behind proxies (HA Ingress/nginx)
+        const heartbeat = setInterval(() => {
+            try { res.write(":heartbeat\n\n"); }
+            catch { clearInterval(heartbeat); this.#sseClients.delete(res); }
+        }, 30_000);
+
         req.on("close", () => {
+            clearInterval(heartbeat);
             this.#sseClients.delete(res);
         });
     }
@@ -723,13 +730,15 @@ export class WebUIServer {
             }
             const info = await infoRes.json();
             const options = info.data?.options || {};
-            const schema = info.data?.schema || [];
+            const schema = info.data?.schema || {};
 
-            // Redact sensitive fields
+            // Redact sensitive fields — HA schema is an object { key: "password", ... }
             const safeOptions = { ...options };
-            for (const field of schema) {
-                if (field.format === "password" && safeOptions[field.name]) {
-                    safeOptions[field.name] = "••••••••";
+            if (schema && typeof schema === "object" && !Array.isArray(schema)) {
+                for (const [key, type] of Object.entries(schema)) {
+                    if (typeof type === "string" && type.startsWith("password") && safeOptions[key]) {
+                        safeOptions[key] = "••••••••";
+                    }
                 }
             }
 
@@ -971,10 +980,18 @@ export class WebUIServer {
         });
     }
 
-    async #readBody(req) {
+    async #readBody(req, maxBytes = 1_048_576) {
         return new Promise((resolve, reject) => {
             const chunks = [];
-            req.on("data", (chunk) => chunks.push(chunk));
+            let size = 0;
+            req.on("data", (chunk) => {
+                size += chunk.length;
+                if (size > maxBytes) {
+                    req.destroy();
+                    return reject(new Error("Request body too large"));
+                }
+                chunks.push(chunk);
+            });
             req.on("end", () => {
                 try {
                     const raw = Buffer.concat(chunks).toString("utf-8");
