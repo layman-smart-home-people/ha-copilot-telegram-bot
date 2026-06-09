@@ -94,6 +94,7 @@ When the user asks "when X happens, do Y":
 
 // Commands handled by the router
 const COMMANDS = new Map([
+    ["start", "Welcome & quick start guide"],
     ["stop", "Cancel current operation"],
     ["new", "Start fresh conversation"],
     ["help", "Show available commands"],
@@ -128,6 +129,7 @@ export class Router {
         this.#menus = new MenuManager({ telegram });
 
         // Register built-in command handlers
+        this.#handlers.set("start", (ref) => this.#cmdHelp(ref));
         this.#handlers.set("stop", (ref) => this.#cmdStop(ref));
         this.#handlers.set("new", (ref) => this.#cmdNew(ref));
         this.#handlers.set("help", (ref) => this.#cmdHelp(ref));
@@ -309,8 +311,8 @@ export class Router {
         } catch (err) {
             log.error(`Route error for ${scopeKey}: ${err.message}`);
             const errMsg = err.name === "PoolExhaustedError"
-                ? "⏳ All instances busy. Try again in a moment."
-                : `⚠️ ${err.message}`;
+                ? "⏳ I'm handling other requests right now. Please try again in a few seconds."
+                : "⚠️ Something went wrong. Please try again.";
             await this.#reply(ref, errMsg).catch(() => {});
         }
     }
@@ -526,7 +528,17 @@ export class Router {
 
     async #cmdHelp(ref) {
         const scopePrefix = this.#scopePrefix(ref);
-        const text = `<b>📋 Bot v${this.#config.version}</b>\n\nSend any message to chat with Copilot.\n💡 Send a new message while I'm working to redirect me.`;
+        const text = [
+            `<b>🤖 Home Assistant Copilot v${this.#config.version}</b>\n`,
+            `Send any message to chat — ask questions, control devices, or get reports.`,
+            `📸 Send a photo for visual analysis`,
+            `📎 Send text files to discuss their contents`,
+            `💡 Send a new message while I'm working to redirect me\n`,
+            `<b>Quick actions:</b>`,
+            `⚙️ <b>Settings</b> — change model (fast/standard/reasoning)`,
+            `📌 <b>Standing</b> — auto-rules like "alert me when door opens"`,
+            `🧠 <b>Memory</b> — what I remember about you & your home`,
+        ].join("\n");
 
         const keyboard = [
             row(
@@ -611,11 +623,17 @@ export class Router {
         const permPolicy = this.#config.permissionPolicy || "interactive";
         const permIcon = permPolicy === "allow_all" ? "🔓" : "🔐";
 
+        const modelDesc = {
+            fast: "quick answers, simple tasks",
+            standard: "balanced speed & quality",
+            reasoning: "deep analysis, complex tasks",
+        };
+
         const text = [
             `<b>⚙️ Settings</b>\n`,
-            `<b>Model:</b> ${modelIcon} ${currentModel}`,
+            `<b>Model:</b> ${modelIcon} ${currentModel} — ${modelDesc[currentModel] || ""}`,
             `<b>Permission:</b> ${permIcon} ${permPolicy}`,
-            `\nTap to change:`,
+            `\n<i>Changing model starts a fresh conversation.</i>`,
         ].join("\n");
 
         const keyboard = [
@@ -649,13 +667,17 @@ export class Router {
 
         const lines = [`<b>📌 Standing Instructions</b> (${enabled.length} active, ${disabled.length} disabled)\n`];
 
-        for (const inst of instructions.slice(0, 10)) {
-            const icon = inst.enabled ? "🟢" : "🔴";
-            const desc = inst.description?.slice(0, 40) || "Unnamed";
-            lines.push(`${icon} ${desc}`);
+        if (instructions.length === 0) {
+            lines.push(`<i>No instructions yet. Tell me something like "alert me when the front door opens" and I'll create one.</i>`);
+        } else {
+            for (const inst of instructions.slice(0, 10)) {
+                const icon = inst.enabled ? "🟢" : "🔴";
+                const trigger = inst.trigger?.type === "cron" ? "⏰" : inst.trigger?.type === "timer" ? "⏲" : "📡";
+                const desc = inst.description?.slice(0, 50) || "Unnamed";
+                lines.push(`${icon} ${trigger} ${desc}`);
+            }
+            if (instructions.length > 10) lines.push(`...+${instructions.length - 10} more`);
         }
-        if (instructions.length > 10) lines.push(`...+${instructions.length - 10} more`);
-        if (instructions.length === 0) lines.push("No instructions configured.");
 
         const buttons = [];
         if (this.#siOrchestrator.isPaused) {

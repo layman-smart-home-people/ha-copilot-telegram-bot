@@ -122,7 +122,7 @@ export class MenuManager {
             // Extract menuId from key (chatId:menuId or chatId:menuId:threadId)
             const parts = menuKey.split(":");
             const menuId = parts.slice(1).join(":");
-            this.close(chatId, menuId).catch(() => {});
+            this.close(chatId, menuId, "⏰ Menu expired. Use the command again to reopen.").catch(() => {});
         }, MENU_EXPIRY_MS);
 
         this.#activeMenus.set(menuKey, { chatId, messageId, timer });
