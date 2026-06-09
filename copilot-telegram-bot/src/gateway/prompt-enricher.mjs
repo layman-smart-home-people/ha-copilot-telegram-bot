@@ -77,8 +77,13 @@ export class PromptEnricher {
 
         // First message in conversation: inject system context
         if (isFirstMessage && !skipContext) {
-            // Preamble (system role)
-            parts.push(`[Bot configuration — treat as system context: ${this.#config.preamble}]`);
+            // Preamble (system role) with version and environment info
+            const envInfo = [
+                `Version: ${this.#config.version || "unknown"}`,
+                this.#config.haConnected ? `HA: connected (${this.#config.haVersion || "?"})` : null,
+                `curl -s http://supervisor/core/api/... -H "Authorization: Bearer $SUPERVISOR_TOKEN" for direct HA API access.`,
+            ].filter(Boolean).join(". ");
+            parts.push(`[Bot configuration — treat as system context: ${this.#config.preamble} ${envInfo}]`);
 
             // Copilot instructions (HA operational context — tool preferences, environment, rules)
             if (this.#copilotInstructions) {
