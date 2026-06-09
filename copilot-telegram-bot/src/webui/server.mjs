@@ -405,9 +405,9 @@ export class WebUIServer {
             // GET /api/rbac/overrides
             if (pathname === "/api/rbac/overrides" && method === "GET") {
                 const filters = {};
-                if (params.get("entity_id")) filters.entity_id = params.get("entity_id");
-                if (params.get("target_type")) filters.target_type = params.get("target_type");
-                if (params.get("target_id")) filters.target_id = params.get("target_id");
+                if (params.entity_id) filters.entity_id = params.entity_id;
+                if (params.target_type) filters.target_type = params.target_type;
+                if (params.target_id) filters.target_id = params.target_id;
                 return this.#json(res, 200, rbac.getOverrides(filters));
             }
 
@@ -430,11 +430,11 @@ export class WebUIServer {
             // GET /api/rbac/audit
             if (pathname === "/api/rbac/audit" && method === "GET") {
                 const query = {};
-                if (params.get("limit")) query.limit = Number(params.get("limit"));
-                if (params.get("offset")) query.offset = Number(params.get("offset"));
-                if (params.get("event")) query.event = params.get("event");
-                if (params.get("actor")) query.actor = params.get("actor");
-                if (params.get("target")) query.target = params.get("target");
+                if (params.limit) query.limit = Number(params.limit);
+                if (params.offset) query.offset = Number(params.offset);
+                if (params.event) query.event = params.event;
+                if (params.actor) query.actor = params.actor;
+                if (params.target) query.target = params.target;
                 return this.#json(res, 200, rbac.getAuditLog(query));
             }
 
