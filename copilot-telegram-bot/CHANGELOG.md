@@ -2,6 +2,22 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [1.6.0] — 2026-06-09
+
+### Added — Standing Instructions
+- **`template_notify` action type** — zero-token Jinja2 template notifications. HA's template engine formats the message, result sent directly to Telegram. No agent wake, no token cost. Use for "send me the temperature every morning" without burning tokens.
+- **Global rate limiting** — max 20 `wake_agent` fires per hour (prevents runaway token usage).
+- **Per-SI rate cap** — max 10 fires per hour per instruction. Exceeding triggers circuit breaker auto-disable with user notification.
+
+### Changed — Token Optimization
+- **~60% reduction in first-message context** — agent context now loads only IDENTITY.md + MEMORY.md (SKILLS.md/TASKS.md available on disk). Daily logs removed from injection — agent uses `pkm_search` and `session-history` tools on demand. MAX_FILE_SIZE halved to 4000 chars.
+- **Lean SI conversation profile** — `skipContext` option on prompt enricher allows SI prompts to skip memory/preamble injection.
+
+### Fixed — Streaming
+- **Draft ID type** — changed from string to integer per Telegram Bot API spec. Prevents silent draft failures.
+- **Initial draft failure handling** — if `sendMessageDraft` fails on first call (API unavailable), falls back to edit mode instead of leaving user with no visual feedback.
+- **Multi-turn display** — `onTurnEnd()` inserts paragraph breaks between agent turns so multi-turn responses don't merge into one blob.
+
 ## [1.5.0] — 2026-06-09
 
 ### Added — UX & Polish
