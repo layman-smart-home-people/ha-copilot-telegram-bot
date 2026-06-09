@@ -444,18 +444,20 @@ export class PkmExtractor {
                 log.info(`Closed stale window ${win.id} (user=${win.user_id})`);
             }
 
-            // 2. Extract closed-but-not-extracted windows
-            const closedWindows = this.#store.db.prepare(
-                `SELECT * FROM conversation_windows WHERE extracted = 0 AND closed_at IS NOT NULL`
-            ).all();
-            for (const win of closedWindows) {
-                await this.extractWindow(win, llmCall);
-            }
+            // 2. Extract closed-but-not-extracted windows (requires LLM)
+            if (llmCall) {
+                const closedWindows = this.#store.db.prepare(
+                    `SELECT * FROM conversation_windows WHERE extracted = 0 AND closed_at IS NOT NULL`
+                ).all();
+                for (const win of closedWindows) {
+                    await this.extractWindow(win, llmCall);
+                }
 
-            // 3. Retry failed extractions
-            const pendingRetry = this.#store.getPendingExtractionWindows();
-            for (const win of pendingRetry) {
-                await this.extractWindow(win, llmCall);
+                // 3. Retry failed extractions (requires LLM)
+                const pendingRetry = this.#store.getPendingExtractionWindows();
+                for (const win of pendingRetry) {
+                    await this.extractWindow(win, llmCall);
+                }
             }
 
             // 4. Close oversized windows
@@ -497,6 +499,17 @@ export class PkmExtractor {
         if (this.#timer) return;
         this.#timer = setInterval(() => this.runMaintenance(llmCall), intervalMs);
         log.info(`Background timer started (interval=${intervalMs / 1000}s)`);
+    }
+
+    /**
+     * Start housekeeping timer WITHOUT LLM extraction.
+     * Runs: close stale windows, close oversized, purge old data, decay activations.
+     * Skips: LLM extraction of closed windows.
+     */
+    startHousekeepingTimer(intervalMs = 5 * 60 * 1000) {
+        if (this.#timer) return;
+        this.#timer = setInterval(() => this.runMaintenance(null), intervalMs);
+        log.info(`Housekeeping timer started (no LLM, interval=${intervalMs / 1000}s)`);
     }
 
     stopTimer() {

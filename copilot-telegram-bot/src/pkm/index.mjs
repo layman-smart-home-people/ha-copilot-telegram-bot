@@ -51,9 +51,11 @@ export class PkmManager {
         // Bootstrap agent memory from MEMORY.md if first run
         this.#store.bootstrapAgentMemory(this.#agentDir);
 
-        // Start background maintenance timer
+        // Start background maintenance — housekeeping always, extraction only with LLM
         if (this.#llmCall) {
             this.#extractor.startTimer(this.#llmCall);
+        } else {
+            this.#extractor.startHousekeepingTimer();
         }
 
         this.#setupRoutes();
@@ -103,10 +105,13 @@ export class PkmManager {
     getSystemHint(userId) {
         if (!this.#store?.isEnabled(userId)) return null;
         const count = this.#store.getNoteCount(userId);
-        return `PKM: ${count} memories stored. Use pkm_navigate({action:"map"}) to see the topic tree overview before searching. ` +
+        return `[PKM: ${count} memories stored]\n` +
             `Use pkm_search when the user asks about past events, preferences, or personal facts. ` +
             `Use pkm_memory({action:"write"}) to save new memories. ` +
-            `Proactively remember important preferences, decisions, and facts — don't wait to be asked.`;
+            `Proactively remember important preferences, decisions, and facts — don't wait to be asked. ` +
+            `When a user shares a preference, decision, or personal detail, store it immediately and confirm briefly: "Noted ✓"\n` +
+            `Include 10+ search_keywords with synonyms, hypernyms (grouper→fish→seafood→food), and context terms (restaurant→dining→meal). ` +
+            `Think: what would someone search for 2 years from now?`;
     }
 
     getAgentHint() {
@@ -163,6 +168,11 @@ export class PkmManager {
                     entity: body.entity,
                     expandContext: body.expand_context,
                 });
+
+                // Track access on returned results — powers activation/decay ranking
+                for (const r of results) {
+                    if (r.id) try { this.#store.trackAccess(r.id); } catch {}
+                }
 
                 return { status: 200, data: { results, expanded } };
             }],
