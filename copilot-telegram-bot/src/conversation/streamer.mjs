@@ -268,21 +268,17 @@ export class ResponseStreamer {
 
     /**
      * Determine whether to use draft mode (sendMessageDraft) for this ref.
-     * Draft mode only works in private DMs without topic threads.
+     * Draft mode blocks the user's input field in Telegram — disabled by default.
+     * Only used when explicitly configured via streaming_transport: "draft".
      */
     #shouldUseDraft(ref) {
         switch (this.#transportConfig) {
-        case "off":
-        case "edit":
-            return false;
         case "draft":
             // Force draft — but only if technically supported (private chat)
             return ref.chatType === "private";
-        case "auto":
         default:
-            // Auto: draft for private DMs without topic threads
-            // DM topics likely need edit mode (sendMessageDraft may not work in threads)
-            return ref.chatType === "private" && !ref.threadId;
+            // Auto, edit, off — never use draft (blocks user typing)
+            return false;
         }
     }
 
