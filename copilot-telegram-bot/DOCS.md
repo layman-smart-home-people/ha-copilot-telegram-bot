@@ -370,7 +370,6 @@ Reject or avoid overly large groups.
 Directory containing agent files such as:
 
 - `IDENTITY.md`
-- `MEMORY.md`
 - `SKILLS.md`
 - `TASKS.md`
 - `memory/YYYY-MM-DD.md`

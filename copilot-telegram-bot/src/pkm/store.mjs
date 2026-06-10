@@ -3,7 +3,7 @@
 // ============================================================
 // Zero external dependencies — uses Node.js 22+ built-in SQLite.
 // Handles schema creation, migrations, CRUD, FTS5 search,
-// secure deletion, rate limiting, and MEMORY.md bootstrap.
+// secure deletion, rate limiting, and legacy MEMORY.md migration bootstrap.
 
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
