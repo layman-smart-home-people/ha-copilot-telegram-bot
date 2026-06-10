@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "../api";
 
-export default function DocsEditor({ toast }) {
+export default function DocsEditor({ toast, readOnly = false }) {
   const [docs, setDocs] = useState([]);
   const [activeDoc, setActiveDoc] = useState(null);
   const [content, setContent] = useState("");
@@ -121,6 +121,11 @@ export default function DocsEditor({ toast }) {
       </div>
 
       <div className="docs-editor">
+        {readOnly && (
+          <div className="card" style={{ marginBottom: "0.75rem", color: "var(--text-secondary)" }}>
+            WebUI doc editing requires your Home Assistant user ID to be listed in <code>webui_operator_ids</code>.
+          </div>
+        )}
         {!activeDoc ? (
           <div className="docs-empty">Select a file to view or edit</div>
         ) : (
@@ -128,9 +133,9 @@ export default function DocsEditor({ toast }) {
             <div className="docs-editor-header">
               <span className="docs-editor-filename">
                 {activeDoc}
-                {dirty && <span style={{ color: "var(--yellow)", marginLeft: "0.5rem" }}>●</span>}
+                {!readOnly && dirty && <span style={{ color: "var(--yellow)", marginLeft: "0.5rem" }}>●</span>}
               </span>
-              <button className="btn btn-sm" onClick={saveDoc} disabled={!dirty}>
+              <button className="btn btn-sm" onClick={saveDoc} disabled={readOnly || !dirty}>
                 💾 Save
               </button>
             </div>
@@ -139,11 +144,13 @@ export default function DocsEditor({ toast }) {
                 ref={textareaRef}
                 value={content}
                 onChange={(e) => {
+                  if (readOnly) return;
                   setContent(e.target.value);
                   setDirty(true);
                 }}
                 onKeyDown={handleKeyDown}
                 spellCheck={false}
+                readOnly={readOnly}
               />
             </div>
           </div>

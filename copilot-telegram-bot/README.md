@@ -2,7 +2,7 @@
 
 **Telegram + Home Assistant + GitHub Copilot CLI, powered by an ACP Pool.**
 
-Version **1.0.0** is the v7 rewrite: the bot now runs multiple Copilot CLI instances in parallel, keeps one conversation per scope, supports mid-conversation steering, and renders responses progressively in Telegram.
+Current release: **2.3.6**. The current line builds on the v7 pool rewrite: the bot runs multiple Copilot CLI instances in parallel, keeps one conversation per scope, supports mid-conversation steering, and renders responses progressively in Telegram.
 
 ## ✨ What this add-on does
 
@@ -87,7 +87,7 @@ Recommended notes:
 
 - **DM:** one conversation per user
 - **Group (non-forum):** one conversation per user within the group
-- **Forum groups:** one conversation per topic thread
+- **Forum groups:** one conversation per topic participant
 
 This means the bot works in both threaded and non-threaded groups without any special setup.
 
@@ -123,17 +123,24 @@ Ingress WebUI includes:
 - Logs viewer
 - Config editor
 
-## 💬 Quick start commands
+WebUI chat is scoped per authenticated Home Assistant ingress user rather than one shared global session.
+Privileged WebUI write actions require the current ingress user to be listed in `webui_operator_ids`.
 
-v7 intentionally keeps a small command surface:
+`/start` now acts as a true welcome and quick-start entry instead of only mirroring `/help`. Invite deep-link onboarding now confirms success immediately when a new user is paired.
 
+## 💬 Current Telegram commands
+
+The bot currently registers:
+
+- `/start` — welcome and quick start
 - `/help` — show available commands
 - `/status` — show pool, conversations, and metrics
 - `/new` — start a fresh conversation in the current scope
 - `/stop` — cancel the current operation
-- `/settings` — coming soon
-- `/standing` — coming soon
-- `/memory` — coming soon
+- `/settings` — set the model for the current conversation scope; owners can also change add-on-wide permission policy
+- `/standing` — manage standing instructions
+- `/memory` — inspect memory status and agent identity files
+- `/dream` — run deep memory maintenance
 
 ## ⚙️ Configuration reference
 
@@ -158,13 +165,14 @@ v7 intentionally keeps a small command surface:
 - `model` — legacy compatibility option
 - `permission_policy` — `interactive` or `allow_all`
 - `log_level` — `debug`, `info`, `warn`, or `error`
-- `agent_dir` — agent files directory (v7 deployments commonly use `/config/.agent`)
+- `agent_dir` — agent files directory (default `/config/copilot-telegram-bot`; `/config/.agent` remains a legacy fallback)
 
 ### Group behavior
 
 - `group_mode` — `mention` or `all`
 - `allowed_groups` — optional allow-list of Telegram group IDs
 - `max_group_members` — reject very large groups
+- `webui_operator_ids` — Home Assistant ingress user IDs allowed to use privileged WebUI operator actions
 
 ### Pool options (new in 1.0.0)
 
@@ -207,7 +215,7 @@ v7 is organized into a few clear layers:
 That is expected:
 
 - non-forum groups isolate by **user within the group**
-- forum groups isolate by **topic thread**
+- forum groups isolate by **topic participant**
 
 ### Agent file edits are not reflected
 

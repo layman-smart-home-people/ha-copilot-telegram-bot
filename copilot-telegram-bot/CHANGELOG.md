@@ -2,6 +2,30 @@
 
 All notable changes to the Copilot Telegram Bot add-on.
 
+## [2.3.6] — 2026-06-10
+
+### Added — Trust Baseline + Operator Surface
+- **Interactive approval runtime** — ACP workers now honor the configured `permission_policy` instead of hardcoding `allow_all`. Permission requests are routed through a real approval service with audit logging and durable per-scope grants.
+- **Control-plane SQLite store** — new durable store for approval audit history, scope grants, pending questions, and WebUI principal mappings.
+- **Per-user WebUI chat scopes** — WebUI chat now derives principals from Home Assistant ingress identity and scopes each authenticated user independently instead of sharing one global chat.
+- **WebUI operator allowlist** — new `webui_operator_ids` config option gates privileged WebUI operator actions explicitly by Home Assistant ingress user ID.
+- **WebUI approval UI** — WebUI chat now supports approval prompts and reconnect-safe pending approval hydration.
+- **HA Supervisor translations** — added human-readable config descriptions for the new `webui_operator_ids` setting.
+
+### Changed — UX + Onboarding
+- **`/start` is now a real welcome flow** — it no longer just mirrors `/help`. New users get suggested first actions and quick-entry buttons.
+- **Invite onboarding confirmation** — newly paired users via invite deep links now receive an explicit success/welcome message instead of falling into a silent no-op.
+- **Cold-start feedback** — first private messages now trigger immediate typing feedback while the pool acquires a worker.
+- **Scope-local settings preserved** — `/settings` continues to apply model changes to the current conversation scope and now correctly respects role-based model limits, including guest restrictions.
+- **WebUI operator UX** — frontend surfaces now reflect actual authorization state instead of advertising broken writes. Authorized operator actions are enabled through the allowlist path; deferred RBAC mapping actions remain intentionally unavailable.
+
+### Fixed — Races, Safety, and Review Findings
+- **Real stop semantics hardened** — fixed multiple state-machine races around `/stop`, elicitation cancellation, stale prompt completion, and autopilot interruption.
+- **Autopilot follow-up logic** — tightened background-agent follow-up behavior, completion signaling, and streamer abort paths to prevent stale or confusing WebUI state.
+- **Permission safety** — fixed deny/timeout option resolution, dead ACP error handling, and actor-type handling so system-triggered flows are not mistaken for Telegram users.
+- **WebUI trust boundary** — restricted Telegram-only UDS tool paths from WebUI conversations, prevented off-mode `<notify>` delivery attempts to synthetic WebUI chat IDs, and avoided unnecessary principal writes on static asset requests.
+- **Policy-switch hygiene** — draining/recycling behavior now better matches permission policy changes so stale worker policy state does not linger.
+
 ## [2.3.5] — 2026-06-10
 
 ### Fixed

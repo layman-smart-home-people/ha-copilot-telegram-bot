@@ -9,6 +9,7 @@
 
 import { Conversation } from "./conversation.mjs";
 import { SessionLedger } from "./session-ledger.mjs";
+import { ScopeSettingsStore } from "./scope-settings-store.mjs";
 import { createLogger } from "../logger.mjs";
 
 const log = createLogger("conv-mgr");
@@ -45,13 +46,17 @@ export class ConversationManager {
     #reapInterval = null;
     #idleReapMs;
     #ledger;                    // SessionLedger — persists scopeKey→sessionId
+    #scopeSettings;             // ScopeSettingsStore — persists per-scope preferences
+    #approvalService;
 
-    constructor({ pool, telegram, config }) {
+    constructor({ pool, telegram, config, approvalService }) {
         this.#pool = pool;
         this.#telegram = telegram;
         this.#config = config;
         this.#idleReapMs = (config.poolIdleMinutes || 30) * 60_000;
         this.#ledger = new SessionLedger();
+        this.#scopeSettings = new ScopeSettingsStore();
+        this.#approvalService = approvalService || null;
     }
 
     // ── Public API ───────────────────────────────────────────
@@ -136,6 +141,22 @@ export class ConversationManager {
         return this.#conversations.get(scopeKey) ?? null;
     }
 
+    getScopeModel(scopeKey) {
+        return this.#scopeSettings.getModel(scopeKey);
+    }
+
+    getEffectiveModel(scopeKey, fallbackModel = this.#config.defaultModel || "standard") {
+        return this.getScopeModel(scopeKey) || fallbackModel;
+    }
+
+    setScopeModel(scopeKey, model) {
+        this.#scopeSettings.setModel(scopeKey, model);
+    }
+
+    clearScopeModel(scopeKey) {
+        this.#scopeSettings.clearModel(scopeKey);
+    }
+
     /**
      * Spawn a dedicated SI (Scheduled Intelligence) conversation.
      * SI gets its own pool instance, separate from user conversations.
@@ -173,6 +194,13 @@ export class ConversationManager {
         return true;
     }
 
+    async destroyAll() {
+        const keys = [...this.#conversations.keys()];
+        for (const scopeKey of keys) {
+            await this.destroy(scopeKey);
+        }
+    }
+
     /**
      * List all active conversations (for /status).
      */
@@ -190,7 +218,7 @@ export class ConversationManager {
     // ── Private ──────────────────────────────────────────────
 
     async #createConversation(scopeKey, ref, opts = {}) {
-        const model = opts.model || this.#config.defaultModel || "standard";
+        const model = opts.model || this.getEffectiveModel(scopeKey, this.#config.defaultModel || "standard");
         const mcpProfile = opts.mcpProfile || "owner";
 
         log.info(`Creating conversation for ${scopeKey} (model=${model}, profile=${mcpProfile})`);
@@ -254,11 +282,23 @@ export class ConversationManager {
 
         conv.on("dead", ({ scopeKey }) => {
             log.warn(`${scopeKey} died — removing`);
+            this.#approvalService?.expireScope(scopeKey, "conversation_dead").catch(err =>
+                log.warn(`Failed to expire approvals for ${scopeKey}: ${err.message}`)
+            );
             this.#conversations.delete(scopeKey);
         });
 
         conv.on("elicitation", (data) => {
             log.debug(`${conv.scopeKey} elicitation: ${data.message?.substring(0, 80)}`);
+        });
+
+        conv.on("permission_request", (data) => {
+            this.#approvalService?.handlePermissionRequest({
+                conversation: conv,
+                ...data,
+            }).catch(err => {
+                log.error(`Approval handling failed for ${conv.scopeKey}: ${err.message}`);
+            });
         });
 
         // Crash recovery: acquire new instance and retry
@@ -351,6 +391,8 @@ export class ConversationManager {
     #reapIdle() {
         const now = Date.now();
         for (const [key, conv] of this.#conversations) {
+            // Never reap autopilot conversations — they're actively monitoring background agents
+            if (conv.isAutopilot) continue;
             if (conv.state === "idle" && conv.idleMs > this.#idleReapMs) {
                 log.info(`Reaping idle conversation: ${key} (idle ${(conv.idleMs / 1000).toFixed(0)}s)`);
                 this.#releaseConversation(conv);

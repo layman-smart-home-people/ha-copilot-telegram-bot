@@ -7,7 +7,7 @@ const TEXTAREA_FIELDS = new Set(["preamble", "copilot_extra_args"]);
 // Fields to hide from the editor (managed elsewhere or internal)
 const HIDDEN_FIELDS = new Set([]);
 
-export default function ConfigEditor({ toast }) {
+export default function ConfigEditor({ toast, readOnly = false }) {
   const [config, setConfig] = useState(null);
   const [options, setOptions] = useState({});
   const [dirty, setDirty] = useState(false);
@@ -80,19 +80,24 @@ export default function ConfigEditor({ toast }) {
         <h2 style={{ fontSize: "1.1rem" }}>Add-on Configuration</h2>
         <div style={{ display: "flex", gap: "0.5rem" }}>
           {showRestart && (
-            <button className="btn" onClick={handleRestart}>
+            <button className="btn" onClick={handleRestart} disabled={readOnly}>
               🔄 Restart Add-on
             </button>
           )}
           <button
             className="btn btn-primary"
             onClick={handleSave}
-            disabled={!dirty || saving}
+            disabled={readOnly || !dirty || saving}
           >
             {saving ? "Saving…" : "💾 Save"}
           </button>
         </div>
       </div>
+      {readOnly && (
+        <div className="card" style={{ maxWidth: "640px", marginBottom: "0.75rem", color: "var(--text-secondary)" }}>
+          WebUI configuration writes require your Home Assistant user ID to be listed in <code>webui_operator_ids</code>.
+        </div>
+      )}
 
       <div
         className="card"
@@ -128,6 +133,7 @@ export default function ConfigEditor({ toast }) {
                     <input
                       type="checkbox"
                       checked={value}
+                      disabled={readOnly}
                       onChange={(e) => handleChange(key, e.target.checked)}
                     />
                     {value ? "Enabled" : "Disabled"}
@@ -136,6 +142,7 @@ export default function ConfigEditor({ toast }) {
                   <textarea
                     id={`cfg-${key}`}
                     value={value.join("\n")}
+                    disabled={readOnly}
                     onChange={(e) =>
                       handleChange(
                         key,
@@ -150,6 +157,7 @@ export default function ConfigEditor({ toast }) {
                   <textarea
                     id={`cfg-${key}`}
                     value={value}
+                    disabled={readOnly}
                     onChange={(e) => handleChange(key, e.target.value)}
                     rows={3}
                   />
@@ -158,6 +166,7 @@ export default function ConfigEditor({ toast }) {
                     id={`cfg-${key}`}
                     type={isPassword ? "password" : typeof value === "number" ? "number" : "text"}
                     value={value}
+                    disabled={readOnly}
                     onChange={(e) =>
                       handleChange(
                         key,

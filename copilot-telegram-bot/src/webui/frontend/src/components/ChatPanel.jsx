@@ -9,6 +9,9 @@ export default function ChatPanel({ toast }) {
   const [currentText, setCurrentText] = useState("");
   const [currentThought, setCurrentThought] = useState("");
   const [tools, setTools] = useState([]); // active tool calls
+  const [currentApproval, setCurrentApproval] = useState(null);
+  const [approvalPending, setApprovalPending] = useState(false);
+  const [currentElicitation, setCurrentElicitation] = useState(null);
   const messagesEndRef = useRef(null);
   const sseRef = useRef(null);
   const inputRef = useRef(null);
@@ -29,6 +32,8 @@ export default function ChatPanel({ toast }) {
       case "status":
         setConnected(data.connected);
         setBusy(data.busy);
+        setCurrentApproval(data.pendingApproval || null);
+        setCurrentElicitation(data.pendingElicitation || null);
         break;
 
       case "connecting":
@@ -43,6 +48,9 @@ export default function ChatPanel({ toast }) {
       case "message_start":
         setCurrentText("");
         setCurrentThought("");
+        setCurrentApproval(null);
+        setCurrentElicitation(null);
+        setBusy(true);
         break;
 
       case "text_chunk":
@@ -78,6 +86,9 @@ export default function ChatPanel({ toast }) {
         setCurrentThought("");
         setTools([]);
         setBusy(false);
+        setCurrentApproval(null);
+        setApprovalPending(false);
+        setCurrentElicitation(null);
         break;
 
       case "cancelled":
@@ -92,11 +103,15 @@ export default function ChatPanel({ toast }) {
         });
         setTools([]);
         setBusy(false);
+        setCurrentApproval(null);
+        setApprovalPending(false);
+        setCurrentElicitation(null);
         break;
 
       case "error":
         toast(data.message, "error");
         setBusy(false);
+        setApprovalPending(false);
         break;
 
       case "disconnected":
@@ -110,6 +125,30 @@ export default function ChatPanel({ toast }) {
         setCurrentText("");
         setCurrentThought("");
         setTools([]);
+        setCurrentApproval(null);
+        setApprovalPending(false);
+        setCurrentElicitation(null);
+        break;
+
+      case "permission_request":
+        setCurrentApproval({
+          approvalId: data.approvalId,
+          title: data.title,
+          options: data.options || [],
+        });
+        setApprovalPending(false);
+        break;
+
+      case "elicitation":
+        setCurrentElicitation({ message: data.message || "The agent needs your input. Reply below or decline." });
+        setBusy(false);
+        break;
+
+      case "permission_resolved":
+        setCurrentApproval((prev) => (
+          prev && prev.approvalId === data.approvalId ? null : prev
+        ));
+        setApprovalPending(false);
         break;
 
       default:
@@ -147,6 +186,7 @@ export default function ChatPanel({ toast }) {
     if (!text || busy) return;
 
     setInput("");
+    setBusy(true);
     try {
       await api("/chat/send", {
         method: "POST",
@@ -179,6 +219,35 @@ export default function ChatPanel({ toast }) {
   const stopPrompt = async () => {
     try {
       await api("/chat/stop", { method: "POST" });
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  };
+
+  const respondToApproval = async (optionId) => {
+    if (!currentApproval || approvalPending) return;
+    setApprovalPending(true);
+    try {
+      await api("/chat/approval", {
+        method: "POST",
+        body: JSON.stringify({
+          approvalId: currentApproval.approvalId,
+          optionId,
+        }),
+      });
+    } catch (err) {
+      toast(err.message, "error");
+      setApprovalPending(false);
+    }
+  };
+
+  const declineElicitation = async () => {
+    try {
+      await api("/chat/elicitation", {
+        method: "POST",
+        body: JSON.stringify({ action: "decline" }),
+      });
+      setCurrentElicitation(null);
     } catch (err) {
       toast(err.message, "error");
     }
@@ -241,6 +310,21 @@ export default function ChatPanel({ toast }) {
               <ToolCallCard key={tool.id} tool={tool} />
             ))}
           </div>
+        )}
+
+        {currentApproval && (
+          <ApprovalCard
+            approval={currentApproval}
+            disabled={approvalPending}
+            onSelect={respondToApproval}
+          />
+        )}
+
+        {currentElicitation && (
+          <ElicitationCard
+            elicitation={currentElicitation}
+            onDecline={declineElicitation}
+          />
         )}
 
         {/* Streaming thought */}
@@ -383,6 +467,66 @@ function ToolCallCard({ tool }) {
     >
       <span>{statusIcon}</span>
       <span style={{ fontFamily: "var(--font-mono)" }}>{tool.name}</span>
+    </div>
+  );
+}
+
+function ApprovalCard({ approval, disabled, onSelect }) {
+  return (
+    <div
+      style={{
+        padding: "0.8rem 0.9rem",
+        background: "var(--bg-card)",
+        border: "1px solid var(--border)",
+        borderRadius: "var(--radius)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "0.75rem",
+      }}
+    >
+      <div style={{ fontSize: "0.9rem", whiteSpace: "pre-wrap" }}>
+        {approval.title}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+        {approval.options.map((option) => (
+          <button
+            key={option.optionId}
+            className="btn btn-sm"
+            disabled={disabled}
+            onClick={() => onSelect(option.optionId)}
+          >
+            {option.name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ElicitationCard({ elicitation, onDecline }) {
+  return (
+    <div
+      style={{
+        padding: "0.8rem 0.9rem",
+        background: "var(--bg-card)",
+        border: "1px solid var(--border)",
+        borderRadius: "var(--radius)",
+        display: "flex",
+        flexDirection: "column",
+        gap: "0.75rem",
+      }}
+    >
+      <div style={{ fontSize: "0.9rem", whiteSpace: "pre-wrap" }}>
+        {elicitation.message}
+      </div>
+      <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)" }}>
+        Reply in the chat box below to answer, or decline if you do not want to continue.
+      </div>
+      <div>
+        <button className="btn btn-sm btn-danger" onClick={onDecline}>
+          Decline
+        </button>
+      </div>
     </div>
   );
 }

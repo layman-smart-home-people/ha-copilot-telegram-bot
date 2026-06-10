@@ -1,6 +1,6 @@
 # Copilot Telegram Bot — v7 Documentation
 
-Version **1.0.0** is the v7 rewrite of the Home Assistant add-on that connects **Telegram** to **GitHub Copilot CLI** through **ACP (Agent Client Protocol)**.
+Current release: **2.3.6**. The current line builds on the v7 rewrite of the Home Assistant add-on that connects **Telegram** to **GitHub Copilot CLI** through **ACP (Agent Client Protocol)**.
 
 The big change is architectural: v7 replaces the old single-instance orchestrator with an **ACP Pool** that can run multiple Copilot CLI workers at once.
 
@@ -14,7 +14,7 @@ For installation and a fast onboarding flow, start with [README.md](./README.md)
 - **Steering** when a user changes direction mid-response
 - **Crash recovery** that reacquires a new instance and retries automatically
 - **Progressive Telegram rendering** via the new ResponseStreamer
-- A much smaller Telegram command surface: **7 commands only**
+- A smaller Telegram command surface centered on the 9 currently registered commands
 
 ## 🧱 Architecture overview
 
@@ -90,7 +90,7 @@ The Gateway is the clean routing layer in front of the pool and conversations.
 
 It includes:
 
-- **Router** — parses Telegram updates, resolves scopes, handles the 7 commands
+- **Router** — parses Telegram updates, resolves scopes, and handles the current 9-command Telegram surface
 - **Permissions** — role gate with `owner`, `member`, and `guest`
 - **PromptEnricher** — injects sender info, pinned instructions, and agent files
 
@@ -109,12 +109,18 @@ The Ingress WebUI remains available and is the main operator surface for:
 - viewing logs
 - editing add-on config
 
+Ingress-authenticated WebUI users now get their own scoped WebUI chat session instead of sharing one global chat scope.
+Privileged WebUI write actions require the current Home Assistant ingress user to be listed in `webui_operator_ids`.
+
 ## 💬 Command reference
 
-v7 intentionally keeps only these commands in Telegram:
+The current bot registers these commands in Telegram:
 
 ### `/help`
 Show the current command list.
+
+### `/start`
+Show the welcome and quick-start entry flow with suggested first actions.
 
 ### `/status`
 Show bot, pool, conversation, and metrics status.
@@ -135,17 +141,16 @@ Start a fresh conversation in the current scope.
 Cancel the current operation for the current scope.
 
 ### `/settings`
-Coming soon.
+Open the settings menu. Model changes now apply to the current conversation scope; permission policy remains an add-on-wide owner setting.
 
 ### `/standing`
-Coming soon.
-
-The standing instruction engine itself is already available; this command surface is just not finished yet.
+Open the standing instructions menu.
 
 ### `/memory`
-Coming soon.
+Open the memory status menu.
 
-The memory system itself is already available; this command surface is just not finished yet.
+### `/dream`
+Run deep memory maintenance.
 
 ## 🧭 Scope model: DMs, groups, and forums
 
@@ -157,7 +162,7 @@ v7 uses these scope keys internally:
 
 - `dm:{userId}`
 - `group:{chatId}:{userId}`
-- `forum:{chatId}:{threadId}`
+- `forum:{chatId}:{threadId}:{userId}`
 
 ### Direct messages
 
@@ -179,12 +184,12 @@ That means:
 
 ### Forum groups (topics enabled)
 
-In Telegram forum groups, the bot isolates by **topic thread**.
+In Telegram forum groups, the bot isolates by **topic participant**.
 
 That means:
 
-- each topic gets its own conversation
-- messages inside one topic do not affect another topic
+- each participant gets their own scoped conversation inside the topic
+- messages inside one topic still stay topic-local, but context does not bleed between participants
 - the bot simply follows Telegram's thread model automatically
 
 There is **no special user notification** about thread mode. It just works based on where the message arrives.
@@ -193,7 +198,7 @@ There is **no special user notification** about thread mode. It just works based
 
 - **DM:** per user
 - **Group (non-forum):** per user within the group
-- **Forum:** per topic thread
+- **Forum:** per topic participant
 
 ## 👥 Permissions and roles
 
@@ -279,7 +284,8 @@ permission_policy: interactive
 group_mode: mention
 allowed_groups: []
 max_group_members: 50
-agent_dir: /config/.agent
+webui_operator_ids: []
+agent_dir: /config/copilot-telegram-bot
 log_level: info
 pool_size: 5
 pool_pre_warm: 1
@@ -364,6 +370,9 @@ Optional allow-list of Telegram group IDs.
 #### `max_group_members`
 Reject or avoid overly large groups.
 
+#### `webui_operator_ids`
+List of Home Assistant ingress user IDs allowed to use privileged WebUI write actions.
+
 ### Agent files and memory
 
 #### `agent_dir`
@@ -374,13 +383,13 @@ Directory containing agent files such as:
 - `TASKS.md`
 - `memory/YYYY-MM-DD.md`
 
-For v7 documentation and seeded agent files, use:
+For the current release line, the default agent directory is:
 
 ```text
-/config/.agent
+/config/copilot-telegram-bot
 ```
 
-If you are upgrading from older installs, you may still see legacy layouts. Keep your WebUI docs editor, runtime config, and operational files aligned to one directory.
+If you are upgrading from older installs, you may still see the legacy `/config/.agent` layout. The runtime still falls back to it, but new installs should keep docs, runtime config, and operational files aligned under `/config/copilot-telegram-bot`.
 
 ### Pool settings (new in 1.0.0)
 
@@ -565,13 +574,13 @@ Edit add-on configuration through the UI.
 
 ## 📎 File attachments
 
-Attachment support is still a **planned/expanding area** in v7.
+Attachment support exists today, but richer media behavior should still be treated as an expanding area.
 
 Current guidance:
 
 - treat the Telegram bot as **text-first**
-- do not rely on rich attachment workflows as a documented stable surface yet
-- keep text attachments and richer media support marked as planned unless your deployment has explicitly validated them
+- rely on text attachments as the stable path today
+- treat richer media handling as evolving unless your deployment has validated it explicitly
 
 ## 🔧 Troubleshooting
 
@@ -603,7 +612,7 @@ That is usually **steering**, not a bug. In v7, a new user message while the bot
 It is probably scope handling working as designed:
 
 - non-forum groups isolate per user
-- forum groups isolate per topic thread
+- forum groups isolate per topic participant
 
 ### Standing instructions are not firing
 

@@ -67,6 +67,19 @@ If you accidentally expose sensitive data to /config/www/:
 2. Notify user via Telegram
 3. Log incident in agent memory (PKM)]`;
 
+const SI_INSTRUCTIONS = `[Standing Instruction Mode — STRICT RULES:
+You were triggered by a scheduled standing instruction, NOT by a user message.
+The user did NOT just speak to you — do NOT greet them, do NOT be conversational.
+
+Behavior rules:
+- Be concise and task-oriented. Execute the task, report findings, done.
+- Do NOT ask follow-up questions or use ask_user — there is no one to answer.
+- Do NOT say "Sure!", "Let me check that for you", "Of course!", etc.
+- Do NOT assume the user is waiting or watching — deliver a complete, standalone result.
+- Use direct, briefing-style output: lead with findings, skip preamble.
+- If the task requires information you don't have, state what's missing and stop.
+You have full tool access. Complete the task autonomously.]`;
+
 export class PromptEnricher {
     #config;
     #permissions;
@@ -93,7 +106,7 @@ export class PromptEnricher {
      * @param {object} opts — { isFirstMessage: bool }
      * @returns {string} — enriched text with prefix
      */
-    enrich(text, ref, { isFirstMessage = false, isDispatcher = false, skipContext = false } = {}) {
+    enrich(text, ref, { isFirstMessage = false, isDispatcher = false, skipContext = false, isSI = false, isSilentSI = false } = {}) {
         const parts = [];
 
         // First message in conversation: inject system context
@@ -137,8 +150,13 @@ export class PromptEnricher {
                 parts.push(DISPATCHER_INSTRUCTIONS);
             }
 
+            // SI behavioral instructions (non-silent only — silent SIs have their own preamble)
+            if (isSI && !isSilentSI) {
+                parts.push(SI_INSTRUCTIONS);
+            }
+
             // PKM dynamic hint — memory stats, proactive storage instruction
-            if (this.#pkm && ref.userId) {
+            if (this.#pkm && ref.userId && !isSI) {
                 const hint = this.#pkm.getSystemHint(String(ref.userId));
                 if (hint) parts.push(`[${hint}]`);
             }
@@ -148,7 +166,7 @@ export class PromptEnricher {
         parts.push(this.#buildSenderLine(ref));
 
         // Smart prefetch — scan every message for entities/keywords, inject relevant memories
-        if (this.#pkm && ref.userId && text) {
+        if (this.#pkm && ref.userId && text && !isSI) {
             try {
                 const prefetched = this.#pkm.getSmartPrefetch(text, String(ref.userId), ref.chatType || "private");
                 if (prefetched) {
@@ -263,6 +281,10 @@ export class PromptEnricher {
     }
 
     #buildSenderLine(ref) {
+        // SIs don't have a real sender
+        if (ref.userId === 0 || ref.username === "system") {
+            return "[Triggered by: Standing Instruction]";
+        }
         const parts = [];
         if (ref.firstName) parts.push(`name=${ref.firstName}`);
         if (ref.username) parts.push(`username=@${ref.username}`);

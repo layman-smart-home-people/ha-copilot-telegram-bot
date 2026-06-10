@@ -106,6 +106,17 @@ const COMMANDS = new Map([
     ["dream", "Deep memory maintenance"],
 ]);
 
+function formatModelLabel(model) {
+    if (model === "fast") return "⚡ Fast";
+    if (model === "reasoning") return "🧠 Reasoning";
+    return "🔵 Standard";
+}
+
+function allowedModelsForRole(role, config) {
+    if (!role || role === "guest") return [config.guestModel || "fast"];
+    return ["fast", "standard", "reasoning"];
+}
+
 export class Router {
     #telegram;
     #conversationManager;
@@ -121,6 +132,7 @@ export class Router {
     #siOrchestrator = null; // set externally after boot
     #topicManager = null;   // set externally after boot
     #udsServer = null;      // set externally after boot
+    #approvalService = null;
     #rejectCooldowns = new Map(); // userId → last rejection timestamp
 
     constructor({ telegram, conversationManager, pool, permissions, rbac, config, enricher, pkm }) {
@@ -136,7 +148,7 @@ export class Router {
         this.#menus = new MenuManager({ telegram });
 
         // Register built-in command handlers
-        this.#handlers.set("start", (ref) => this.#cmdHelp(ref));
+        this.#handlers.set("start", (ref) => this.#cmdStart(ref));
         this.#handlers.set("stop", (ref) => this.#cmdStop(ref));
         this.#handlers.set("new", (ref) => this.#cmdNew(ref));
         this.#handlers.set("help", (ref) => this.#cmdHelp(ref));
@@ -155,6 +167,9 @@ export class Router {
 
     /** Set UDS server reference for MCP sidecar IPC (called after boot). */
     setUdsServer(uds) { this.#udsServer = uds; }
+
+    /** Set approval service for permission callbacks. */
+    setApprovalService(service) { this.#approvalService = service; }
 
     #updateListener = null;
 
@@ -234,6 +249,8 @@ export class Router {
                         expiresAt: invite.roleExpiresAt,
                     });
                     log.info(`User ${ref.userId} paired via invite deep link as ${invite.role}`);
+                    await this.#sendInviteWelcome(ref, invite.role, displayName).catch(() => {});
+                    return;
                 } catch (err) {
                     log.warn(`Invite onboarding failed for ${ref.userId}: ${err.message}`);
                     await this.#reply(ref, "❌ I couldn't complete invite onboarding. Ask the admin for a fresh invite or manual pairing.").catch(() => {});
@@ -346,16 +363,27 @@ export class Router {
 
         // Get role-based config
         const roleModel = this.#permissions.getModelTier(ref.userId, this.#config);
+        const scopeModel = this.#conversationManager.getScopeModel(scopeKey);
+        const role = this.#permissions.getRole(ref.userId);
+        const allowedModels = allowedModelsForRole(role, this.#config);
+        if (scopeModel && !allowedModels.includes(scopeModel)) {
+            this.#conversationManager.clearScopeModel(scopeKey);
+        }
         // Dispatcher pattern: if dispatcherModel is explicitly set and differs from the
         // user's role model, use it for fast triage. When dispatcherModel is empty/unset,
         // the user's default_model is used directly (no dispatcher).
         const dispatcherModel = this.#config.dispatcherModel || "";
-        const useDispatcher = dispatcherModel && dispatcherModel !== roleModel && roleModel !== "fast";
-        const model = useDispatcher ? dispatcherModel : roleModel;
+        const selectedModel = (scopeModel && allowedModels.includes(scopeModel)) ? scopeModel : roleModel;
+        const useDispatcher = !scopeModel && dispatcherModel && dispatcherModel !== selectedModel && selectedModel !== "fast";
+        const model = useDispatcher ? dispatcherModel : selectedModel;
         const mcpProfile = this.#permissions.getMcpProfile(ref.userId);
 
         // Check if conversation already exists (determines if first message)
         const isFirstMessage = !existingConv || existingConv.state === "dead";
+
+        if (isFirstMessage && ref.chatType === "private") {
+            this.#telegram.sendChatAction(ref.chatId, "typing").catch(() => {});
+        }
 
         // Enrich text with context prefix
         const isDispatcher = useDispatcher;
@@ -572,10 +600,13 @@ export class Router {
         // Cancel any pending UDS questions
         if (this.#udsServer) this.#udsServer.cancelAll("User cancelled");
 
-        if (conv && conv.state === "prompting") {
+        if (conv) {
             try {
-                await conv.receive("/stop");
-                await this.#reply(ref, "⏹️ Stopped.");
+                const stopped = await conv.stop("⏹️ Stopped by user.");
+                if (stopped) {
+                    await this.#approvalService?.expireScope(scopeKey, "conversation_stopped");
+                }
+                await this.#reply(ref, stopped ? "⏹️ Stopped." : "⏹️ Nothing running.");
             } catch {
                 await this.#reply(ref, "⏹️ Nothing to stop.");
             }
@@ -595,7 +626,7 @@ export class Router {
                 const topic = await this.#telegram.call("createForumTopic", {
                     chat_id: ref.chatId, name: title,
                 });
-                const newThreadId = topic?.result?.message_thread_id;
+                const newThreadId = topic?.message_thread_id;
                 if (newThreadId) {
                     await this.#telegram.call("sendMessage", {
                         chat_id: ref.chatId, message_thread_id: newThreadId,
@@ -613,6 +644,36 @@ export class Router {
         } else {
             await this.#reply(ref, "🆕 Ready for new conversation.");
         }
+    }
+
+    async #cmdStart(ref) {
+        const scopePrefix = this.#scopePrefix(ref);
+        const botName = this.#telegram.botInfo?.first_name || "Copilot";
+        const role = this.#permissions.getRole(ref.userId);
+        const lines = [
+            `<b>👋 Welcome to ${botName}</b>\n`,
+            `I can help you check Home Assistant, investigate problems, and remember useful household context.`,
+            role ? `You are currently signed in as <b>${role}</b>.` : null,
+            `\n<b>Try one of these:</b>`,
+            `• What lights are still on upstairs?`,
+            `• Check if any doors are open`,
+            `• Show me system status`,
+            `• Help me create a morning briefing`,
+            `\n<i>Tip: just send a normal message to start. Use /help if you want the full command list.</i>`,
+        ].filter(Boolean).join("\n");
+
+        const keyboard = [
+            row(
+                btn("📊 Status", menuCallback(scopePrefix, "start", "status")),
+                btn("❓ Help", menuCallback(scopePrefix, "start", "help")),
+            ),
+            row(
+                btn("🧠 Memory", menuCallback(scopePrefix, "start", "memory")),
+                btn("📌 Standing", menuCallback(scopePrefix, "start", "standing")),
+            ),
+        ];
+
+        await this.#menus.show(ref.chatId, "start", lines, keyboard, { threadId: ref.threadId });
     }
 
     async #cmdHelp(ref) {
@@ -647,15 +708,32 @@ export class Router {
         await this.#menus.show(ref.chatId, "help", text, keyboard, { threadId: ref.threadId });
     }
 
+    async #sendInviteWelcome(ref, role, displayName) {
+        const name = displayName || "there";
+        const text = [
+            `<b>✅ Access granted</b>\n`,
+            `Welcome, ${name}. You are now signed in as <b>${role}</b>.`,
+            `You can start by asking a normal question about the home, for example:`,
+            `• What lights are on right now?`,
+            `• Is the front door locked?`,
+            `• Show me the current status`,
+            `\nUse /start any time for a quick introduction or /help for the full command list.`,
+        ].join("\n");
+        await this.#reply(ref, text, "HTML");
+    }
+
     async #cmdStatus(ref) {
         const scopePrefix = this.#scopePrefix(ref);
+        const scopeKey = this.#resolveScopeKey(ref);
         const poolStatus = this.#pool.status();
         const convos = this.#conversationManager.list();
         const metrics = this.#pool.getMetrics();
 
         const activeConvos = convos.filter(c => c.state === "prompting");
-        const modelLabel = this.#config.defaultModel === "fast" ? "⚡ Fast" :
-            this.#config.defaultModel === "reasoning" ? "🧠 Reasoning" : "🔵 Standard";
+        const roleModel = this.#permissions.getModelTier(ref.userId, this.#config);
+        const scopeModel = this.#conversationManager.getScopeModel(scopeKey);
+        const effectiveModel = scopeModel || roleModel;
+        const modelLabel = formatModelLabel(effectiveModel);
 
         const lines = [
             `<b>📊 Status</b> — v${this.#config.version}\n`,
@@ -663,6 +741,9 @@ export class Router {
             `<b>Active chats:</b> ${activeConvos.length} working, ${convos.length - activeConvos.length} idle`,
             `<b>Capacity:</b> ${poolStatus.claimed + poolStatus.idle} of ${poolStatus.maxSize} slots used`,
         ];
+        if (scopeModel) {
+            lines.push(`<i>This conversation uses its own model override.</i>`);
+        }
 
         // HA connection
         if (this.#config.haConnected) {
@@ -705,38 +786,51 @@ export class Router {
 
     async #cmdSettings(ref) {
         const scopePrefix = this.#scopePrefix(ref);
-        const currentModel = this.#config.defaultModel || "standard";
+        const scopeKey = this.#resolveScopeKey(ref);
+        const role = this.#permissions.getRole(ref.userId);
+        const roleModel = this.#permissions.getModelTier(ref.userId, this.#config);
+        const currentModel = this.#conversationManager.getScopeModel(scopeKey) || roleModel || "standard";
         const modelIcon = currentModel === "fast" ? "⚡" : currentModel === "reasoning" ? "🧠" : "🔵";
         const permPolicy = this.#config.permissionPolicy || "interactive";
         const permIcon = permPolicy === "allow_all" ? "🔓" : "🔐";
+        const isOwner = this.#permissions.isOwner(ref.userId);
 
         const modelDesc = {
             fast: "quick answers, simple tasks",
             standard: "balanced speed & quality",
             reasoning: "deep analysis, complex tasks",
         };
+        const allowedModels = allowedModelsForRole(role, this.#config);
 
         const text = [
             `<b>⚙️ Settings</b>\n`,
             `<b>Model:</b> ${modelIcon} ${currentModel} — ${modelDesc[currentModel] || ""}`,
             `<b>Permission:</b> ${permIcon} ${permPolicy}`,
-            `\n<i>Changing model starts a fresh conversation.</i>`,
+            scopeKey && this.#conversationManager.getScopeModel(scopeKey)
+                ? `<i>Model override applies only to this conversation scope.</i>`
+                : `<i>Using your current role default until you choose an override.</i>`,
+            isOwner
+                ? `<i>Permission policy is add-on wide.</i>`
+                : `<i>Permission policy is managed by an owner.</i>`,
         ].join("\n");
 
         const keyboard = [
-            row(
-                btn(`⚡ Fast${currentModel === "fast" ? " ✓" : ""}`, menuCallback(scopePrefix, "settings", "model:fast")),
-                btn(`🔵 Standard${currentModel === "standard" ? " ✓" : ""}`, menuCallback(scopePrefix, "settings", "model:standard")),
-                btn(`🧠 Reasoning${currentModel === "reasoning" ? " ✓" : ""}`, menuCallback(scopePrefix, "settings", "model:reasoning")),
-            ),
-            row(
-                btn(`🔐 Interactive${permPolicy === "interactive" ? " ✓" : ""}`, menuCallback(scopePrefix, "settings", "perm:interactive")),
-                btn(`🔓 Allow All${permPolicy === "allow_all" ? " ✓" : ""}`, menuCallback(scopePrefix, "settings", "perm:allow_all")),
-            ),
+            row(...allowedModels.map((model) => (
+                btn(
+                    `${formatModelLabel(model).split(" ")[0]} ${model[0].toUpperCase()}${model.slice(1)}${currentModel === model ? " ✓" : ""}`,
+                    menuCallback(scopePrefix, "settings", `model:${model}`)
+                )
+            ))),
             row(
                 btn("❌ Close", menuCallback(scopePrefix, "settings", "close")),
             ),
         ];
+        if (isOwner) {
+            keyboard.splice(1, 0, row(
+                btn(`🔐 Interactive${permPolicy === "interactive" ? " ✓" : ""}`, menuCallback(scopePrefix, "settings", "perm:interactive")),
+                btn(`🔓 Allow All${permPolicy === "allow_all" ? " ✓" : ""}`, menuCallback(scopePrefix, "settings", "perm:allow_all")),
+            ));
+        }
 
         await this.#menus.show(ref.chatId, "settings", text, keyboard, { threadId: ref.threadId });
     }
@@ -957,6 +1051,9 @@ export class Router {
         // UDS server callbacks (MCP ask_user buttons)
         if (this.#udsServer?.handleCallback(query)) return;
 
+        // Permission approval callbacks
+        if (this.#approvalService && await this.#approvalService.handleTelegramCallback(query)) return;
+
         // Check if this is a menu callback — ack immediately for menus
         const menuParsed = parseMenuCallback(data);
         if (menuParsed) {
@@ -1044,6 +1141,9 @@ export class Router {
         const ref = this.#refFromScope(scopeKey, chatId, userId);
 
         switch (menuName) {
+        case "start":
+            await this.#handleStartAction(action, ref);
+            break;
         case "help":
             await this.#handleHelpAction(action, ref);
             break;
@@ -1081,6 +1181,15 @@ export class Router {
         return { chatId, userId, chatType: "private", isForum: false, threadId: null };
     }
 
+    async #handleStartAction(action, ref) {
+        switch (action) {
+        case "status": await this.#cmdStatus(ref); break;
+        case "help": await this.#cmdHelp(ref); break;
+        case "memory": await this.#cmdMemory(ref); break;
+        case "standing": await this.#cmdStanding(ref); break;
+        }
+    }
+
     async #handleHelpAction(action, ref) {
         switch (action) {
         case "new": await this.#cmdNew(ref); break;
@@ -1112,11 +1221,23 @@ export class Router {
         const settingsRef = ref || { chatId, userId, chatType: "private", isForum: false, threadId: null };
         if (action.startsWith("model:")) {
             const model = action.split(":")[1];
-            this.#config.defaultModel = model;
-            log.info(`Model changed to: ${model}`);
+            const scopeKey = this.#resolveScopeKey(settingsRef);
+            const role = this.#permissions.getRole(userId);
+            const allowedModels = allowedModelsForRole(role, this.#config);
+            if (!allowedModels.includes(model)) {
+                await this.#reply(settingsRef, "⛔ That model is not available for your role.");
+                return;
+            }
+            const roleModel = this.#permissions.getModelTier(userId, this.#config);
+            if (model === roleModel) {
+                this.#conversationManager.clearScopeModel(scopeKey);
+                log.info(`Cleared scoped model override for ${scopeKey} (role default: ${roleModel})`);
+            } else {
+                this.#conversationManager.setScopeModel(scopeKey, model);
+                log.info(`Scoped model changed for ${scopeKey}: ${model}`);
+            }
 
             // Destroy the active conversation so next message uses the new model
-            const scopeKey = this.#resolveScopeKey(settingsRef);
             const existingConv = this.#conversationManager.get(scopeKey);
             if (existingConv && existingConv.state !== "dead") {
                 await this.#conversationManager.destroy(scopeKey);
@@ -1125,9 +1246,20 @@ export class Router {
 
             await this.#cmdSettings(settingsRef);
         } else if (action.startsWith("perm:")) {
+            if (!this.#permissions.isOwner(userId)) {
+                await this.#reply(settingsRef, "⛔ Only an owner can change the global permission policy.");
+                return;
+            }
             const policy = action.split(":")[1];
             this.#config.permissionPolicy = policy;
             log.info(`Permission policy changed to: ${policy}`);
+            await this.#conversationManager.destroyAll();
+            const poolStatus = this.#pool.status();
+            for (const inst of poolStatus.instances) {
+                if (inst.state !== "claimed") {
+                    await this.#pool.drain(inst.id);
+                }
+            }
             await this.#cmdSettings(settingsRef);
         }
     }
@@ -1159,8 +1291,9 @@ export class Router {
             const scopeKey = this.#resolveScopeKey(ref);
             const enrichedText = this.#enricher.enrich(prompt, ref, { isFirstMessage: !this.#conversationManager.get(scopeKey) });
             const roleModel = this.#permissions.getModelTier(ref.userId, this.#config);
+            const model = this.#conversationManager.getEffectiveModel(scopeKey, roleModel);
             await this.#conversationManager.route(scopeKey, enrichedText, ref, {
-                model: roleModel, mcpProfile: "owner", rawText: prompt,
+                model, mcpProfile: "owner", rawText: prompt,
             });
         }
     }

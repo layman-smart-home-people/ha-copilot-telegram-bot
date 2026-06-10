@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "../api";
 
-export default function UsersRoles({ toast }) {
+export default function UsersRoles({ toast, readOnly = false }) {
   const [tab, setTab] = useState("users");
   const [roles, setRoles] = useState([]);
   const [users, setUsers] = useState([]);
@@ -43,6 +43,11 @@ export default function UsersRoles({ toast }) {
 
   return (
     <div>
+      {readOnly && (
+        <div className="card" style={{ marginBottom: "0.75rem", color: "var(--text-secondary)" }}>
+          WebUI access-control writes require your Home Assistant user ID to be listed in <code>webui_operator_ids</code>. Audit and read views remain available.
+        </div>
+      )}
       <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
         {["users", "roles", "overrides", "audit", "invites"].map(t => (
           <button
@@ -57,18 +62,18 @@ export default function UsersRoles({ toast }) {
         ))}
       </div>
 
-      {tab === "users" && <UsersTab users={users} roles={roles} toast={toast} reload={reload} />}
-      {tab === "roles" && <RolesTab roles={roles} toast={toast} reload={reload} />}
-      {tab === "overrides" && <OverridesTab overrides={overrides} roles={roles} toast={toast} reload={reload} />}
+      {tab === "users" && <UsersTab users={users} roles={roles} toast={toast} reload={reload} readOnly={readOnly} />}
+      {tab === "roles" && <RolesTab roles={roles} toast={toast} reload={reload} readOnly={readOnly} />}
+      {tab === "overrides" && <OverridesTab overrides={overrides} roles={roles} toast={toast} reload={reload} readOnly={readOnly} />}
       {tab === "audit" && <AuditTab audit={audit} page={auditPage} loadAudit={loadAudit} />}
-      {tab === "invites" && <InvitesTab roles={roles} toast={toast} />}
+      {tab === "invites" && <InvitesTab roles={roles} toast={toast} readOnly={readOnly} />}
     </div>
   );
 }
 
 // ── Users Tab ──────────────────────────────────────────
 
-function UsersTab({ users, roles, toast, reload }) {
+function UsersTab({ users, roles, toast, reload, readOnly }) {
   const [editingUser, setEditingUser] = useState(null);
   const [editRole, setEditRole] = useState("");
 
@@ -112,10 +117,10 @@ function UsersTab({ users, roles, toast, reload }) {
                 </span>
               </div>
               <div className="instr-actions" style={{ display: "flex", gap: "0.25rem" }}>
-                <button className="btn btn-sm" onClick={() => { setEditingUser(u.userId); setEditRole(u.role); }}>
+                <button className="btn btn-sm" disabled={readOnly} onClick={() => { setEditingUser(u.userId); setEditRole(u.role); }}>
                   ✏️
                 </button>
-                <button className="btn btn-sm btn-danger" onClick={() => handleRevoke(u.userId)}>
+                <button className="btn btn-sm btn-danger" disabled={readOnly} onClick={() => handleRevoke(u.userId)}>
                   🗑️
                 </button>
               </div>
@@ -129,7 +134,7 @@ function UsersTab({ users, roles, toast, reload }) {
               <span>·</span>
               <span>{(u.effectiveCapabilities || []).length} capabilities</span>
             </div>
-            {editingUser === u.userId && (
+            {editingUser === u.userId && !readOnly && (
               <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem", alignItems: "center" }}>
                 <select
                   value={editRole}
@@ -151,7 +156,7 @@ function UsersTab({ users, roles, toast, reload }) {
 
 // ── Roles Tab ──────────────────────────────────────────
 
-function RolesTab({ roles, toast, reload }) {
+function RolesTab({ roles, toast, reload, readOnly }) {
   const [showCreate, setShowCreate] = useState(false);
   const [newRole, setNewRole] = useState({ name: "", rank: 50, capabilities: [], icon: "", description: "" });
   const [expandedRole, setExpandedRole] = useState(null);
@@ -256,12 +261,12 @@ function RolesTab({ roles, toast, reload }) {
   return (
     <div>
       <div style={{ marginBottom: "0.75rem" }}>
-        <button className="btn btn-primary" onClick={() => setShowCreate(!showCreate)}>
+        <button className="btn btn-primary" disabled={readOnly} onClick={() => setShowCreate(!showCreate)}>
           + New Role
         </button>
       </div>
 
-      {showCreate && (
+      {showCreate && !readOnly && (
         <div className="instr-card" style={{ marginBottom: "0.75rem" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginBottom: "0.5rem" }}>
             <input style={inputStyle} placeholder="Role name (lowercase)" value={newRole.name}
@@ -295,12 +300,12 @@ function RolesTab({ roles, toast, reload }) {
               <div className="instr-actions" onClick={e => e.stopPropagation()}>
                 {!r.builtin && (
                   <>
-                    <button className="btn btn-sm" onClick={() => startEdit(r)}>✏️</button>
-                    <button className="btn btn-sm btn-danger" onClick={() => handleDelete(r.name)}>🗑️</button>
+                    <button className="btn btn-sm" disabled={readOnly} onClick={() => startEdit(r)}>✏️</button>
+                    <button className="btn btn-sm btn-danger" disabled={readOnly} onClick={() => handleDelete(r.name)}>🗑️</button>
                   </>
                 )}
                 {r.builtin && (
-                  <button className="btn btn-sm" onClick={() => startEdit(r)}>✏️</button>
+                  <button className="btn btn-sm" disabled={readOnly} onClick={() => startEdit(r)}>✏️</button>
                 )}
               </div>
             </div>
@@ -310,7 +315,7 @@ function RolesTab({ roles, toast, reload }) {
               <span>{(r.effectiveCapabilities || []).length} capabilities</span>
             </div>
 
-            {editingRole === r.name && (
+            {editingRole === r.name && !readOnly && (
               <div style={{ marginTop: "0.5rem", padding: "0.5rem", background: "var(--bg-input)", borderRadius: "var(--radius-sm)" }}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "0.5rem", marginBottom: "0.5rem" }}>
                   <div>
@@ -353,7 +358,7 @@ function RolesTab({ roles, toast, reload }) {
 
 // ── Overrides Tab ──────────────────────────────────────
 
-function OverridesTab({ overrides, roles, toast, reload }) {
+function OverridesTab({ overrides, roles, toast, reload, readOnly }) {
   const [showCreate, setShowCreate] = useState(false);
   const [form, setForm] = useState({
     entity_id: "", target_type: "role", target_id: "",
@@ -393,12 +398,12 @@ function OverridesTab({ overrides, roles, toast, reload }) {
   return (
     <div>
       <div style={{ marginBottom: "0.75rem" }}>
-        <button className="btn btn-primary" onClick={() => setShowCreate(!showCreate)}>
+        <button className="btn btn-primary" disabled={readOnly} onClick={() => setShowCreate(!showCreate)}>
           + New Override
         </button>
       </div>
 
-      {showCreate && (
+      {showCreate && !readOnly && (
         <div className="instr-card" style={{ marginBottom: "0.75rem" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem", marginBottom: "0.5rem" }}>
             <input style={inputStyle} placeholder="Entity ID (e.g. light.bedroom, climate.*)"
@@ -435,7 +440,7 @@ function OverridesTab({ overrides, roles, toast, reload }) {
                   {o.target_type}:<strong>{o.target_id}</strong>
                 </div>
                 <div className="instr-actions">
-                  <button className="btn btn-sm btn-danger" onClick={() => handleDelete(o)}>🗑️</button>
+                  <button className="btn btn-sm btn-danger" disabled={readOnly} onClick={() => handleDelete(o)}>🗑️</button>
                 </div>
               </div>
               <div className="instr-meta">
@@ -545,7 +550,7 @@ function AuditTab({ audit, page, loadAudit }) {
 
 // ── Invites Tab ────────────────────────────────────────
 
-function InvitesTab({ roles, toast }) {
+function InvitesTab({ roles, toast, readOnly }) {
   const [form, setForm] = useState({ role: "guest", expiresAt: "", roleExpiresAt: "" });
   const [result, setResult] = useState(null);
   const [invites, setInvites] = useState([]);
@@ -621,7 +626,7 @@ function InvitesTab({ roles, toast }) {
               onChange={e => setForm({ ...form, roleExpiresAt: e.target.value })} />
           </div>
         </div>
-        <button className="btn btn-primary" onClick={handleCreate}>Generate Invite</button>
+        <button className="btn btn-primary" disabled={readOnly} onClick={handleCreate}>Generate Invite</button>
       </div>
 
       {result && (
@@ -675,7 +680,7 @@ function InvitesTab({ roles, toast }) {
                       {inv.createdAt?.slice(0, 10)}
                     </span>
                     {inv.status === "active" && (
-                      <button className="btn btn-sm btn-danger" onClick={() => handleRevoke(inv.id)}>🗑️</button>
+                      <button className="btn btn-sm btn-danger" disabled={readOnly} onClick={() => handleRevoke(inv.id)}>🗑️</button>
                     )}
                   </div>
                 </div>

@@ -21,16 +21,18 @@ export class UdsServer {
     #conversationManager;
     #config;
     #rbac;
+    #controlStore;
     #server = null;
 
     // Pending ask_user questions: questionId → { resolve, chatId, options, messageId, freeText, timer }
     #pending = new Map();
 
-    constructor({ telegram, conversationManager, config, rbac }) {
+    constructor({ telegram, conversationManager, config, rbac, controlStore }) {
         this.#telegram = telegram;
         this.#conversationManager = conversationManager || null;
         this.#rbac = rbac || null;
         this.#config = config;
+        this.#controlStore = controlStore || null;
     }
 
     /** Set conversation manager (when UDS starts before ConversationManager). */
@@ -40,6 +42,9 @@ export class UdsServer {
 
     start() {
         try { unlinkSync(TG_UX_SOCK); } catch {}
+        this.#expirePendingQuestionsOnBoot().catch(err =>
+            log.warn(`Failed to expire pending questions on boot: ${err.message}`)
+        );
         this.#server = createNetServer({ allowHalfOpen: true }, (conn) => {
             let buf = "";
             const MAX_BUF = 1024 * 1024; // 1MB safety limit
@@ -194,12 +199,23 @@ export class UdsServer {
         if (!q) return;
         clearTimeout(q.timer);
         this.#pending.delete(qId);
+        this.#controlStore?.removePendingQuestion(qId);
         q.resolve(result);
     }
 
     // ── Method handlers ─────────────────────────────────────
 
     async #askUser({ message, options }, scopeKey) {
+        // Block ask_user for silent and SI conversations
+        const conv = this.#conversationManager?.get(scopeKey);
+        if (conv?.silent || (scopeKey && scopeKey.startsWith("si:"))) {
+            log.info(`ask_user blocked for ${scopeKey}: silent/SI mode`);
+            return { answer: "ask_user is not available in background/SI mode. Complete the task autonomously without user input." };
+        }
+        if (scopeKey && scopeKey.startsWith("webui:")) {
+            return { answer: "ask_user is not available in WebUI chat yet. Provide a complete answer without asking for interactive follow-up." };
+        }
+
         const { chatId, threadId } = this.#resolveChatId(scopeKey);
         if (!chatId) return { error: "No active chat" };
         if (!message) return { error: "No message provided" };
@@ -239,9 +255,22 @@ export class UdsServer {
             }, QUESTION_TIMEOUT_MS);
             const entry = { resolve, chatId, threadId, options: options || [], freeText: !hasButtons, timer };
             this.#pending.set(qId, entry);
+            this.#controlStore?.savePendingQuestion({
+                id: qId,
+                scopeKey,
+                chatId,
+                threadId,
+                message,
+                options: options || [],
+                freeText: !hasButtons,
+                expiresAt: Date.now() + QUESTION_TIMEOUT_MS,
+            });
 
             this.#telegram.call("sendMessage", sendParams)
-                .then(sent => { entry.messageId = sent?.message_id; })
+                .then(sent => {
+                    entry.messageId = sent?.message_id;
+                    this.#controlStore?.updatePendingQuestionMessageId(qId, entry.messageId);
+                })
                 .catch(err => {
                     log.warn(`ask_user send failed: ${err.message}`);
                     this.#resolve(qId, { error: `Send failed: ${err.message}` });
@@ -249,8 +278,26 @@ export class UdsServer {
         });
     }
 
+    async #expirePendingQuestionsOnBoot() {
+        if (!this.#controlStore) return;
+        const stale = this.#controlStore.drainPendingQuestions();
+        for (const q of stale) {
+            if (!q.message_id || !q.chat_id) continue;
+            const params = {
+                chat_id: q.chat_id,
+                message_id: q.message_id,
+                text: "⚠️ Bot restarted. This question expired — please retry.",
+                reply_markup: { inline_keyboard: [] },
+            };
+            await this.#telegram.call("editMessageText", params).catch(() => {});
+        }
+    }
+
     #notifyUser({ message }, scopeKey) {
         if (!message?.trim()) return Promise.resolve({ error: "message is required" });
+        if (scopeKey && scopeKey.startsWith("webui:")) {
+            return Promise.resolve({ error: "notify_user is not available in WebUI chat mode" });
+        }
         const { chatId, threadId } = this.#resolveChatId(scopeKey);
         if (!chatId) return Promise.resolve({ error: "No chat available" });
         log.info(`notify_user: "${message.substring(0, 80)}"`);

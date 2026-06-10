@@ -73,3 +73,10 @@ configuration:
     description: >-
       Maximum number of members a group can have for the bot to operate in.
       The bot auto-leaves groups that exceed this limit.
+  webui_operator_ids:
+    name: WebUI Operator IDs
+    description: >-
+      List of Home Assistant ingress user IDs allowed to use privileged WebUI
+      operator actions such as configuration changes, document editing, and
+      standing-instruction management. Leave empty to keep those actions
+      disabled in the WebUI.

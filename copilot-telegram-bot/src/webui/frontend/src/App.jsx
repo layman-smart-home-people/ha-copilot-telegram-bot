@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import Dashboard from "./components/Dashboard";
 import Instructions from "./components/Instructions";
 import DocsEditor from "./components/DocsEditor";
@@ -27,6 +27,11 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const [instrCount, setInstrCount] = useState(null);
   const [version, setVersion] = useState("—");
+  const [webuiAccess, setWebuiAccess] = useState({
+    canUseChat: true,
+    canManageWebuiContent: false,
+    canManageWebuiAccess: false,
+  });
 
   const toast = useCallback((message, type = "success") => {
     const id = Date.now() + Math.random();
@@ -35,6 +40,26 @@ export default function App() {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 3500);
   }, []);
+
+  const loadWebuiAccess = useCallback(async () => {
+    try {
+      const data = await fetch("./api/webui/me");
+      const json = await data.json();
+      if (data.ok) {
+        setWebuiAccess(json.capabilities || {
+          canUseChat: true,
+          canManageWebuiContent: false,
+          canManageWebuiAccess: false,
+        });
+      }
+    } catch {
+      // Leave safe defaults.
+    }
+  }, []);
+
+  useEffect(() => {
+    loadWebuiAccess();
+  }, [loadWebuiAccess]);
 
   return (
     <div className="app">
@@ -75,13 +100,13 @@ export default function App() {
         )}
         {activeTab === "chat" && <ChatPanel toast={toast} />}
         {activeTab === "chats" && <Chats toast={toast} />}
-        {activeTab === "access" && <UsersRoles toast={toast} />}
+        {activeTab === "access" && <UsersRoles toast={toast} readOnly={!webuiAccess.canManageWebuiAccess} />}
         {activeTab === "instructions" && (
-          <Instructions toast={toast} onCountChange={setInstrCount} />
+          <Instructions toast={toast} onCountChange={setInstrCount} readOnly={!webuiAccess.canManageWebuiContent} />
         )}
-        {activeTab === "docs" && <DocsEditor toast={toast} />}
+        {activeTab === "docs" && <DocsEditor toast={toast} readOnly={!webuiAccess.canManageWebuiContent} />}
         {activeTab === "logs" && <LogViewer toast={toast} />}
-        {activeTab === "config" && <ConfigEditor toast={toast} />}
+        {activeTab === "config" && <ConfigEditor toast={toast} readOnly={!webuiAccess.canManageWebuiContent} />}
       </div>
 
       <div className="toast-container">

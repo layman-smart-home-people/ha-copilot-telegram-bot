@@ -1,10 +1,16 @@
 // ============================================================
 // Conversation — Self-contained ACP session with streaming
 // ============================================================
-// States: idle | prompting | eliciting | dead
+// States: idle | prompting | eliciting | autopilot | dead
 //
 // Owns: PoolInstance (from pool.acquire), ResponseStreamer, elicitation state.
-// On receive(): idle→prompt, prompting→steer, eliciting→cancel+prompt.
+// On receive(): idle→prompt, prompting→steer, eliciting→cancel+prompt,
+//               autopilot→cancel autopilot+prompt.
+//
+// Autopilot: when the agent uses background tools (e.g., `task`),
+// the conversation enters a short follow-up pass after the prompt resolves.
+// It performs one delayed status check on background agents, then returns
+// to idle. Public async/background work is still considered experimental.
 
 import { EventEmitter } from "node:events";
 import { ResponseStreamer } from "./streamer.mjs";
@@ -13,13 +19,24 @@ import { createLogger } from "../logger.mjs";
 
 const log = createLogger("conversation");
 
+// Autopilot: tools that spawn background agents inside the ACP process
+const ASYNC_TOOL_RE = /^task$/;
+const AUTOPILOT_CHECK_DELAY_MS = 15_000;    // 15s between checks
+const AUTOPILOT_CHECK_PROMPT =
+    `[System — Autopilot Check]\n` +
+    `You used background agents in your previous turn. Check their status:\n` +
+    `1. Call list_agents to see all active/completed agents\n` +
+    `2. For any running agents, call read_agent with wait:true (timeout:30)\n` +
+    `3. Once all agents are complete, provide a final summary of their results\n` +
+    `4. If agents are still running after checking, say so clearly in your reply`;
+
 export class Conversation extends EventEmitter {
     #scopeKey;
     #poolInstance;   // PoolInstance from ACPPool
     #streamer;       // ResponseStreamer
     #telegram;
     #ref;            // { chatId, threadId?, chatType, userId }
-    #state = "idle"; // idle | prompting | eliciting | dead
+    #state = "idle"; // idle | prompting | eliciting | autopilot | dead
     #lastActivity;
     #createdAt;
     #promptCount = 0;
@@ -36,6 +53,13 @@ export class Conversation extends EventEmitter {
     #rawUserText = null;  // Original user text (before enrichment)
     #resumeContext = null;
 
+    // Silent mode: suppress all user-facing output and auto-decline elicitations
+    #silent = false;
+
+    // Autopilot: keeps instance alive while background agents run
+    #asyncToolsDetected = false;
+    #autopilotAc = null;         // AbortController for the autopilot loop
+
     constructor({ scopeKey, poolInstance, telegram, ref, mcpProfile, config, resumeContext = null, silent = false, forcedTransport = null }) {
         super();
         this.#scopeKey = scopeKey;
@@ -43,6 +67,7 @@ export class Conversation extends EventEmitter {
         this.#telegram = telegram;
         this.#ref = ref;
         this.#mcpProfile = mcpProfile || poolInstance?.mcpProfile || "owner";
+        this.#silent = silent;
         const transport = silent ? "off" : (forcedTransport || config?.streamingTransport || "auto");
         this.#streamer = new ResponseStreamer(telegram, {
             streamingTransport: transport,
@@ -59,6 +84,7 @@ export class Conversation extends EventEmitter {
     get scopeKey() { return this.#scopeKey; }
     get state() { return this.#state; }
     get instanceId() { return this.#poolInstance?.id; }
+    get acp() { return this.#poolInstance?.acp || null; }
     get sessionId() { return this.#poolInstance?.sessionId || this.#poolInstance?.acp?.sessionId || null; }
     get model() { return this.#poolInstance?.model; }
     get mcpProfile() { return this.#mcpProfile; }
@@ -73,6 +99,9 @@ export class Conversation extends EventEmitter {
     get idleMs() {
         return this.#state === "idle" ? Date.now() - this.#lastActivity : 0;
     }
+
+    get isAutopilot() { return this.#state === "autopilot"; }
+    get silent() { return this.#silent; }
 
     // ── Public API ───────────────────────────────────────────
 
@@ -104,6 +133,12 @@ export class Conversation extends EventEmitter {
             case "eliciting":
                 return this.#resolveElicitation(text);
 
+            case "autopilot":
+                // User interrupted autopilot — cancel and handle their message
+                await this.#cancelAutopilot();
+                await new Promise(r => setTimeout(r, 200)); // grace period for ACP cancellation
+                return this.#prompt(text, opts);
+
             case "dead":
                 this.emit("error", new Error("Conversation is dead"));
                 return null;
@@ -128,10 +163,60 @@ export class Conversation extends EventEmitter {
     }
 
     /**
+     * Stop the current activity without steering a new prompt into the session.
+     * Returns true if something was actually cancelled/cleared.
+     */
+    async stop(reason = "⏹️ Stopped.") {
+        switch (this.#state) {
+        case "prompting":
+            if (this.#autopilotAc) {
+                this.#autopilotAc.abort();
+                this.#autopilotAc = null;
+            }
+            if (this.#streamer.active) {
+                await this.#streamer.abort(reason).catch(() => {});
+            }
+            try {
+                await this.#poolInstance?.acp?.cancel();
+            } catch {}
+            this.#state = "idle";
+            this.#lastActivity = Date.now();
+            return true;
+
+        case "autopilot":
+            await this.#cancelAutopilot();
+            this.#lastActivity = Date.now();
+            return true;
+
+        case "eliciting":
+            if (this.#pendingElicitation) {
+                const { requestId } = this.#pendingElicitation;
+                this.#pendingElicitation = null;
+                try {
+                    this.#poolInstance?.acp?.respondElicitation(requestId, "decline", null);
+                } catch {}
+            }
+            try {
+                await this.#poolInstance?.acp?.cancel();
+            } catch {}
+            this.#state = "idle";
+            this.#lastActivity = Date.now();
+            return true;
+
+        default:
+            return false;
+        }
+    }
+
+    /**
      * Mark conversation as dead (instance lost).
      */
     kill() {
         this.#state = "dead";
+        if (this.#autopilotAc) {
+            this.#autopilotAc.abort();
+            this.#autopilotAc = null;
+        }
         if (this.#streamer.active) {
             this.#streamer.abort("Session ended unexpectedly.").catch(() => {});
         }
@@ -181,6 +266,7 @@ export class Conversation extends EventEmitter {
             promptCount: this.#promptCount,
             idleMs: this.idleMs,
             lastActivity: this.#lastActivity,
+            autopilot: this.#state === "autopilot",
         };
     }
 
@@ -188,9 +274,11 @@ export class Conversation extends EventEmitter {
 
     async #prompt(text, opts = {}) {
         this.#state = "prompting";
+        this.#asyncToolsDetected = false; // reset per turn
         const promptText = this.#resumeContext ? `${this.#resumeContext}\n${text}` : text;
         this.#currentPromptText = promptText;
         this.#promptCount++;
+        const promptIndex = this.#promptCount;
 
         // React ⚡ on the user's message if we have a message ID
         if (opts.messageId && this.#ref.chatId) {
@@ -205,17 +293,27 @@ export class Conversation extends EventEmitter {
         try {
             const result = await this.#poolInstance.acp.prompt(promptText, { images: opts.images });
             const elapsed = Date.now() - startTime;
+            if (this.#promptCount !== promptIndex) return result;
             this.#resumeContext = null;
             this.#poolInstance.recordPrompt(elapsed);
-            this.#state = "idle";
             this.#lastActivity = Date.now();
 
             // Finalize streamer
             await this.#streamer.finalize(opts.replyMarkup || null);
             this.emit("prompt_complete", { elapsed, scopeKey: this.#scopeKey });
+
+            // Autopilot: if agent used background tools, keep instance alive and follow up
+            if (this.#asyncToolsDetected && this.#state === "prompting") {
+                this.#startAutopilot();
+            } else if (this.#state === "prompting") {
+                this.#state = "idle";
+            }
+
             return result;
         } catch (err) {
-            this.#state = "idle";
+            if (this.#state === "prompting" && this.#promptCount === promptIndex) {
+                this.#state = "idle";
+            }
             this.#lastActivity = Date.now();
 
             if (err.message?.includes("Operation cancelled")) {
@@ -257,6 +355,11 @@ export class Conversation extends EventEmitter {
         }
 
         log.info(`Steering ${this.#scopeKey}: cancelling current, re-prompting`);
+
+        if (this.#autopilotAc) {
+            this.#autopilotAc.abort();
+            this.#autopilotAc = null;
+        }
 
         // Abort the current streamer (old response)
         if (this.#streamer.active) {
@@ -318,6 +421,13 @@ export class Conversation extends EventEmitter {
         };
         this.#listeners.toolStart = (data) => {
             this.#streamer.onToolStart(data);
+            // Detect background agent tools for autopilot
+            const toolName = data.toolName || data.name;
+            const toolArgs = data.arguments || {};
+            if (ASYNC_TOOL_RE.test(toolName) && toolArgs.mode === "background") {
+                this.#asyncToolsDetected = true;
+                log.debug(`${this.#scopeKey} async tool detected: ${toolName}`);
+            }
             this.emit("tool_start", data);
         };
         this.#listeners.toolEnd = (data) => {
@@ -334,6 +444,13 @@ export class Conversation extends EventEmitter {
             this.emit("message_end");
         };
         this.#listeners.elicitation = ({ requestId, message, schema }) => {
+            // Auto-decline for silent and SI conversations — no human to answer
+            if (this.#silent || this.#scopeKey.startsWith("si:")) {
+                log.info(`${this.#scopeKey} auto-declining elicitation: "${(message || "").substring(0, 80)}"`);
+                this.#poolInstance.acp.respondElicitation(requestId, "decline", null);
+                return;
+            }
+
             this.#state = "eliciting";
             this.#pendingElicitation = { requestId, message, schema };
 
@@ -346,10 +463,8 @@ export class Conversation extends EventEmitter {
 
             this.emit("elicitation", { requestId, message, schema, scopeKey: this.#scopeKey });
         };
-        this.#listeners.permission = ({ requestId, permissions, options }) => {
-            // Auto-accept permissions (permission_policy=allow_all handles this in ACP,
-            // but if interactive mode, we'd need user confirmation here)
-            this.emit("permission_request", { requestId, permissions, options, scopeKey: this.#scopeKey });
+        this.#listeners.permission = (request) => {
+            this.emit("permission_request", { ...request, scopeKey: this.#scopeKey });
         };
 
         acp.on("text_chunk", this.#listeners.textChunk);
@@ -373,5 +488,87 @@ export class Conversation extends EventEmitter {
         acp.off("message_end", this.#listeners.messageEnd);
         acp.off("elicitation_request", this.#listeners.elicitation);
         acp.off("permission_request", this.#listeners.permission);
+    }
+
+    // ── Private: Autopilot ───────────────────────────────────
+
+    /**
+     * Start the autopilot follow-up asynchronously.
+     * Keeps the conversation alive for one delayed background-agent status check.
+     */
+    #startAutopilot() {
+        this.#state = "autopilot";
+        this.#autopilotAc = new AbortController();
+        log.info(`${this.#scopeKey} entering autopilot`);
+
+        this.#runAutopilotLoop().catch(err => {
+            if (err.message?.includes("Operation cancelled")) return;
+            log.error(`${this.#scopeKey} autopilot error: ${err.message}`);
+        }).finally(() => {
+            this.#autopilotAc = null;
+            if (this.#state === "autopilot") {
+                this.#state = "idle";
+                this.#lastActivity = Date.now();
+                this.emit("autopilot_complete", { scopeKey: this.#scopeKey });
+            }
+        });
+    }
+
+    async #runAutopilotLoop() {
+        const signal = this.#autopilotAc.signal;
+        if (signal.aborted || this.#state === "dead") return;
+
+        await this.#abortableSleep(AUTOPILOT_CHECK_DELAY_MS, signal);
+        if (signal.aborted || this.#state === "dead") return;
+
+        log.info(`${this.#scopeKey} autopilot follow-up check`);
+        this.#asyncToolsDetected = false;
+        this.#state = "prompting";
+        this.#promptCount++;
+
+        try {
+            await this.#streamer.start(this.#ref);
+            const checkStart = Date.now();
+            await this.#poolInstance.acp.prompt(AUTOPILOT_CHECK_PROMPT);
+            const checkElapsed = Date.now() - checkStart;
+            this.#lastActivity = Date.now();
+            this.#poolInstance.recordPrompt(checkElapsed);
+            await this.#streamer.finalize();
+        } catch (err) {
+            if (!signal.aborted && this.#streamer.active) {
+                await this.#streamer.abort("Autopilot check failed.").catch(() => {});
+            }
+            if (!signal.aborted && this.#state !== "dead") {
+                this.#state = "autopilot";
+            }
+            throw err;
+        }
+
+        this.#state = "autopilot";
+        log.info(`${this.#scopeKey} autopilot follow-up complete`);
+    }
+
+    /** Cancel an active autopilot loop (e.g., user sent a new message). */
+    async #cancelAutopilot() {
+        if (this.#autopilotAc) {
+            log.info(`${this.#scopeKey} autopilot cancelled by user`);
+            this.#autopilotAc.abort();
+            this.#autopilotAc = null;
+        }
+        try { await this.#poolInstance?.acp?.cancel(); } catch {}
+        if (this.#streamer.active) {
+            await this.#streamer.abort("↩️ Autopilot interrupted — processing your message...");
+        }
+        this.#state = "idle";
+    }
+
+    /** Sleep with abort support — resolves (not rejects) on abort. */
+    #abortableSleep(ms, signal) {
+        return new Promise(resolve => {
+            if (signal.aborted) return resolve();
+            const timer = setTimeout(resolve, ms);
+            const onAbort = () => { clearTimeout(timer); resolve(); };
+            signal.addEventListener("abort", onAbort, { once: true });
+        });
     }
 }

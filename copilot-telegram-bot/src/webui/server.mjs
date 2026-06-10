@@ -11,8 +11,8 @@ import { existsSync, mkdirSync } from "node:fs";
 import { createLogger } from "../logger.mjs";
 
 const STATIC_DIR = new URL("./dist/", import.meta.url).pathname;
-const WEBUI_SCOPE_KEY = "webui:default";
 const log = createLogger("webui");
+const TRUSTED_INGRESS_IPS = new Set(["172.30.32.2", "::ffff:172.30.32.2", "::1", "127.0.0.1", "::ffff:127.0.0.1"]);
 
 const MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -33,9 +33,11 @@ export class WebUIServer {
     #logBuffer = [];       // circular buffer for recent log lines
     #logMaxLines = 500;
     #sseClients = new Set(); // SSE connections for live log streaming
-    #chatSseClients = new Set(); // SSE connections for chat streaming
-    #chatConvListeners = null;   // attached conversation event listeners
+    #chatSseClients = new Map(); // scopeKey -> Set<res>
+    #chatConvListeners = new Map(); // scopeKey -> listeners
     #addonSlug = null;     // resolved lazily
+    #approvalRequestListener = null;
+    #approvalResolvedListener = null;
 
     constructor({ port = 8099 } = {}) {
         this.#port = port;
@@ -45,8 +47,23 @@ export class WebUIServer {
      * Attach bot internals so API routes can access them.
      * Call this before start().
      */
-    attach({ pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher, rbac, pkm }) {
-        this.#ctx = { pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher, rbac, pkm };
+    attach({ pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher, rbac, pkm, controlStore, approvalService }) {
+        this.#ctx = { pool, conversationManager, siOrchestrator, config, telegram, startedAt, enricher, rbac, pkm, controlStore, approvalService };
+
+        if (this.#approvalRequestListener) {
+            approvalService?.off?.("webui-approval-request", this.#approvalRequestListener);
+            approvalService?.off?.("webui-approval-resolved", this.#approvalResolvedListener);
+        }
+
+        this.#approvalRequestListener = ({ scopeKey, ...event }) => {
+            this.#broadcastChatEvent(scopeKey, { type: "permission_request", ...event });
+        };
+        this.#approvalResolvedListener = ({ scopeKey, ...event }) => {
+            this.#broadcastChatEvent(scopeKey, { type: "permission_resolved", ...event });
+        };
+
+        approvalService?.on?.("webui-approval-request", this.#approvalRequestListener);
+        approvalService?.on?.("webui-approval-resolved", this.#approvalResolvedListener);
     }
 
     /**
@@ -69,15 +86,9 @@ export class WebUIServer {
         }
     }
 
-    /** Push a chat event to all WebUI chat SSE clients. */
-    pushChatEvent(event) {
-        for (const client of this.#chatSseClients) {
-            try {
-                client.write(`data: ${JSON.stringify(event)}\n\n`);
-            } catch {
-                this.#chatSseClients.delete(client);
-            }
-        }
+    /** Push a chat event to one WebUI scope. */
+    pushChatEvent(scopeKey, event) {
+        this.#broadcastChatEvent(scopeKey, event);
     }
 
     async start() {
@@ -88,7 +99,7 @@ export class WebUIServer {
     }
 
     async stop() {
-        this.#detachChatConvListeners();
+        this.#detachAllChatConvListeners();
         if (this.#server) {
             return new Promise((resolve) => {
                 this.#server.close(() => {
@@ -113,7 +124,8 @@ export class WebUIServer {
 
             // API routes
             if (pathname.startsWith("/api/")) {
-                return await this.#handleApi(req, res, pathname, params);
+                const principal = this.#resolveWebuiPrincipal(req);
+                return await this.#handleApi(req, res, pathname, params, principal);
             }
 
             // Static file serving
@@ -124,12 +136,34 @@ export class WebUIServer {
         }
     }
 
-    async #handleApi(req, res, pathname, params) {
+    async #handleApi(req, res, pathname, params, principal) {
         const method = req.method;
-
+        const requirePrincipal = () => {
+            if (!principal) {
+                this.#json(res, 403, { error: "This route requires an authenticated Home Assistant ingress user" });
+                return null;
+            }
+            return principal;
+        };
+        const requireOperator = () => {
+            const resolved = requirePrincipal();
+            if (!resolved) return null;
+            if (!this.#isWebuiOperator(resolved)) {
+                this.#json(res, 403, {
+                    error: "This WebUI action requires an authorized operator. Add the Home Assistant user ID to webui_operator_ids to enable it.",
+                });
+                return null;
+            }
+            return resolved;
+        };
         // GET /api/status — bot status overview
         if (pathname === "/api/status" && method === "GET") {
             return this.#apiStatus(res);
+        }
+
+        if (pathname === "/api/webui/me" && method === "GET") {
+            if (!requirePrincipal()) return;
+            return this.#apiWebuiMe(res, principal);
         }
 
         // GET /api/metrics — cumulative pool metrics
@@ -149,6 +183,7 @@ export class WebUIServer {
 
         // POST /api/instructions — create instruction
         if (pathname === "/api/instructions" && method === "POST") {
+            if (!requireOperator()) return;
             const body = await this.#readBody(req);
             return this.#apiInstructionsCreate(res, body);
         }
@@ -162,10 +197,12 @@ export class WebUIServer {
                 return this.#apiInstructionsGet(res, id);
             }
             if (method === "PUT") {
+                if (!requireOperator()) return;
                 const body = await this.#readBody(req);
                 return this.#apiInstructionsUpdate(res, id, body);
             }
             if (method === "DELETE") {
+                if (!requireOperator()) return;
                 return this.#apiInstructionsDelete(res, id);
             }
         }
@@ -173,6 +210,7 @@ export class WebUIServer {
         // POST /api/instructions/:id/toggle
         const toggleMatch = pathname.match(/^\/api\/instructions\/([^/]+)\/(enable|disable|toggle)$/);
         if (toggleMatch && method === "POST") {
+            if (!requireOperator()) return;
             const id = decodeURIComponent(toggleMatch[1]);
             const action = toggleMatch[2];
             return this.#apiInstructionsToggle(res, id, action);
@@ -180,6 +218,7 @@ export class WebUIServer {
 
         // POST /api/standing/reconnect — force reconnect HA WebSocket
         if (pathname === "/api/standing/reconnect" && method === "POST") {
+            if (!requireOperator()) return;
             return this.#apiStandingReconnect(res);
         }
 
@@ -196,6 +235,7 @@ export class WebUIServer {
                 return this.#apiDocsGet(res, name);
             }
             if (method === "PUT") {
+                if (!requireOperator()) return;
                 const body = await this.#readBody(req);
                 return this.#apiDocsPut(res, name, body);
             }
@@ -233,39 +273,58 @@ export class WebUIServer {
 
         // PUT /api/config/options — update add-on options
         if (pathname === "/api/config/options" && method === "PUT") {
+            if (!requireOperator()) return;
             const body = await this.#readBody(req);
             return this.#apiConfigPut(res, body);
         }
 
         // POST /api/config/restart — restart the add-on
         if (pathname === "/api/config/restart" && method === "POST") {
+            if (!requireOperator()) return;
             return this.#apiConfigRestart(res);
         }
 
         // GET /api/chat/status — web chat ACP status
         if (pathname === "/api/chat/status" && method === "GET") {
-            return this.#apiChatStatus(res);
+            if (!requirePrincipal()) return;
+            return this.#apiChatStatus(res, principal);
         }
 
         // GET /api/chat/stream — SSE stream for chat events
         if (pathname === "/api/chat/stream" && method === "GET") {
-            return this.#apiChatStream(req, res);
+            if (!requirePrincipal()) return;
+            return this.#apiChatStream(req, res, principal);
         }
 
         // POST /api/chat/send — send a message to web chat ACP
         if (pathname === "/api/chat/send" && method === "POST") {
+            if (!requirePrincipal()) return;
             const body = await this.#readBody(req);
-            return this.#apiChatSend(res, body);
+            return this.#apiChatSend(res, body, principal);
         }
 
         // POST /api/chat/new — start a new chat session
         if (pathname === "/api/chat/new" && method === "POST") {
-            return this.#apiChatNew(res);
+            if (!requirePrincipal()) return;
+            return this.#apiChatNew(res, principal);
         }
 
         // POST /api/chat/stop — cancel the current prompt
         if (pathname === "/api/chat/stop" && method === "POST") {
-            return this.#apiChatStop(res);
+            if (!requirePrincipal()) return;
+            return this.#apiChatStop(res, principal);
+        }
+
+        if (pathname === "/api/chat/approval" && method === "POST") {
+            if (!requirePrincipal()) return;
+            const body = await this.#readBody(req);
+            return this.#apiChatApproval(res, body, principal);
+        }
+
+        if (pathname === "/api/chat/elicitation" && method === "POST") {
+            if (!requirePrincipal()) return;
+            const body = await this.#readBody(req);
+            return this.#apiChatElicitation(res, body, principal);
         }
 
         // GET /api/chats — list all reachable chats (users + groups)
@@ -275,7 +334,7 @@ export class WebUIServer {
 
         // --- RBAC API routes ---
         if (pathname.startsWith("/api/rbac/") || pathname === "/api/rbac") {
-            return this.#handleRbacRoute(req, res, method, pathname, params);
+            return this.#handleRbacRoute(req, res, method, pathname, params, principal);
         }
 
         // --- PKM API routes ---
@@ -304,8 +363,9 @@ export class WebUIServer {
 
         // POST /api/dispatch — dispatch task to full-capability agent
         if (pathname === "/api/dispatch" && method === "POST") {
+            if (!requireOperator()) return;
             const body = await this.#readBody(req);
-            return this.#apiDispatch(res, body);
+            return this.#apiDispatch(res, body, principal);
         }
 
         this.#json(res, 404, { error: "Not found" });
@@ -313,11 +373,24 @@ export class WebUIServer {
 
     // ── RBAC API ─────────────────────────────────────────────
 
-    async #handleRbacRoute(req, res, method, pathname, params) {
+    async #handleRbacRoute(req, res, method, pathname, params, principal) {
         const rbac = this.#ctx.rbac;
         if (!rbac) {
             return this.#json(res, 503, { error: "RBAC not available" });
         }
+        const requirePrincipal = () => {
+            if (!principal) {
+                this.#json(res, 403, { error: "This route requires an authenticated Home Assistant ingress user" });
+                return null;
+            }
+            return principal;
+        };
+        const denyPrivilegedWebuiWrite = () => {
+            this.#json(res, 403, {
+                error: "RBAC write actions are temporarily disabled in WebUI until explicit WebUI role mapping is implemented",
+            });
+            return null;
+        };
 
         try {
             // GET /api/rbac/roles
@@ -333,11 +406,8 @@ export class WebUIServer {
 
             // POST /api/rbac/roles
             if (pathname === "/api/rbac/roles" && method === "POST") {
-                const body = await this.#readBody(req);
-                const { name, rank, inherits, capabilities, icon, description } = body;
-                rbac.createRole(name, { rank, inherits, capabilities, icon, description });
-                const created = rbac.getRoleConfig(name);
-                return this.#json(res, 201, { name, ...created, effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)] });
+                if (!requirePrincipal()) return;
+                return denyPrivilegedWebuiWrite();
             }
 
             // GET/PUT/DELETE /api/rbac/roles/:name
@@ -350,14 +420,12 @@ export class WebUIServer {
                     return this.#json(res, 200, { name, ...role, effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)] });
                 }
                 if (method === "PUT") {
-                    const body = await this.#readBody(req);
-                    rbac.updateRole(name, body);
-                    const updated = rbac.getRoleConfig(name);
-                    return this.#json(res, 200, { name, ...updated, effectiveCapabilities: [...rbac.getEffectiveCapabilities(name)] });
+                    if (!requirePrincipal()) return;
+                    return denyPrivilegedWebuiWrite();
                 }
                 if (method === "DELETE") {
-                    rbac.deleteRole(name);
-                    return this.#json(res, 204, null);
+                    if (!requirePrincipal()) return;
+                    return denyPrivilegedWebuiWrite();
                 }
             }
 
@@ -369,11 +437,8 @@ export class WebUIServer {
             // PUT /api/rbac/users/:id/role
             const userRoleMatch = pathname.match(/^\/api\/rbac\/users\/([^/]+)\/role$/);
             if (userRoleMatch && method === "PUT") {
-                const userId = decodeURIComponent(userRoleMatch[1]);
-                const body = await this.#readBody(req);
-                const { role, displayName, expiresAt, callerId } = body;
-                rbac.setUserRole(userId, role, { displayName, expiresAt, callerId });
-                return this.#json(res, 200, rbac.getUser(Number(userId)));
+                if (!requirePrincipal()) return;
+                return denyPrivilegedWebuiWrite();
             }
 
             // GET/DELETE /api/rbac/users/:id
@@ -386,8 +451,8 @@ export class WebUIServer {
                     return this.#json(res, 200, user);
                 }
                 if (method === "DELETE") {
-                    rbac.revoke(Number(userId));
-                    return this.#json(res, 204, null);
+                    if (!requirePrincipal()) return;
+                    return denyPrivilegedWebuiWrite();
                 }
             }
 
@@ -406,10 +471,8 @@ export class WebUIServer {
 
             // POST /api/rbac/invites
             if (pathname === "/api/rbac/invites" && method === "POST") {
-                const body = await this.#readBody(req);
-                const { role, expiresAt, roleExpiresAt, createdBy } = body;
-                const token = rbac.createInvite(role, { createdBy, expiresAt, roleExpiresAt });
-                return this.#json(res, 201, { token, role });
+                if (!requirePrincipal()) return;
+                return denyPrivilegedWebuiWrite();
             }
 
             // GET /api/rbac/invites
@@ -420,11 +483,8 @@ export class WebUIServer {
 
             // DELETE /api/rbac/invites
             if (pathname === "/api/rbac/invites" && method === "DELETE") {
-                const body = await this.#readBody(req);
-                const { id, revokedBy } = body;
-                const ok = rbac.revokeInvite(id, { revokedBy: revokedBy || "system" });
-                if (!ok) return this.#json(res, 404, { error: "Invite not found" });
-                return this.#json(res, 204, null);
+                if (!requirePrincipal()) return;
+                return denyPrivilegedWebuiWrite();
             }
 
             // GET /api/rbac/overrides
@@ -438,18 +498,14 @@ export class WebUIServer {
 
             // POST /api/rbac/overrides
             if (pathname === "/api/rbac/overrides" && method === "POST") {
-                const body = await this.#readBody(req);
-                rbac.addOverride(body);
-                return this.#json(res, 201, body);
+                if (!requirePrincipal()) return;
+                return denyPrivilegedWebuiWrite();
             }
 
             // DELETE /api/rbac/overrides
             if (pathname === "/api/rbac/overrides" && method === "DELETE") {
-                const body = await this.#readBody(req);
-                const { entity_id, target_type, target_id } = body;
-                const ok = rbac.removeOverride(entity_id, target_type, target_id);
-                if (!ok) return this.#json(res, 404, { error: "Override not found" });
-                return this.#json(res, 204, null);
+                if (!requirePrincipal()) return;
+                return denyPrivilegedWebuiWrite();
             }
 
             // GET /api/rbac/audit
@@ -488,6 +544,17 @@ export class WebUIServer {
             standing: siOrchestrator?.status?.() || null,
             homeAssistant: {
                 connected: siOrchestrator?.eventListener?.connected || false,
+            },
+        });
+    }
+
+    #apiWebuiMe(res, principal) {
+        this.#json(res, 200, {
+            principal,
+            capabilities: {
+                canUseChat: true,
+                canManageWebuiContent: this.#isWebuiOperator(principal),
+                canManageWebuiAccess: false,
             },
         });
     }
@@ -652,8 +719,12 @@ export class WebUIServer {
 
     // ── Dispatch API ────────────────────────────────────────────
 
-    async #apiDispatch(res, body) {
-        const { prompt, description, model, scopeKey: callerScope } = body || {};
+    async #apiDispatch(res, body, principal) {
+        const { prompt, description, model } = body || {};
+        const callerScope = principal?.scopeKey || null;
+        if (callerScope?.startsWith("webui:")) {
+            return this.#json(res, 403, { error: "Dispatch is not available from WebUI yet" });
+        }
         if (!prompt || typeof prompt !== "string") {
             return this.#json(res, 400, { error: "prompt is required" });
         }
@@ -1084,14 +1155,14 @@ export class WebUIServer {
 
     // ── Chat API (Copilot Web Chat) ─────────────────────────────
 
-    #getWebuiConversation() {
-        return this.#ctx.conversationManager?.get?.(WEBUI_SCOPE_KEY) || null;
+    #getWebuiConversation(scopeKey) {
+        return this.#ctx.conversationManager?.get?.(scopeKey) || null;
     }
 
-    #getWebuiConversationStatus() {
-        const conversation = this.#getWebuiConversation();
+    #getWebuiConversationStatus(scopeKey) {
+        const conversation = this.#getWebuiConversation(scopeKey);
         const status = conversation?.toStatus?.() || {
-            scopeKey: WEBUI_SCOPE_KEY,
+            scopeKey,
             state: "idle",
             instanceId: null,
             model: null,
@@ -1106,108 +1177,164 @@ export class WebUIServer {
         };
     }
 
-    #getWebuiRef(body = null) {
-        if (body?.ref && typeof body.ref === "object") return body.ref;
-        const existing = this.#getWebuiConversation()?.ref;
+    #resolveWebuiPrincipal(req) {
+        const headers = req.headers || {};
+        const ingressPath = headers["x-ingress-path"] || "";
+        const remoteUserId = headers["x-remote-user-id"] || headers["x-hass-user"] || null;
+        const remoteUserName = headers["x-remote-user-name"] || headers["x-hass-user-name"] || null;
+        const remoteDisplayName = headers["x-remote-user-display-name"] || headers["x-hass-user-display-name"] || remoteUserName || null;
+        const remoteIp = req.socket?.remoteAddress || "";
+
+        if (!ingressPath && !remoteUserId) return null;
+        if (!remoteUserId) return null;
+        if (!remoteIp || !TRUSTED_INGRESS_IPS.has(remoteIp)) {
+            log.warn(`Untrusted WebUI request source: ${remoteIp}`);
+            return null;
+        }
+
+        return this.#ctx.controlStore?.resolveWebuiPrincipal({
+            haUserId: remoteUserId,
+            username: remoteUserName,
+            displayName: remoteDisplayName,
+        }) || null;
+    }
+
+    #getWebuiRef(principal) {
+        const existing = this.#getWebuiConversation(principal.scopeKey)?.ref;
         if (existing) return existing;
 
-        const fallbackChatId = this.#ctx.config?.allowedChatIds?.[0] ?? null;
-        if (fallbackChatId == null) return null;
-        return { chatId: fallbackChatId, chatType: "private", userId: fallbackChatId };
+        return {
+            chatId: `webui:${principal.principalId}`,
+            chatType: "private",
+            userId: principal.principalId,
+            username: principal.username || "webui",
+            firstName: principal.displayName || principal.username || "WebUI",
+        };
     }
 
-    #apiChatStatus(res) {
-        this.#json(res, 200, this.#getWebuiConversationStatus());
+    #apiChatStatus(res, principal) {
+        const status = this.#getWebuiConversationStatus(principal.scopeKey);
+        status.pendingApproval = this.#ctx.approvalService?.getPendingWebuiApproval(principal.principalId, principal.scopeKey) || null;
+        const conversation = this.#getWebuiConversation(principal.scopeKey);
+        status.pendingElicitation = conversation?.state === "eliciting" ? { message: "The agent needs your input. Reply below or decline." } : null;
+        this.#json(res, 200, status);
     }
 
-    #apiChatStream(req, res) {
+    #apiChatStream(req, res, principal) {
+        const scopeKey = principal.scopeKey;
         res.writeHead(200, {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         });
-        res.write(`data: ${JSON.stringify({ type: "status", ...this.#getWebuiConversationStatus() })}\n\n`);
+        const status = this.#getWebuiConversationStatus(scopeKey);
+        status.pendingApproval = this.#ctx.approvalService?.getPendingWebuiApproval(principal.principalId, scopeKey) || null;
+        const conversation = this.#getWebuiConversation(scopeKey);
+        status.pendingElicitation = conversation?.state === "eliciting" ? { message: "The agent needs your input. Reply below or decline." } : null;
+        res.write(`data: ${JSON.stringify({ type: "status", ...status })}\n\n`);
 
-        this.#chatSseClients.add(res);
+        if (!this.#chatSseClients.has(scopeKey)) this.#chatSseClients.set(scopeKey, new Set());
+        this.#chatSseClients.get(scopeKey).add(res);
 
         // Heartbeat to keep connection alive behind proxies (HA Ingress/nginx)
         const heartbeat = setInterval(() => {
             try { res.write(":heartbeat\n\n"); }
-            catch { clearInterval(heartbeat); this.#chatSseClients.delete(res); }
+            catch {
+                clearInterval(heartbeat);
+                this.#chatSseClients.get(scopeKey)?.delete(res);
+            }
         }, 30_000);
 
         req.on("close", () => {
             clearInterval(heartbeat);
-            this.#chatSseClients.delete(res);
+            const clients = this.#chatSseClients.get(scopeKey);
+            clients?.delete(res);
+            if (clients && clients.size === 0) {
+                this.#chatSseClients.delete(scopeKey);
+                this.#detachChatConvListeners(scopeKey);
+            }
             try { res.end(); } catch {}
         });
 
         // Ensure conversation event listeners are attached
-        this.#ensureChatConvListeners();
+        this.#ensureChatConvListeners(scopeKey);
     }
 
     /** Broadcast a chat event to all connected chat SSE clients. */
-    #broadcastChatEvent(event) {
+    #broadcastChatEvent(scopeKey, event) {
         const payload = `data: ${JSON.stringify(event)}\n\n`;
-        for (const client of this.#chatSseClients) {
+        const clients = this.#chatSseClients.get(scopeKey);
+        if (!clients) return;
+        for (const client of clients) {
             try { client.write(payload); }
-            catch { this.#chatSseClients.delete(client); }
+            catch { clients.delete(client); }
         }
     }
 
     /**
-     * Attach event listeners to the webui:default conversation.
+     * Attach event listeners to a per-user WebUI conversation.
      * Re-attaches whenever the conversation instance changes.
      */
-    #ensureChatConvListeners() {
-        const conv = this.#getWebuiConversation();
+    #ensureChatConvListeners(scopeKey) {
+        const conv = this.#getWebuiConversation(scopeKey);
         if (!conv) return; // no conversation yet — listeners will attach on send
 
         // Already listening to this conversation instance
-        if (this.#chatConvListeners?.target === conv) return;
+        const existing = this.#chatConvListeners.get(scopeKey);
+        if (existing?.target === conv) return;
 
         // Detach from previous conversation if any
-        this.#detachChatConvListeners();
+        this.#detachChatConvListeners(scopeKey);
 
         const listeners = {
             target: conv,
             text_chunk: ({ text }) =>
-                this.#broadcastChatEvent({ type: "text_chunk", text }),
+                this.#broadcastChatEvent(scopeKey, { type: "text_chunk", text }),
             thought_chunk: ({ text }) =>
-                this.#broadcastChatEvent({ type: "thought", text }),
+                this.#broadcastChatEvent(scopeKey, { type: "thought", text }),
             tool_start: (data) =>
-                this.#broadcastChatEvent({ type: "tool_start", toolCallId: data.toolCallId, name: data.name }),
+                this.#broadcastChatEvent(scopeKey, { type: "tool_start", toolCallId: data.toolCallId, name: data.name }),
             tool_end: (data) =>
-                this.#broadcastChatEvent({ type: "tool_end", toolCallId: data.toolCallId, status: data.status }),
+                this.#broadcastChatEvent(scopeKey, { type: "tool_end", toolCallId: data.toolCallId, status: data.status }),
             prompt_complete: () => {
-                this.#broadcastChatEvent({ type: "done", ...this.#getWebuiConversationStatus() });
+                this.#broadcastChatEvent(scopeKey, { type: "done", ...this.#getWebuiConversationStatus(scopeKey) });
+            },
+            autopilot_complete: () => {
+                this.#broadcastChatEvent(scopeKey, { type: "done", ...this.#getWebuiConversationStatus(scopeKey) });
             },
             error: (err) =>
-                this.#broadcastChatEvent({ type: "error", message: err.message }),
+                this.#broadcastChatEvent(scopeKey, { type: "error", message: err.message }),
             dead: () =>
-                this.#broadcastChatEvent({ type: "error", message: "Conversation ended unexpectedly" }),
+                this.#broadcastChatEvent(scopeKey, { type: "error", message: "Conversation ended unexpectedly" }),
             elicitation: (data) =>
-                this.#broadcastChatEvent({ type: "elicitation", message: data.message }),
+                this.#broadcastChatEvent(scopeKey, { type: "elicitation", message: data.message }),
         };
 
         for (const [event, fn] of Object.entries(listeners)) {
             if (event === "target") continue;
             conv.on(event, fn);
         }
-        this.#chatConvListeners = listeners;
+        this.#chatConvListeners.set(scopeKey, listeners);
     }
 
-    #detachChatConvListeners() {
-        if (!this.#chatConvListeners) return;
-        const { target, ...fns } = this.#chatConvListeners;
+    #detachChatConvListeners(scopeKey) {
+        const listeners = this.#chatConvListeners.get(scopeKey);
+        if (!listeners) return;
+        const { target, ...fns } = listeners;
         for (const [event, fn] of Object.entries(fns)) {
             target.removeListener(event, fn);
         }
-        this.#chatConvListeners = null;
+        this.#chatConvListeners.delete(scopeKey);
     }
 
-    async #apiChatSend(res, body) {
+    #detachAllChatConvListeners() {
+        for (const scopeKey of this.#chatConvListeners.keys()) {
+            this.#detachChatConvListeners(scopeKey);
+        }
+    }
+
+    async #apiChatSend(res, body, principal) {
         const conversationManager = this.#ctx.conversationManager;
         if (!conversationManager) {
             return this.#json(res, 503, { error: "Conversation manager not available" });
@@ -1218,77 +1345,114 @@ export class WebUIServer {
             return this.#json(res, 400, { error: "Message text is required" });
         }
 
-        const ref = this.#getWebuiRef(body);
-        if (!ref?.chatId) {
-            return this.#json(res, 503, { error: "WebUI chat ref is not available" });
-        }
+        const scopeKey = principal.scopeKey;
+        const ref = this.#getWebuiRef(principal);
 
         try {
             // Broadcast user message and message_start to SSE clients
-            this.#broadcastChatEvent({ type: "user_message", text });
-            this.#broadcastChatEvent({ type: "message_start" });
+            this.#broadcastChatEvent(scopeKey, { type: "user_message", text });
+            this.#broadcastChatEvent(scopeKey, { type: "message_start" });
+            this.#ensureChatConvListeners(scopeKey);
 
             // Force safe defaults — never trust client-supplied model/mcpProfile
+            const isOperator = this.#isWebuiOperator(principal);
             const opts = {
-                model: this.#ctx.config?.defaultModel || "standard",
-                mcpProfile: "owner",
+                model: isOperator
+                    ? (this.#ctx.config?.defaultModel || "standard")
+                    : (this.#ctx.config?.guestModel || "fast"),
+                mcpProfile: isOperator ? "owner" : "guest",
                 messageId: null,
+                _forcedTransport: "off",
             };
 
             // Don't await — route() blocks until prompt completes.
             // We respond immediately and let SSE carry the streaming events.
-            const routePromise = conversationManager.route(WEBUI_SCOPE_KEY, text, ref, opts);
+            const routePromise = conversationManager.route(scopeKey, text, ref, opts);
+            let settled = false;
+            routePromise.finally(() => { settled = true; });
 
             // Poll briefly for conversation to appear (created before prompt starts)
             const attachListeners = async () => {
-                for (let i = 0; i < 20; i++) {
+                for (let i = 0; i < 400; i++) {
                     await new Promise(r => setTimeout(r, 100));
-                    const conv = this.#getWebuiConversation();
-                    if (conv) { this.#ensureChatConvListeners(); return; }
+                    const conv = this.#getWebuiConversation(scopeKey);
+                    if (conv) { this.#ensureChatConvListeners(scopeKey); return; }
+                    if (settled) return;
                 }
             };
             attachListeners();
 
             // Handle completion/errors in background
             routePromise.catch(err => {
-                this.#broadcastChatEvent({ type: "error", message: err.message });
+                this.#broadcastChatEvent(scopeKey, { type: "error", message: err.message });
             });
 
-            this.#json(res, 200, { sent: true, conversation: this.#getWebuiConversationStatus() });
+            this.#json(res, 200, { sent: true, conversation: this.#getWebuiConversationStatus(scopeKey) });
         } catch (err) {
-            this.#broadcastChatEvent({ type: "error", message: err.message });
+            this.#broadcastChatEvent(scopeKey, { type: "error", message: err.message });
             this.#json(res, 500, { error: `Chat error: ${err.message}` });
         }
     }
 
-    async #apiChatNew(res) {
+    async #apiChatNew(res, principal) {
         const conversationManager = this.#ctx.conversationManager;
         if (!conversationManager) {
             return this.#json(res, 503, { error: "Conversation manager not available" });
         }
 
         try {
-            this.#detachChatConvListeners();
-            const cleared = await conversationManager.destroy(WEBUI_SCOPE_KEY);
-            this.#broadcastChatEvent({ type: "new_session" });
-            this.#json(res, 200, { cleared, conversation: this.#getWebuiConversationStatus() });
+            this.#detachChatConvListeners(principal.scopeKey);
+            const cleared = await conversationManager.destroy(principal.scopeKey);
+            this.#broadcastChatEvent(principal.scopeKey, { type: "new_session" });
+            this.#json(res, 200, { cleared, conversation: this.#getWebuiConversationStatus(principal.scopeKey) });
         } catch (err) {
             this.#json(res, 500, { error: `Failed to reset conversation: ${err.message}` });
         }
     }
 
-    async #apiChatStop(res) {
-        const conversation = this.#getWebuiConversation();
+    async #apiChatStop(res, principal) {
+        const conversation = this.#getWebuiConversation(principal.scopeKey);
         if (!conversation || ["idle", "dead"].includes(conversation.state)) {
-            return this.#json(res, 200, { stopped: false, conversation: this.#getWebuiConversationStatus() });
+            return this.#json(res, 200, { stopped: false, conversation: this.#getWebuiConversationStatus(principal.scopeKey) });
         }
 
         try {
-            await conversation.receive("/stop");
-            this.#json(res, 200, { stopped: true, conversation: this.#getWebuiConversationStatus() });
+            const stopped = await conversation.stop("⏹️ Stopped from WebUI.");
+            this.#json(res, 200, { stopped, conversation: this.#getWebuiConversationStatus(principal.scopeKey) });
         } catch (err) {
             this.#json(res, 500, { error: `Failed to stop: ${err.message}` });
         }
+    }
+
+    async #apiChatApproval(res, body, principal) {
+        const approvalId = body?.approvalId;
+        const optionId = body?.optionId;
+        if (!approvalId || !optionId) {
+            return this.#json(res, 400, { error: "approvalId and optionId are required" });
+        }
+        const result = await this.#ctx.approvalService.respondWebuiApproval(principal.principalId, approvalId, optionId);
+        if (!result.ok) {
+            return this.#json(res, 404, { error: result.error });
+        }
+        return this.#json(res, 200, { ok: true });
+    }
+
+    async #apiChatElicitation(res, body, principal) {
+        const conversation = this.#getWebuiConversation(principal.scopeKey);
+        if (!conversation || conversation.state !== "eliciting") {
+            return this.#json(res, 404, { error: "No pending elicitation" });
+        }
+        const action = body?.action;
+        if (action !== "decline") {
+            return this.#json(res, 400, { error: "Only decline is supported via this endpoint" });
+        }
+        await conversation.respondElicitation("decline");
+        return this.#json(res, 200, { ok: true });
+    }
+
+    #isWebuiOperator(principal) {
+        const allowed = this.#ctx.config?.webuiOperatorIds || [];
+        return !!principal?.principalId && allowed.includes(String(principal.principalId));
     }
 
     // ── Helpers ─────────────────────────────────────────────────

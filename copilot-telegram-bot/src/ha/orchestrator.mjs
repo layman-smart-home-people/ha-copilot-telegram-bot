@@ -22,7 +22,7 @@ const HA_SERVICE_ALLOWED_DOMAINS = new Set([
     "light", "switch", "scene", "script", "input_boolean",
     "input_number", "input_select", "input_text", "input_datetime",
     "fan", "cover", "media_player", "climate", "vacuum",
-    "button", "number", "select", "lock", "siren",
+    "button", "number", "select",
 ]);
 
 export class StandingInstructionOrchestrator {

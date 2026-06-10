@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { api } from "../api";
 import InstructionModal from "./InstructionModal";
 
-export default function Instructions({ toast, onCountChange }) {
+export default function Instructions({ toast, onCountChange, readOnly = false }) {
   const [instructions, setInstructions] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingInstr, setEditingInstr] = useState(null);
@@ -35,11 +35,13 @@ export default function Instructions({ toast, onCountChange }) {
   };
 
   const handleEdit = (instr) => {
+    if (readOnly) return;
     setEditingInstr(instr);
     setModalOpen(true);
   };
 
   const handleNew = () => {
+    if (readOnly) return;
     setEditingInstr(null);
     setModalOpen(true);
   };
@@ -59,10 +61,15 @@ export default function Instructions({ toast, onCountChange }) {
       <>
         <div className="instr-toolbar">
           <h2 style={{ fontSize: "1.1rem" }}>Standing Instructions</h2>
-          <button className="btn btn-primary" onClick={handleNew}>
+          <button className="btn btn-primary" onClick={handleNew} disabled={readOnly}>
             + New Instruction
           </button>
         </div>
+        {readOnly && (
+          <div className="card" style={{ marginBottom: "0.75rem", color: "var(--text-secondary)" }}>
+            WebUI instruction writes require your Home Assistant user ID to be listed in <code>webui_operator_ids</code>. Use Telegram or add yourself to the operator allowlist.
+          </div>
+        )}
         <div className="empty-state">
           <div className="icon">📋</div>
           <p>No standing instructions yet. Create one to automate agent responses.</p>
@@ -83,10 +90,15 @@ export default function Instructions({ toast, onCountChange }) {
     <>
       <div className="instr-toolbar">
         <h2 style={{ fontSize: "1.1rem" }}>Standing Instructions</h2>
-        <button className="btn btn-primary" onClick={handleNew}>
+        <button className="btn btn-primary" onClick={handleNew} disabled={readOnly}>
           + New Instruction
         </button>
       </div>
+      {readOnly && (
+        <div className="card" style={{ marginBottom: "0.75rem", color: "var(--text-secondary)" }}>
+          WebUI instruction writes require your Home Assistant user ID to be listed in <code>webui_operator_ids</code>. Use Telegram or add yourself to the operator allowlist.
+        </div>
+      )}
 
       <div className="instr-list">
         {instructions.map((instr) => (
@@ -95,6 +107,7 @@ export default function Instructions({ toast, onCountChange }) {
             instr={instr}
             onToggle={handleToggle}
             onEdit={handleEdit}
+            readOnly={readOnly}
           />
         ))}
       </div>
@@ -111,7 +124,7 @@ export default function Instructions({ toast, onCountChange }) {
   );
 }
 
-function InstructionCard({ instr, onToggle, onEdit }) {
+function InstructionCard({ instr, onToggle, onEdit, readOnly }) {
   const triggerType = instr.trigger?.type || "unknown";
   const actionType = instr.action?.type || "unknown";
 
@@ -133,7 +146,7 @@ function InstructionCard({ instr, onToggle, onEdit }) {
   return (
     <div
       className={`instr-card ${instr.enabled ? "" : "disabled"}`}
-      onClick={() => onEdit(instr)}
+      onClick={() => !readOnly && onEdit(instr)}
     >
       <div className="instr-header">
         <div className="instr-desc">{instr.description}</div>
@@ -142,6 +155,7 @@ function InstructionCard({ instr, onToggle, onEdit }) {
             <input
               type="checkbox"
               checked={instr.enabled}
+              disabled={readOnly}
               onChange={() => onToggle(instr.id, instr.enabled)}
             />
             <span className="toggle-slider" />

@@ -93,6 +93,7 @@ export async function loadConfig() {
         allowedChatIds: options.allowed_chat_ids || [],
         groupMode: normalizeGroupMode(options.group_mode),
         allowedGroups: Array.isArray(options.allowed_groups) ? options.allowed_groups.map(String) : [],
+        webuiOperatorIds: Array.isArray(options.webui_operator_ids) ? options.webui_operator_ids.map(String) : [],
         maxGroupMembers: normalizeMaxGroupMembers(options.max_group_members),
         copilotBinary,
         copilotConfigDir,

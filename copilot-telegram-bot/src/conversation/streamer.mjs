@@ -41,6 +41,10 @@ const TOOL_LABELS = {
     web_search: "Searching the web",
     web_fetch: "Fetching page",
     dispatch_to_agent: "Routing to full agent",
+    task: "Running background agent",
+    read_agent: "Checking agent status",
+    list_agents: "Listing agents",
+    write_agent: "Messaging agent",
     si_create: "Creating standing instruction",
     si_list: "Listing standing instructions",
     si_get: "Reading standing instruction",
@@ -661,8 +665,21 @@ export class ResponseStreamer {
     }
 
     async #commitFinal(html, replyMarkup) {
-        // "off" mode — no Telegram output (silent SI, background tasks)
-        if (this.#messageId === -2) return;
+        // "off" mode — extract <notify> blocks from agent output, send only those
+        if (this.#messageId === -2) {
+            const rawText = this.#phases.map(p => p.text).join("");
+            const notifyBlocks = [];
+            const re = /<notify>([\s\S]*?)<\/notify>/gi;
+            let match;
+            while ((match = re.exec(rawText)) !== null) {
+                const content = match[1].trim();
+                if (content) notifyBlocks.push(content);
+            }
+            if (notifyBlocks.length === 0) return;
+            if (String(this.#ref?.chatId || "").startsWith("webui:")) return;
+            // Rebuild HTML from just the notify content
+            html = markdownToTelegramHtml(notifyBlocks.join("\n\n"));
+        }
 
         if (this.#draftMode) {
             // Clear draft FIRST to unblock input, then send real message

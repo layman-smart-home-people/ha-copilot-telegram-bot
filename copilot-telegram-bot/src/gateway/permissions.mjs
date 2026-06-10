@@ -38,15 +38,17 @@ export class Permissions {
         const id = String(userId);
         if (this.#ownerIds.has(id)) return "owner";
         if (this.#rbac) {
-            const user = this.#rbac.getUser(Number(userId));
-            return user?.role || null;
+            return this.#rbac.getRole(Number(userId));
         }
         return null;
     }
 
     /** Check if user is owner. */
     isOwner(userId) {
-        return this.#ownerIds.has(String(userId));
+        const id = String(userId);
+        if (this.#ownerIds.has(id)) return true;
+        if (this.#rbac) return this.#rbac.isOwner(Number(userId));
+        return false;
     }
 
     /** Get the MCP profile to use for this user's role. */

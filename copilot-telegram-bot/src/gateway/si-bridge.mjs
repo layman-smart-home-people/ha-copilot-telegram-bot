@@ -13,13 +13,15 @@ export class SIBridge {
     #conversationManager;
     #telegram;
     #config;
+    #enricher = null;
     #topicManager = null;
     #activePrompts = new Set(); // track in-flight SI prompts
 
-    constructor({ conversationManager, telegram, config }) {
+    constructor({ conversationManager, telegram, config, enricher }) {
         this.#conversationManager = conversationManager;
         this.#telegram = telegram;
         this.#config = config;
+        this.#enricher = enricher || null;
     }
 
     /** Set TopicManager for thread-targeted delivery. */
@@ -114,9 +116,22 @@ export class SIBridge {
             firstName: "Standing Instruction",
         };
 
+        // Silent SIs: wrap prompt with background agent instructions so the agent
+        // knows to use <notify> tags for user-visible output only
+        let finalPrompt = silent ? this.#wrapSilentPrompt(prompt) : prompt;
+
+        // Enrich with agent identity, core memory, and operational guidelines
+        if (this.#enricher) {
+            finalPrompt = this.#enricher.enrich(finalPrompt, ref, {
+                isFirstMessage: true,
+                isSI: true,
+                isSilentSI: silent,
+            });
+        }
+
         log.info(`Routing SI: "${description}" → scope ${scopeKey} [${model}]${threadId ? ` thread=${threadId}` : ""}`);
 
-        await this.#conversationManager.route(scopeKey, prompt, ref, {
+        await this.#conversationManager.route(scopeKey, finalPrompt, ref, {
             messageId: null,
             model,
             mcpProfile,
@@ -124,5 +139,18 @@ export class SIBridge {
         });
 
         log.info(`SI complete: "${description}"`);
+    }
+
+    #wrapSilentPrompt(prompt) {
+        return (
+            `[Background Agent Mode]\n` +
+            `You are running as a silent background agent. Your regular output is NOT displayed to the user.\n` +
+            `If you need to notify the user (alert, anomaly, actionable finding, or important update), ` +
+            `wrap ONLY that content in <notify>...</notify> tags. Example:\n` +
+            `<notify>⚠️ Living room temperature is 32°C — above threshold.</notify>\n\n` +
+            `Everything outside <notify> tags is internal processing and will not be shown.\n` +
+            `If you have nothing to report, do not use <notify> tags — just complete your task silently.\n\n` +
+            `Your task:\n${prompt}`
+        );
     }
 }

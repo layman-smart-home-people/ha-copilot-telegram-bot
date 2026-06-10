@@ -292,7 +292,7 @@ export class ACPPool extends EventEmitter {
             binary: this.#config.copilotBinary,
             cwd: this.#config.workingDirectory || "/config",
             copilotHome: home,
-            permissionPolicy: "allow_all",
+            permissionPolicy: this.#config.permissionPolicy || "interactive",
             stdioMcpServers: mcpServers,
             tag: id,
         });
@@ -343,7 +343,7 @@ export class ACPPool extends EventEmitter {
             binary: this.#config.copilotBinary,
             cwd: this.#config.workingDirectory || "/config",
             copilotHome: inst.copilotHome,
-            permissionPolicy: "allow_all",
+            permissionPolicy: this.#config.permissionPolicy || "interactive",
             stdioMcpServers: mcpServers,
             tag: inst.id,
         });

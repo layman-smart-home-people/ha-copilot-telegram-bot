@@ -12,6 +12,8 @@ import { ConversationManager } from "./conversation/index.mjs";
 import { Router } from "./gateway/router.mjs";
 import { Permissions } from "./gateway/permissions.mjs";
 import { RBACManager } from "./core/rbac.mjs";
+import { ControlPlaneStore } from "./core/control-plane-store.mjs";
+import { ApprovalService } from "./core/approval-service.mjs";
 import { PkmManager } from "./pkm/index.mjs";
 import { PromptEnricher } from "./gateway/prompt-enricher.mjs";
 import { SIBridge } from "./gateway/si-bridge.mjs";
@@ -57,6 +59,8 @@ let _router = null;
 let _siOrchestrator = null;
 let _webui = null;
 let _uds = null;
+let _controlStore = null;
+let _approvalService = null;
 
 // --- Main ---
 async function main() {
@@ -147,6 +151,18 @@ async function main() {
     });
     permissions.setRbac(rbac);
 
+    // --- Control-plane state + approvals ---
+    const controlStore = new ControlPlaneStore();
+    _controlStore = controlStore;
+    const approvalService = new ApprovalService({
+        telegram,
+        store: controlStore,
+        rbac,
+        getPermissionPolicy: () => config.permissionPolicy || "interactive",
+        isWebuiOperator: (principalId) => (config.webuiOperatorIds || []).includes(String(principalId)),
+    });
+    _approvalService = approvalService;
+
     // --- PKM (Memory System) ---
     const agentDir = config.agentDir || "/config/copilot-telegram-bot";
     // Ensure agent directory and default IDENTITY.md exist
@@ -197,7 +213,7 @@ async function main() {
     };
 
     // --- UDS Server (MCP sidecar IPC) — must start before pool so socket exists when sidecars connect ---
-    const uds = new UdsServer({ telegram, config, rbac });
+    const uds = new UdsServer({ telegram, config, rbac, controlStore });
     _uds = uds;
     await uds.start();
 
@@ -231,7 +247,7 @@ async function main() {
     log.info("PKM LLM wired via pool (dream mode — Opus, no timeout)");
 
     // --- ConversationManager ---
-    const convMgr = new ConversationManager({ pool, telegram, config });
+    const convMgr = new ConversationManager({ pool, telegram, config, approvalService });
     _convMgr = convMgr;
     convMgr.start();
 
@@ -243,6 +259,7 @@ async function main() {
     _router = router;
     router.start();
     router.setUdsServer(uds);
+    router.setApprovalService(approvalService);
 
     // --- DM Topics ---
     let topicManager = null;
@@ -272,7 +289,7 @@ async function main() {
     try {
         const siManager = new StandingInstructionManager();
         const haEventListener = new HAEventListener();
-        const siBridge = new SIBridge({ conversationManager: convMgr, telegram, config });
+        const siBridge = new SIBridge({ conversationManager: convMgr, telegram, config, enricher });
         if (topicManager) siBridge.setTopicManager(topicManager);
 
         const siOrchestrator = new StandingInstructionOrchestrator({
@@ -305,6 +322,8 @@ async function main() {
         enricher,
         rbac,
         pkm,
+        controlStore,
+        approvalService,
     });
     await webui.start();
     log.info("WebUI listening on :8099");
@@ -342,6 +361,8 @@ async function shutdown(signal) {
         if (_uds) _uds.stop();
         if (_siOrchestrator) await _siOrchestrator.stop();
         if (_webui) await _webui.stop();
+        if (_approvalService) _approvalService.close();
+        if (_controlStore) _controlStore.close();
     } catch {}
 
     try {
