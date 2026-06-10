@@ -221,7 +221,7 @@ export class Router {
                 }
 
                 try {
-                    const invite = this.#rbac.consumeInvite(inviteToken.token, ref.userId, displayName);
+                    const invite = this.#rbac.consumeInvite(inviteToken.token, ref.userId);
                     if (!invite) {
                         await this.#reply(ref, "❌ This invite link is invalid, expired, or already used. Ask the admin for a new invite.").catch(() => {});
                         return;
