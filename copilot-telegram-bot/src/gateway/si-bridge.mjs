@@ -120,6 +120,7 @@ export class SIBridge {
             messageId: null,
             model,
             mcpProfile,
+            silent,
         });
 
         log.info(`SI complete: "${description}"`);

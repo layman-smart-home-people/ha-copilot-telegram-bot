@@ -661,6 +661,9 @@ export class ResponseStreamer {
     }
 
     async #commitFinal(html, replyMarkup) {
+        // "off" mode — no Telegram output (silent SI, background tasks)
+        if (this.#messageId === -2) return;
+
         if (this.#draftMode) {
             // Clear draft FIRST to unblock input, then send real message
             try {

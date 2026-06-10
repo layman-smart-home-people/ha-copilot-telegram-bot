@@ -36,15 +36,16 @@ export class Conversation extends EventEmitter {
     #rawUserText = null;  // Original user text (before enrichment)
     #resumeContext = null;
 
-    constructor({ scopeKey, poolInstance, telegram, ref, mcpProfile, config, resumeContext = null }) {
+    constructor({ scopeKey, poolInstance, telegram, ref, mcpProfile, config, resumeContext = null, silent = false, forcedTransport = null }) {
         super();
         this.#scopeKey = scopeKey;
         this.#poolInstance = poolInstance;
         this.#telegram = telegram;
         this.#ref = ref;
         this.#mcpProfile = mcpProfile || poolInstance?.mcpProfile || "owner";
+        const transport = silent ? "off" : (forcedTransport || config?.streamingTransport || "auto");
         this.#streamer = new ResponseStreamer(telegram, {
-            streamingTransport: config?.streamingTransport || "auto",
+            streamingTransport: transport,
         });
         this.#lastActivity = Date.now();
         this.#createdAt = Date.now();

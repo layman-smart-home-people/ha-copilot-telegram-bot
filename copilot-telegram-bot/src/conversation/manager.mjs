@@ -38,6 +38,7 @@ function getCurrentDateTime(timeZone = DEFAULT_TIME_ZONE) {
 export class ConversationManager {
     #conversations = new Map(); // scopeKey → Conversation
     #creating = new Map();      // scopeKey → Promise<Conversation> (in-flight creation guard)
+    #activeDrafts = new Map();  // chatId → scopeKey (draft slot owner for collision prevention)
     #pool;                      // ACPPool
     #telegram;                  // TelegramClient
     #config;
@@ -89,7 +90,7 @@ export class ConversationManager {
      * @param {string} scopeKey — e.g., "dm:430432097"
      * @param {string} text — user message text
      * @param {object} ref — { chatId, threadId?, chatType, userId }
-     * @param {object} opts — { messageId?, images?, model?, mcpProfile? }
+     * @param {object} opts — { messageId?, images?, model?, mcpProfile?, silent? }
      * @returns {Promise<any>}
      */
     async route(scopeKey, text, ref, opts = {}) {
@@ -99,6 +100,15 @@ export class ConversationManager {
             // Dead conversation — remove and recreate
             this.#conversations.delete(scopeKey);
             conv = null;
+        }
+
+        // Draft collision: if another conversation owns the draft slot on this chatId,
+        // force this one to edit mode to prevent overwriting
+        if (!opts.silent && ref.chatId) {
+            const draftOwner = this.#activeDrafts.get(String(ref.chatId));
+            if (draftOwner && draftOwner !== scopeKey) {
+                opts = { ...opts, _forcedTransport: "edit" };
+            }
         }
 
         if (!conv) {
@@ -204,9 +214,19 @@ export class ConversationManager {
         const conv = new Conversation({
             scopeKey, poolInstance: inst, telegram: this.#telegram, ref,
             config: this.#config, resumeContext,
+            silent: opts.silent || false,
+            forcedTransport: opts._forcedTransport || null,
         });
         this.#setupConvListeners(conv);
         this.#conversations.set(scopeKey, conv);
+
+        // Track draft ownership for collision prevention
+        if (!opts.silent && ref.chatId) {
+            const chatKey = String(ref.chatId);
+            if (!this.#activeDrafts.has(chatKey)) {
+                this.#activeDrafts.set(chatKey, scopeKey);
+            }
+        }
 
         // Record current sessionId for future resumption
         if (inst.sessionId) {
@@ -290,6 +310,13 @@ export class ConversationManager {
                 this.#ledger.record(conv.scopeKey, sid);
             }
         }
+
+        // Release draft slot if this conversation owned it
+        const chatId = conv.ref?.chatId;
+        if (chatId && this.#activeDrafts.get(String(chatId)) === conv.scopeKey) {
+            this.#activeDrafts.delete(String(chatId));
+        }
+
         conv.kill();
         this.#conversations.delete(conv.scopeKey);
         if (conv.instanceId) {
